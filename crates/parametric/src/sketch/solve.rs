@@ -196,9 +196,11 @@ pub enum Relation {
     /// that locality holds and why the comparison is made between curvature ARROWS rather than
     /// signed scalars.
     ///
-    /// This asserts curvature ALONE. G2 in the authoring sense is this plus
-    /// [`Relation::TangentDirection`], because two curves can agree about how hard they bend while
-    /// leaving a joint in different directions — a cusp with a matching comb.
+    /// TWO rows, direction first and then curvature: G2 is G1 plus curvature, and the second does
+    /// not imply the first — two curves can agree about how hard they bend while leaving the joint
+    /// in different directions, which is a cusp with a matching comb. They travel together as one
+    /// relation because they are one authored claim, the way [`Relation::Collinear`] is parallel
+    /// plus zero offset rather than two assertions the author has to remember to pair.
     Curvature {
         joint: PointId,
         joint_arm: PointId,
@@ -227,7 +229,10 @@ impl Relation {
             | Self::Coincident { .. }
             | Self::Midpoint { .. }
             | Self::Collinear { .. }
-            | Self::Concentric { .. } => 2,
+            | Self::Concentric { .. }
+            // Two rows here are a direction and a curvature rather than an x and a y, but a stride
+            // is a stride and clippy will not let the distinction have its own arm.
+            | Self::Curvature { .. } => 2,
             Self::Horizontal { .. }
             | Self::Vertical { .. }
             | Self::Distance { .. }
@@ -236,7 +241,6 @@ impl Relation {
             | Self::Equal { .. }
             | Self::Tangent { .. }
             | Self::TangentDirection { .. }
-            | Self::Curvature { .. }
             | Self::PointOnCurve { .. } => 1,
             Self::Symmetry { first, .. } => match first {
                 SketchCurve::Segment(_) => 4,
@@ -1209,7 +1213,8 @@ mod tests {
             against: SketchCurve::Circle(circle),
         };
         assert_eq!(direction.residual_count(), 1);
-        assert_eq!(curvature.residual_count(), 1);
+        // Curvature carries the direction row itself, so this is G2 on its own.
+        assert_eq!(curvature.residual_count(), 2);
         builder.add_constraint(direction);
         builder.add_constraint(curvature);
 
@@ -3136,7 +3141,15 @@ impl ResidualSystem for Residuals<'_> {
                     end,
                     against,
                 } => {
-                    into[row] = curvature_residual(
+                    let geometry = curve_geometry(
+                        against,
+                        &at,
+                        &self.problem.parameters,
+                        &whole,
+                        self.problem.points.len(),
+                    );
+                    into[row] = direction_residual(at(joint), at(joint_arm), geometry);
+                    into[row + 1] = curvature_residual(
                         JointSpan {
                             joint: at(joint),
                             joint_arm: at(joint_arm),
@@ -3144,15 +3157,9 @@ impl ResidualSystem for Residuals<'_> {
                             neighbor_arm: at(neighbor_arm),
                             end,
                         },
-                        curve_geometry(
-                            against,
-                            &at,
-                            &self.problem.parameters,
-                            &whole,
-                            self.problem.points.len(),
-                        ),
+                        geometry,
                     );
-                    row += 1;
+                    row += 2;
                 }
                 Resolved::Symmetry {
                     first,

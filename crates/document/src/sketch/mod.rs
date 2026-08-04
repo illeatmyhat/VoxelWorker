@@ -3075,7 +3075,26 @@ impl Sketch {
             .named_entities()
             .into_iter()
             .flat_map(|entity| self.points_standing_for(entity))
+            .chain(self.span_points_derived_by(constraint.kind))
             .collect()
+    }
+
+    /// The points a relation places WITHOUT naming them, because it derives them from a spline.
+    ///
+    /// Curvature stores its joint and the curve, and reads the rest of the span off the spline at
+    /// mapping time, so that inserting a point beside the joint cannot leave it reading a span that
+    /// is gone. The cost of that is that `points()` alone understates what the relation reaches,
+    /// and two callers care: the drag scope, which would otherwise leave the levers out of the
+    /// problem entirely, and [`carry_authored_handles`](Self::carry_authored_handles), which would
+    /// see an unclaimed handle and drag it back off by its anchor's displacement. Both ask the same
+    /// derivation the residual mapping asks, so all three agree by construction.
+    fn span_points_derived_by(&self, kind: ConstraintKind) -> Vec<EntityId> {
+        let ConstraintKind::Curvature { joint, .. } = kind else {
+            return Vec::new();
+        };
+        constraint::curvature_span_of(&self.splines, joint)
+            .map(|(joint_arm, neighbor, neighbor_arm, _)| vec![joint_arm, neighbor, neighbor_arm])
+            .unwrap_or_default()
     }
 
     /// The points an entity id amounts to: itself if it is a point, the ones its curve stands on
@@ -3656,6 +3675,46 @@ impl Sketch {
                 // nothing and reports a collapse.
                 if point == span.from || point == span.to {
                     return Err(ConstraintRefusal::Impossible);
+                }
+            }
+            ConstraintKind::Curvature { joint, against } => {
+                if !known_point(joint) {
+                    return Err(ConstraintRefusal::UnknownEntity);
+                }
+                // The joint has to BE a joint: the free end of an open fit-point spline, with a
+                // lever there and a span behind it to read a curvature from.
+                if constraint::curvature_span_of(&self.splines, joint).is_none() {
+                    return Err(ConstraintRefusal::CurvatureNeedsAJoint);
+                }
+                let live = match against {
+                    SketchCurve::Segment(id) => self
+                        .segments
+                        .iter()
+                        .find(|segment| segment.id == id)
+                        .is_some_and(|segment| segment.from != segment.to),
+                    SketchCurve::Arc(id) => self.arcs.iter().any(|arc| arc.id == id),
+                    SketchCurve::Circle(id) => self.circles.iter().any(|circle| circle.id == id),
+                    // A spline has no curvature the kernel can read off a stored radius, and two
+                    // splines meeting is a different relation from a spline meeting a circle.
+                    SketchCurve::Bezier(_)
+                    | SketchCurve::Ellipse(_)
+                    | SketchCurve::Conic(_)
+                    | SketchCurve::Spline(_) => false,
+                };
+                if !live {
+                    return Err(ConstraintRefusal::UnknownEntity);
+                }
+                // And the two have to MEET. The curvature a circle offers at a point is read from
+                // that point's direction off the center, so a joint standing away from the curve is
+                // handed an answer describing no curve at all.
+                let (Some(at), Some(geometry)) = (
+                    self.point_in_plane(joint),
+                    self.curve_geometry(against, context),
+                ) else {
+                    return Err(ConstraintRefusal::UnknownEntity);
+                };
+                if !point_stands_on(at, geometry) {
+                    return Err(ConstraintRefusal::CurvatureNeedsAJoint);
                 }
             }
             ConstraintKind::PointOnCurve { point, curve } => {
@@ -4624,6 +4683,7 @@ impl Sketch {
         let mut named = Vec::new();
         for constraint in &self.constraints {
             named.extend(constraint.kind.points());
+            named.extend(self.span_points_derived_by(constraint.kind));
             for curve in constraint.kind.curves() {
                 named.extend(self.points_of(curve));
             }
@@ -4957,6 +5017,7 @@ impl Sketch {
                 | ConstraintKind::Midpoint { .. }
                 | ConstraintKind::Collinear { .. }
                 | ConstraintKind::PointOnCurve { .. }
+                | ConstraintKind::Curvature { .. }
                 | ConstraintKind::Tangent { .. }
                 | ConstraintKind::Concentric { .. }
                 | ConstraintKind::Symmetry { .. } => {}
@@ -5133,6 +5194,35 @@ pub fn arc_center_radius(
 /// exclusive), as continuous sub-voxel points, each chord's sagitta within
 /// [`ARC_SAGITTA_TOLERANCE_VOXELS`]. Empty when the arc is degenerate — the callers
 /// then fall back to the straight chord.
+/// Whether `at` stands on `geometry`'s support, closely enough to call them met.
+///
+/// The SUPPORT and not the drawn piece, for the reason [`parametric::sketch::Relation::PointOnCurve`]
+/// gives: whether the author meant a place past the end of an arc is an authoring question, and
+/// answering it here would make the test discontinuous where the piece stops.
+///
+/// The tolerance is tight on purpose. Two curves either meet or they do not; "nearly meets" is the
+/// state the author is trying to leave by asserting the relation, and accepting it would let a
+/// curvature row be asserted against a curve the joint is merely near — which reads as a solver
+/// bug later, not as a mis-pick now.
+fn point_stands_on(at: [f64; 2], geometry: parametric::sketch::CurveGeometry) -> bool {
+    const MET: f64 = 1.0e-6;
+    match geometry {
+        parametric::sketch::CurveGeometry::Segment { from, to } => {
+            let along = [to[0] - from[0], to[1] - from[1]];
+            let length = along[0].hypot(along[1]);
+            if length == 0.0 {
+                return false;
+            }
+            let offset = [at[0] - from[0], at[1] - from[1]];
+            (along[0] * offset[1] - along[1] * offset[0]).abs() / length <= MET
+        }
+        parametric::sketch::CurveGeometry::Circular(circle) => {
+            ((at[0] - circle.center[0]).hypot(at[1] - circle.center[1]) - circle.radius).abs()
+                <= MET
+        }
+    }
+}
+
 pub fn arc_interior_points(from: [f64; 2], to: [f64; 2], sweep_degrees: f64) -> Vec<SketchPoint> {
     arc_interior_points_within(from, to, sweep_degrees, ARC_SAGITTA_TOLERANCE_VOXELS)
 }

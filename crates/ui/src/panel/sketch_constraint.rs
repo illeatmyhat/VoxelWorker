@@ -144,6 +144,9 @@ pub enum ConstraintVerb {
     Concentric,
     /// Two same-kind curves mirror across a third picked segment axis.
     Symmetry,
+    /// A fit-point spline's END runs smoothly out of the picked curve: same direction there, and
+    /// the same curvature.
+    Curvature,
 }
 
 impl ConstraintVerb {
@@ -167,6 +170,10 @@ impl ConstraintVerb {
             ConstraintVerb::Tangent => &[SlotKind::Curve, SlotKind::Curve],
             ConstraintVerb::Concentric => &[SlotKind::CircularCurve, SlotKind::CircularCurve],
             ConstraintVerb::Symmetry => &[SlotKind::Curve, SlotKind::Curve, SlotKind::Segment],
+            // The spline's end first, for Midpoint's reason: the gesture reads "make THIS end run
+            // smoothly out of THAT", and asking for the curve first would read as picking a curve
+            // and only then being told what for.
+            ConstraintVerb::Curvature => &[SlotKind::Point, SlotKind::Curve],
         }
     }
 
@@ -186,6 +193,9 @@ impl ConstraintVerb {
             ConstraintVerb::Tangent => "Tangent — then pick two curves",
             ConstraintVerb::Concentric => "Concentric — then pick two arcs or circles",
             ConstraintVerb::Symmetry => "Symmetry — then pick two matching curves and an axis",
+            ConstraintVerb::Curvature => {
+                "Curvature — then pick a spline's end and the curve it runs out of"
+            }
         }
     }
 
@@ -209,6 +219,7 @@ impl ConstraintVerb {
             ConstraintVerb::Tangent => Icon::ConstraintTangent,
             ConstraintVerb::Concentric => Icon::ConstraintConcentric,
             ConstraintVerb::Symmetry => Icon::ConstraintSymmetry,
+            ConstraintVerb::Curvature => Icon::ConstraintCurvature,
         }
     }
 }
@@ -237,6 +248,7 @@ pub fn constraint_icon(kind: ConstraintKind) -> Icon {
         ConstraintKind::Tangent { .. } => Icon::ConstraintTangent,
         ConstraintKind::Concentric { .. } => Icon::ConstraintConcentric,
         ConstraintKind::Symmetry { .. } => Icon::ConstraintSymmetry,
+        ConstraintKind::Curvature { .. } => Icon::ConstraintCurvature,
     }
 }
 
@@ -478,6 +490,18 @@ impl ArmedConstraint {
                         segment: *segment,
                     })
                 }
+                _ => None,
+            },
+            ConstraintVerb::Curvature => match (self.picked.first()?, self.picked.get(1)?) {
+                (SketchEntity::Point(joint), against) => Some(ConstraintKind::Curvature {
+                    joint: *joint,
+                    against: match against {
+                        SketchEntity::Segment(id) => SketchCurve::Segment(*id),
+                        SketchEntity::Arc(id) => SketchCurve::Arc(*id),
+                        SketchEntity::Circle(id) => SketchCurve::Circle(*id),
+                        SketchEntity::Point(_) => return None,
+                    },
+                }),
                 _ => None,
             },
             ConstraintVerb::Tangent | ConstraintVerb::Symmetry => None,

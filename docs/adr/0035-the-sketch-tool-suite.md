@@ -241,7 +241,26 @@ iteration in the residual loop.
 durable document entities and armable rail gestures. Circular curves are in the parameter vector,
 and their center and radius are exposed as derived geometry. The connected Line command and the
 standalone Tangent Arc command also author their required Tangent relation atomically with the new
-arc. Curvature remains unbacked until splines provide geometry whose curvature can be driven.
+arc.
+
+**Implementation update (2026-08-04):** Curvature is backed. Fit-point splines gave it the geometry
+it was waiting for, and less of it than expected: because every fit point carries an authored
+tangent handle, the tridiagonal interpolation system is the identity, so a span is a purely local
+cubic Hermite and its end curvature has a closed form over four coordinates the author already
+owns. The relation therefore needs no boundary condition, no sync channel and no new freedoms — it
+is an ordinary residual over free points, which is what §5 asks a constraint to be.
+
+It carries TWO rows, a tangent direction and a curvature, so the verb is G2 on its own rather than
+something to be stacked on Tangent. Both are read as curvature VECTORS rather than signed scalars,
+which removes every question about which way a curve is traversed: reversing a curve flips the
+curvature and the normal together. Only a free END of an open spline takes one, and the joint must
+already stand on the curve it runs out of; curvature between things that do not meet has no answer.
+
+The span itself is derived from the spline at mapping time rather than stored, so inserting a point
+beside the joint cannot leave the relation reading a span that is gone. The price is that
+`ConstraintKind::points()` understates what the relation reaches, and two other passes had to be
+taught the same derivation — the drag scope, and the post-solve handle carry, which would otherwise
+drag a solved lever straight back off by its anchor's displacement.
 
 ### 6. Project, Intersect and Spun Profile are cut
 

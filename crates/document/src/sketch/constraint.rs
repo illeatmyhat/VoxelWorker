@@ -19,12 +19,13 @@
 )]
 
 use super::{
-    Arc, Circle, CircleRadius, EntityId, Point, Segment, Sketch, SketchLength, SketchPoint,
+    Arc, Circle, CircleRadius, EntityId, Point, Segment, Sketch, SketchLength, SketchPoint, Spline,
     ABSENT_DERIVED_POINT,
 };
 use parametric::sketch::{
     ArcId, BuildError, CircleId, ConstraintId, PointId, Problem, ProblemBuilder, Relation,
-    SegmentId, SketchCurve as ParametricSketchCurve, TangentContactError, TangentContactFailure,
+    SegmentId, SketchCurve as ParametricSketchCurve, SpanEnd, TangentContactError,
+    TangentContactFailure,
 };
 pub use parametric::sketch::{InternalContainment, LineSide, SymmetryBranch, TangentBranch};
 use parametric::EvaluationContext;
@@ -143,6 +144,18 @@ pub enum ConstraintKind {
         axis: EntityId,
         branch: SymmetryBranch,
     },
+    /// A fit-point spline runs smoothly out of `against` at `joint`: same direction there, and the
+    /// same curvature — G2.
+    ///
+    /// Only the joint and the neighbour are stored. The rest of what the relation needs — the
+    /// joint's arm, the next fit point along, that point's arm, and which end of its span the joint
+    /// stands at — is DERIVED from the spline when the problem is built, because storing it would
+    /// be a second copy of the spline's own structure, free to go stale the moment a point is
+    /// inserted beside the joint.
+    Curvature {
+        joint: EntityId,
+        against: SketchCurve,
+    },
     /// Both coordinates of this point lie on `phase + n * pitch`. The values are authored sketch
     /// lengths so density retargeting keeps a block lattice physical while a voxel lattice stays
     /// in voxel units.
@@ -240,7 +253,9 @@ impl ConstraintKind {
             // Both hold a point up against geometry that is still drawn: the midpoint of a
             // diagonal, or the arc center a slot's spine runs through.
             Self::Midpoint { point, .. } | Self::PointOnCurve { point, .. } => vec![point],
-            Self::Fix { .. }
+            // The joint is a spline's own fit point: the spline holds it up, not this relation.
+            Self::Curvature { .. }
+            | Self::Fix { .. }
             | Self::Quantize { .. }
             | Self::Distance { .. }
             | Self::Coincident { .. }
@@ -263,6 +278,7 @@ impl ConstraintKind {
             | Self::Quantize { point, .. }
             | Self::Midpoint { point, .. }
             | Self::PointOnCurve { point, .. } => vec![point],
+            Self::Curvature { joint, .. } => vec![joint],
             Self::Distance { from, to, .. } => vec![from, to],
             Self::Coincident { first, second } => vec![first, second],
             Self::Horizontal { .. }
@@ -324,6 +340,7 @@ impl ConstraintKind {
             Self::Symmetry { first, second, .. } => [first.id(), second.id()],
             Self::Midpoint { point, segment } => [point, segment],
             Self::PointOnCurve { point, curve } => [point, curve.id()],
+            Self::Curvature { joint, against } => [joint, against.id()],
         }
     }
 
@@ -374,6 +391,15 @@ impl ConstraintKind {
                 | SketchCurve::Conic(_)
                 | SketchCurve::Spline(_) => Vec::new(),
             },
+            Self::Curvature { against, .. } => match against {
+                SketchCurve::Segment(id) => vec![id],
+                SketchCurve::Arc(_)
+                | SketchCurve::Circle(_)
+                | SketchCurve::Bezier(_)
+                | SketchCurve::Ellipse(_)
+                | SketchCurve::Conic(_)
+                | SketchCurve::Spline(_) => Vec::new(),
+            },
             Self::Fix { .. }
             | Self::Quantize { .. }
             | Self::Distance { .. }
@@ -400,6 +426,7 @@ impl ConstraintKind {
             | Self::Collinear { first, second } => vec![first, second],
             Self::Midpoint { point, segment } => vec![point, segment],
             Self::PointOnCurve { point, curve } => vec![point, curve.id()],
+            Self::Curvature { joint, against } => vec![joint, against.id()],
             Self::Tangent { first, second, .. } | Self::Concentric { first, second } => {
                 vec![first.id(), second.id()]
             }
@@ -419,6 +446,7 @@ impl ConstraintKind {
                 vec![first, second]
             }
             Self::Symmetry { first, second, .. } => vec![first, second],
+            Self::Curvature { against, .. } => vec![against],
             _ => Vec::new(),
         }
     }
@@ -545,6 +573,10 @@ pub enum ConstraintRefusal {
     InvalidSymmetry,
     /// The request names geometry the store does not hold.
     UnknownEntity,
+    /// A curvature relation was asked for where there is no joint to speak of: the point is not
+    /// the free END of an open fit-point spline, or it does not stand on the curve it is meant to
+    /// run out of. Curvature between things that do not meet is not a question with an answer.
+    CurvatureNeedsAJoint,
     /// It names the BACK arm of a tangent lever, whose position is re-derived as the mirror of
     /// the forward arm after every edit. A relation on it would be met by the solve and then
     /// silently overwritten, which is worse than declining it.
@@ -595,6 +627,7 @@ impl ConstraintRefusal {
             Self::MissingEvaluationContext
             | Self::UnknownEntity
             | Self::MirroredTangentArm
+            | Self::CurvatureNeedsAJoint
             | Self::Impossible
             | Self::InvalidConcentric
             | Self::InvalidSymmetry
@@ -620,6 +653,9 @@ pub(super) struct PreparedProblem {
     arcs: Vec<(EntityId, ArcId, parametric::sketch::ParameterId)>,
     circles: Vec<(EntityId, CircleId, parametric::sketch::ParameterId)>,
     constraints: Vec<(EntityId, ConstraintId)>,
+    /// Kept whole because a curvature relation reads its span out of the spline rather than out of
+    /// stored fields; a trial has to be able to make the same reading the build made.
+    splines: Box<[Spline]>,
 }
 
 pub(super) enum TrialMapError {
@@ -847,6 +883,7 @@ impl PreparedProblem {
             &self.segments,
             &self.arcs,
             &self.circles,
+            &self.splines,
         )
     }
 }
@@ -858,6 +895,7 @@ fn relation_for(
     segments: &[(EntityId, SegmentId)],
     arcs: &[(EntityId, ArcId, parametric::sketch::ParameterId)],
     circles: &[(EntityId, CircleId, parametric::sketch::ParameterId)],
+    splines: &[Spline],
 ) -> Option<Relation> {
     let point = |id| {
         points
@@ -970,7 +1008,48 @@ fn relation_for(
                 axis,
                 branch,
             }),
+        ConstraintKind::Curvature { joint, against } => {
+            let (joint_arm, neighbor, neighbor_arm, end) = curvature_span_of(splines, joint)?;
+            Some(Relation::Curvature {
+                joint: point(joint)?,
+                joint_arm: point(joint_arm)?,
+                neighbor: point(neighbor)?,
+                neighbor_arm: point(neighbor_arm)?,
+                end,
+                against: curve(against)?,
+            })
+        }
     }
+}
+
+/// The span a curvature relation reads, derived from the spline whose END the joint is.
+///
+/// Answers `(joint arm, neighbour, neighbour arm, which end)`. Derived rather than stored so that
+/// inserting a point beside the joint cannot leave the relation reading a span that is no longer
+/// there — see [`ConstraintKind::Curvature`].
+///
+/// A closed spline has no end, and a spline of one point has no span, so neither answers.
+pub(super) fn curvature_span_of(
+    splines: &[Spline],
+    joint: EntityId,
+) -> Option<(EntityId, EntityId, EntityId, SpanEnd)> {
+    splines.iter().find_map(|spline| {
+        if spline.closed || spline.points.len() < 2 {
+            return None;
+        }
+        let last = spline.points.len() - 1;
+        let (neighbor, end) = match spline.points.iter().position(|id| *id == joint)? {
+            0 => (spline.points[1], SpanEnd::Start),
+            index if index == last => (spline.points[last - 1], SpanEnd::Finish),
+            _ => return None,
+        };
+        Some((
+            spline.tangents.get(&joint)?.forward,
+            neighbor,
+            spline.tangents.get(&neighbor)?.forward,
+            end,
+        ))
+    })
 }
 
 fn add_constraints(
@@ -980,11 +1059,12 @@ fn add_constraints(
     segments: &[(EntityId, SegmentId)],
     arcs: &[(EntityId, ArcId, parametric::sketch::ParameterId)],
     circles: &[(EntityId, CircleId, parametric::sketch::ParameterId)],
+    splines: &[Spline],
 ) -> Vec<(EntityId, ConstraintId)> {
     constraints
         .iter()
         .filter_map(|constraint| {
-            relation_for(constraint.kind, points, segments, arcs, circles)
+            relation_for(constraint.kind, points, segments, arcs, circles, splines)
                 .map(|relation| (constraint.id, builder.add_constraint(relation)))
         })
         .collect()
@@ -1104,6 +1184,7 @@ pub(super) fn prepare_scoped(
         &segments,
         &local_arcs,
         &local_circles,
+        &sketch.splines,
     );
     let problem = builder
         .finish()
@@ -1115,5 +1196,6 @@ pub(super) fn prepare_scoped(
         arcs: local_arcs,
         circles: local_circles,
         constraints: local_constraints,
+        splines: sketch.splines.clone(),
     })
 }

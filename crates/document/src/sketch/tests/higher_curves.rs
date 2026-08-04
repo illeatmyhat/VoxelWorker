@@ -933,3 +933,265 @@ fn an_arm_dragged_onto_its_own_fit_point_is_refused() {
         "with every tangent authored the first span must not feel the far end"
     );
 }
+
+/// A curvature relation on a spline's end makes the spline leave a circle the way the circle was
+/// going, and the lever's LENGTH is what it spends to do it.
+///
+/// The spline starts tangent to the circle but bending by the wrong amount. Nothing else may move:
+/// the circle is fixed, and so is every fit point. The only freedom left is the arm.
+#[test]
+fn curvature_bends_a_spline_end_to_match_the_circle_it_leaves() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let circle = sketch
+        // A RETAINED length, so the radius is fixed. Left free, the cheapest way to meet the
+        // relation is to shrink the circle down onto the spline rather than bend the spline.
+        .add_circle(SketchPoint::new(0, 0), SketchLength::retained_voxels(5))
+        .expect("a circle of radius five");
+    let center = sketch.circles()[0].center;
+    sketch
+        .add_fit_point_spline(
+            &[
+                SketchPoint::new(5, 0),
+                SketchPoint::new(4, 4),
+                SketchPoint::new(0, 6),
+            ],
+            false,
+        )
+        .expect("a spline standing on the circle");
+    let spline = sketch.splines()[0].clone();
+    let joint = spline.points[0];
+    let arm = spline.tangents.get(&joint).expect("a lever").forward;
+    // Point the lever along the circle's tangent, but at the wrong length.
+    sketch
+        .move_point(arm, SketchPoint::from_continuous(5.0, 0.35), ctx(16))
+        .expect("the lever is steerable");
+    // Pin every point but the joint's own arm. The relation can be met by bending either end of
+    // the span, and the claim under test is that the JOINT's lever is a knob that turns.
+    let mut others = vec![center, joint, spline.points[1], spline.points[2]];
+    for fit in spline.points.iter().skip(1) {
+        if let Some(handle) = spline.tangents.get(fit) {
+            // The FORWARD arm only: the back one is a mirror, and relating it is refused.
+            others.push(handle.forward);
+        }
+    }
+    for point in others {
+        let at = sketch.point_in_plane(point).expect("it stands");
+        sketch
+            .add_constraint(
+                ConstraintKind::Fix {
+                    point,
+                    at: SketchPoint::from_continuous(at[0], at[1]),
+                },
+                ctx(16),
+            )
+            .expect("pinning what the gesture does not author");
+    }
+
+    sketch
+        .add_constraint(
+            ConstraintKind::Curvature {
+                joint,
+                against: SketchCurve::Circle(circle),
+            },
+            ctx(16),
+        )
+        .expect("a spline end standing on a circle takes a curvature relation");
+    sketch.solve(ctx(16)).expect("the drawing settles");
+
+    let settled = sketch.point_in_plane(arm).expect("the lever stands");
+    assert!(
+        (settled[0] - 5.0).abs() < 1.0e-3,
+        "the lever left the tangent: {settled:?}"
+    );
+    // Assert the MEANING rather than a hand-solved lever length: the span the joint belongs to now
+    // bends exactly as hard as the circle does, and toward the same side.
+    let live = sketch.splines()[0].clone();
+    let at = |id| sketch.point_in_plane(id).expect("it stands");
+    let span = ::parametric::sketch::JointSpan {
+        joint: at(joint),
+        joint_arm: at(arm),
+        neighbor: at(live.points[1]),
+        neighbor_arm: at(live.tangents.get(&live.points[1]).expect("a lever").forward),
+        end: ::parametric::sketch::SpanEnd::Start,
+    };
+    let arrow = span.curvature_arrow();
+    // Radius five about the origin, read from (5, 0): an arrow of length 1/5 pointing at -X.
+    assert!(
+        (arrow[0] + 0.2).abs() < 1.0e-3 && arrow[1].abs() < 1.0e-3,
+        "the joint should bend like the circle it leaves: {arrow:?}"
+    );
+}
+
+/// A solve that MOVES the joint leaves the lever where the relation put it.
+///
+/// `carry_authored_handles` displaces every authored handle by its anchor's motion, unless a
+/// relation claims the handle. Curvature claims one without ever naming it — the span is derived
+/// from the spline — so the claim has to be derived there too, or this pass quietly undoes the
+/// bend the solver just authored.
+#[test]
+fn a_joint_that_slides_around_the_circle_does_not_drag_its_lever_off_the_answer() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let circle = sketch
+        .add_circle(SketchPoint::new(0, 0), SketchLength::retained_voxels(5))
+        .expect("a circle of radius five");
+    let center = sketch.circles()[0].center;
+    sketch
+        .add_fit_point_spline(
+            &[
+                SketchPoint::new(5, 0),
+                SketchPoint::new(4, 4),
+                SketchPoint::new(0, 6),
+            ],
+            false,
+        )
+        .expect("a spline standing on the circle");
+    let spline = sketch.splines()[0].clone();
+    let joint = spline.points[0];
+    let arm = spline.tangents.get(&joint).expect("a lever").forward;
+
+    let mut others = vec![center, spline.points[1], spline.points[2]];
+    for fit in spline.points.iter().skip(1) {
+        if let Some(handle) = spline.tangents.get(fit) {
+            others.push(handle.forward);
+        }
+    }
+    for point in others {
+        let at = sketch.point_in_plane(point).expect("it stands");
+        sketch
+            .add_constraint(
+                ConstraintKind::Fix {
+                    point,
+                    at: SketchPoint::from_continuous(at[0], at[1]),
+                },
+                ctx(16),
+            )
+            .expect("pinning what the gesture does not author");
+    }
+    sketch
+        .add_constraint(
+            ConstraintKind::Curvature {
+                joint,
+                against: SketchCurve::Circle(circle),
+            },
+            ctx(16),
+        )
+        .expect("a spline end standing on a circle takes a curvature relation");
+
+    sketch
+        .add_constraint(
+            ConstraintKind::PointOnCurve {
+                point: joint,
+                curve: SketchCurve::Circle(circle),
+            },
+            ctx(16),
+        )
+        .expect("the joint stays on the circle it runs out of");
+
+    // Then slide it around the circle. A drag is the case that bites: it settles and hands
+    // straight back to the author, with no later solve to quietly repair the lever.
+    sketch
+        .move_point(joint, SketchPoint::new(4, 3), ctx(16))
+        .expect("the joint slides");
+
+    let live = sketch.splines()[0].clone();
+    let at = |id| sketch.point_in_plane(id).expect("it stands");
+    let span = ::parametric::sketch::JointSpan {
+        joint: at(joint),
+        joint_arm: at(arm),
+        neighbor: at(live.points[1]),
+        neighbor_arm: at(live.tangents.get(&live.points[1]).expect("a lever").forward),
+        end: ::parametric::sketch::SpanEnd::Start,
+    };
+    // Wherever the joint came to rest along the circle, the lever bends like the circle THERE.
+    // Reading the target off the settled joint rather than a hand-picked landing spot keeps the
+    // claim about the lever, not about how far a nonlinear drag manages to travel.
+    let arrow = span.curvature_arrow();
+    let target = ::parametric::sketch::curvature_arrow_at(
+        ::parametric::sketch::CurveGeometry::Circular(::parametric::sketch::CircularCurve {
+            center: [0.0, 0.0],
+            radius: 5.0,
+            arc: None,
+        }),
+        span.joint,
+    );
+    assert!(
+        (span.joint[1]).abs() > 0.1,
+        "the joint never left where it started: {:?}",
+        span.joint
+    );
+    assert!(
+        (arrow[0] - target[0]).abs() < 1.0e-3 && (arrow[1] - target[1]).abs() < 1.0e-3,
+        "the lever was carried off the curvature it was solved to: {arrow:?} against {target:?}"
+    );
+}
+
+/// Curvature is refused where there is no joint: mid-spline, on a closed spline, and where the two
+/// simply do not meet.
+#[test]
+fn curvature_is_refused_without_a_free_end_standing_on_the_curve() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let circle = sketch
+        .add_circle(SketchPoint::new(0, 0), SketchLength::new(5))
+        .expect("a circle of radius five");
+    sketch
+        .add_fit_point_spline(
+            &[
+                SketchPoint::new(5, 0),
+                SketchPoint::new(4, 4),
+                SketchPoint::new(0, 6),
+            ],
+            false,
+        )
+        .expect("an open spline");
+    let open = sketch.splines()[0].clone();
+
+    // The MIDDLE of a spline is not an end, so there is no joint there.
+    assert_eq!(
+        sketch.add_constraint(
+            ConstraintKind::Curvature {
+                joint: open.points[1],
+                against: SketchCurve::Circle(circle),
+            },
+            ctx(16),
+        ),
+        Err(ConstraintRefusal::CurvatureNeedsAJoint)
+    );
+    // The far end IS an end, but it stands at (0,6) and the circle has radius five: they do not
+    // meet, and curvature between things that do not touch is not a question with an answer.
+    assert_eq!(
+        sketch.add_constraint(
+            ConstraintKind::Curvature {
+                joint: open.points[2],
+                against: SketchCurve::Circle(circle),
+            },
+            ctx(16),
+        ),
+        Err(ConstraintRefusal::CurvatureNeedsAJoint)
+    );
+
+    // A closed spline has no free end at all.
+    let mut ring = Sketch::empty(PlaneAxis::Z);
+    let ring_circle = ring
+        .add_circle(SketchPoint::new(0, 0), SketchLength::new(5))
+        .expect("a circle");
+    ring.add_fit_point_spline(
+        &[
+            SketchPoint::new(5, 0),
+            SketchPoint::new(0, 5),
+            SketchPoint::new(-5, 0),
+        ],
+        true,
+    )
+    .expect("a closed spline");
+    let closed = ring.splines()[0].clone();
+    assert_eq!(
+        ring.add_constraint(
+            ConstraintKind::Curvature {
+                joint: closed.points[0],
+                against: SketchCurve::Circle(ring_circle),
+            },
+            ctx(16),
+        ),
+        Err(ConstraintRefusal::CurvatureNeedsAJoint)
+    );
+}

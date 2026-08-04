@@ -209,6 +209,7 @@ enum ConstraintVerbConfig {
     Concentric,
     Symmetry,
     Tangent,
+    Curvature,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
@@ -237,6 +238,7 @@ impl ArmedConstraintConfig {
                 ui::panel::ConstraintVerb::Concentric => ConstraintVerbConfig::Concentric,
                 ui::panel::ConstraintVerb::Symmetry => ConstraintVerbConfig::Symmetry,
                 ui::panel::ConstraintVerb::Tangent => ConstraintVerbConfig::Tangent,
+                ui::panel::ConstraintVerb::Curvature => ConstraintVerbConfig::Curvature,
             },
             picked: if armed.verb() == ui::panel::ConstraintVerb::Tangent {
                 Vec::new()
@@ -271,6 +273,7 @@ impl ArmedConstraintConfig {
             ConstraintVerbConfig::Concentric => ui::panel::ConstraintVerb::Concentric,
             ConstraintVerbConfig::Symmetry => ui::panel::ConstraintVerb::Symmetry,
             ConstraintVerbConfig::Tangent => ui::panel::ConstraintVerb::Tangent,
+            ConstraintVerbConfig::Curvature => ui::panel::ConstraintVerb::Curvature,
         };
         let picked = self
             .picked

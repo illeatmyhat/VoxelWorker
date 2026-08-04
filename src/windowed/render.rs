@@ -3773,6 +3773,12 @@ impl WindowedState {
                 | document::sketch::ConstraintKind::PointOnCurve { point, .. } => {
                     beside_point(point).into_iter().collect()
                 }
+                // Curvature marks the JOINT and not the neighbour curve: the joint is the one
+                // place the claim is about, and the curve it runs out of may be long enough that a
+                // badge on it would land nowhere near the smoothness it is describing.
+                document::sketch::ConstraintKind::Curvature { joint, .. } => {
+                    beside_point(joint).into_iter().collect()
+                }
                 // Perpendicular has a LOCUS, and the rule above does not apply to it: two lines
                 // meeting square make ONE right angle, and the mark belongs in it. Two badges at
                 // two midpoints say the same thing twice and neither says where the corner is
@@ -6799,6 +6805,9 @@ fn refusal_text(why: &document::sketch::ConstraintRefusal) -> &'static str {
     use document::sketch::ConstraintRefusal;
     match why {
         ConstraintRefusal::UnknownEntity => "names geometry that is gone",
+        ConstraintRefusal::CurvatureNeedsAJoint => {
+            "curvature wants a spline's free end standing on that curve"
+        }
         ConstraintRefusal::MirroredTangentArm => {
             "that end of the handle is a mirror — relate the other one"
         }
