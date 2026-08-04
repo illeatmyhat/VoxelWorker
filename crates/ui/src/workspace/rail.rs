@@ -882,13 +882,19 @@ fn rail_group<Route: Copy>(
         // Mid-slide the whole row belongs to the floating strip, face included, so the cell
         // underneath paints nothing and the two can never disagree about what is drawn where.
         let picked = rail_slide_out(ui, group, &lit, rect, openness);
-        let dismissed = ui.input(|input| {
-            input.pointer.any_pressed()
-                && input
-                    .pointer
-                    .interact_pos()
-                    .is_some_and(|at| !slid_row(rect, group, openness).contains(at))
-        });
+        // Only an OPEN family dismisses. A row still sliding SHUT has a rect too, and would read
+        // the press picking from whichever family replaced it as a dismissal of itself. No test
+        // separates the two — both rows animate over the same span, so the new row is only worth
+        // pressing once the old one has finished — but the guard makes it true by construction
+        // rather than by two durations happening to match.
+        let dismissed = open
+            && ui.input(|input| {
+                input.pointer.any_pressed()
+                    && input
+                        .pointer
+                        .interact_pos()
+                        .is_some_and(|at| !slid_row(rect, group, openness).contains(at))
+            });
         return match picked {
             Some(SlidePick::Member(route)) => {
                 state.open_rail_group = None;
@@ -1020,7 +1026,8 @@ fn rail_slide_out<Route: Copy>(
                     cell.left_top() + egui::vec2(offset, 0.0),
                     egui::vec2(RAIL_WIDTH, cell.height()),
                 );
-                if member_box(ui, box_rect, icon, tip, lit.get(index) == Some(&true)) {
+                let id = egui::Id::new(("rail_family_member", group.name, index));
+                if member_box(ui, box_rect, id, icon, tip, lit.get(index) == Some(&true)) {
                     picked = Some(SlidePick::Member(route));
                 }
             }
@@ -1053,12 +1060,20 @@ fn rail_slide_out<Route: Copy>(
 /// One member box in the slid-open row: the member's own glyph at cell size, lit when it is the
 /// armed one. Glyph only, as on the rail itself — the row is read by shape at a glance, and the
 /// name is one hover away.
-fn member_box(ui: &egui::Ui, rect: egui::Rect, icon: Icon, tip: &str, active: bool) -> bool {
-    let response = ui.interact(
-        rect,
-        egui::Id::new(("rail_family_member", tip)),
-        egui::Sense::click(),
-    );
+///
+/// The caller supplies the id. Keyed by the family and the position within it rather than by the
+/// tooltip, because two rows genuinely coexist — opening one family while another is still sliding
+/// shut leaves both Areas live — and two members sharing an id would misroute the click with
+/// nothing but a debug-build warning to say so.
+fn member_box(
+    ui: &egui::Ui,
+    rect: egui::Rect,
+    id: egui::Id,
+    icon: Icon,
+    tip: &str,
+    active: bool,
+) -> bool {
+    let response = ui.interact(rect, id, egui::Sense::click());
     let hovered = response.hovered();
     paint_cell(ui, rect, active, hovered);
     icon.draw(
@@ -1219,6 +1234,17 @@ mod tests {
         ],
     };
 
+    /// A second family, to put two of them in one column the way the shipping tables do. Its own
+    /// face and its own tips, so nothing about it can be answered by [`PROBE`]'s ids.
+    const PROBE_BELOW: RailGroup<u8> = RailGroup {
+        face: Icon::Material,
+        name: "Material",
+        members: &[
+            (Icon::Material, "Third — the second family's face", 3),
+            (Icon::Carve, "Fourth — behind the second chevron", 4),
+        ],
+    };
+
     /// Run one frame of [`PROBE`]'s cell at the ui origin, feeding `events`, and report both what
     /// the cell returned and where it drew.
     fn probe_frame(
@@ -1324,6 +1350,79 @@ mod tests {
         assert_eq!(state.open_rail_group, None);
     }
 
+    /// One frame of [`PROBE`] above [`PROBE_BELOW`], reporting what was chosen and where each cell
+    /// drew.
+    fn two_family_frame(
+        context: &egui::Context,
+        state: &mut PanelState,
+        events: Vec<egui::Event>,
+    ) -> (Option<u8>, [egui::Rect; 2]) {
+        let mut chosen = None;
+        let mut cells = [egui::Rect::NOTHING; 2];
+        let raw_input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1280.0, 800.0),
+            )),
+            events,
+            ..Default::default()
+        };
+        let _ = context.run_ui(raw_input, |ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
+            for (slot, group) in cells.iter_mut().zip([&PROBE, &PROBE_BELOW]) {
+                *slot = egui::Rect::from_min_size(
+                    ui.available_rect_before_wrap().min,
+                    egui::vec2(RAIL_WIDTH, TOOL_CELL_HEIGHT),
+                );
+                chosen = rail_group(ui, state, group, |_, _| false).or(chosen);
+            }
+        });
+        (chosen, cells)
+    }
+
+    /// Press and release at `at` over the two-family column, three frames as [`click_at`] does.
+    /// Deliberately no settling frames: what these tests are after is the window while a row is
+    /// still animating.
+    fn two_family_press(
+        context: &egui::Context,
+        state: &mut PanelState,
+        at: egui::Pos2,
+    ) -> Option<u8> {
+        let button = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::default(),
+        };
+        two_family_frame(context, state, vec![egui::Event::PointerMoved(at)]);
+        two_family_frame(context, state, vec![button(true)]);
+        two_family_frame(context, state, vec![button(false)]).0
+    }
+
+    /// One family at a time. `open_rail_group` holds a single face, so this is true by
+    /// construction — the test is that the second chevron is actually reached and does the writing,
+    /// rather than the first family swallowing the press as its own dismissal and leaving nothing
+    /// open at all.
+    #[test]
+    fn opening_a_family_closes_the_one_that_was_open() {
+        let context = egui::Context::default();
+        let mut state = PanelState::default();
+
+        let (_, cells) = two_family_frame(&context, &mut state, Vec::new());
+        two_family_press(&context, &mut state, chevron_of(cells[0]));
+        assert_eq!(state.open_rail_group, Some(PROBE.face));
+        for _ in 0..30 {
+            two_family_frame(&context, &mut state, Vec::new());
+        }
+
+        two_family_press(&context, &mut state, chevron_of(cells[1]));
+        assert_eq!(
+            state.open_rail_group,
+            Some(PROBE_BELOW.face),
+            "the press that opens the second family also dismisses the first, and the two must              not cancel out"
+        );
+    }
+
     /// **The bug the owner reported.** The chevron rides the cell's right edge, which is exactly
     /// where a scrolling column draws its bar — and a bar that senses clicks takes them, leaving
     /// the family unreachable. Run through [`rail_scroll_area`] itself, in a column short enough to
@@ -1396,6 +1495,28 @@ mod tests {
         for face in faces {
             assert!(!seen.contains(&face), "{face:?} faces two families");
             seen.push(face);
+        }
+    }
+
+    /// Two members must not share a tooltip. The interact ids no longer key off the tip — that
+    /// coupling is exactly the silent failure this pins the other end of — but a duplicate tip is
+    /// still a bug on its own terms: the hover is all that names a member in a glyph-only row, so
+    /// two boxes reading the same is two verbs the author cannot tell apart.
+    #[test]
+    fn no_two_members_share_a_tooltip() {
+        let mut tips: Vec<&str> = SKETCH_CREATE
+            .iter()
+            .flat_map(|group| group.members.iter().map(|(_, tip, _)| *tip))
+            .collect();
+        tips.extend(
+            SKETCH_MODIFY
+                .iter()
+                .flat_map(|group| group.members.iter().map(|(_, tip, _)| *tip)),
+        );
+        let mut seen: Vec<&str> = Vec::new();
+        for tip in tips {
+            assert!(!seen.contains(&tip), "two members read {tip:?}");
+            seen.push(tip);
         }
     }
 
