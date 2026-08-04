@@ -452,6 +452,66 @@ fn a_solve_that_moves_a_fit_point_carries_its_tangent_handle() {
     );
 }
 
+/// The other half of the carry rule: a handle a constraint reached is the constraint's to place,
+/// and the carry must keep its hands off it — even when the solve's answer was "stay put".
+///
+/// A pinned handle does not move while its anchor does, which is exactly what an "it did not move,
+/// so nobody claimed it" test cannot tell apart from a loose one.
+#[test]
+fn a_pinned_tangent_handle_stays_pinned_when_its_fit_point_moves() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    sketch
+        .add_fit_point_spline(
+            &[
+                SketchPoint::new(0, 0),
+                SketchPoint::new(4, 4),
+                SketchPoint::new(8, 0),
+            ],
+            false,
+        )
+        .expect("a valid open fit spline");
+    let fit = sketch.splines()[0].points[0];
+    let handle = sketch.add_tangent_handle(fit).expect("a handle");
+
+    // Pin the handle to a point of its own, so a relation names it directly.
+    let stands = sketch.point_in_plane(handle).expect("the handle stands");
+    let pin = sketch.add_free_point(SketchPoint::from_continuous(stands[0], stands[1]));
+    sketch
+        .add_constraint(
+            ConstraintKind::Coincident {
+                first: handle.min(pin),
+                second: handle.max(pin),
+            },
+            ctx(16),
+        )
+        .expect("the pin is asserted");
+
+    // Now move the ANCHOR with a constraint that says nothing about the handle.
+    let elsewhere = sketch.add_free_point(SketchPoint::new(-6, -6));
+    sketch
+        .add_constraint(
+            ConstraintKind::Coincident {
+                first: fit.min(elsewhere),
+                second: fit.max(elsewhere),
+            },
+            ctx(16),
+        )
+        .expect("the coincidence is asserted");
+
+    let moved = sketch.point_in_plane(fit).expect("the fit point stands");
+    assert!(
+        (moved[0] - 0.0).abs() > 0.5 || (moved[1] - 0.0).abs() > 0.5,
+        "the solve has to have moved the fit point for this to test anything: {moved:?}"
+    );
+    let held = sketch.point_in_plane(handle).expect("the handle stands");
+    let pinned = sketch.point_in_plane(pin).expect("the pin stands");
+    assert!(
+        (held[0] - pinned[0]).abs() < 1.0e-6 && (held[1] - pinned[1]).abs() < 1.0e-6,
+        "the carry dragged a handle off the pin a constraint put it on: \
+         {held:?} against {pinned:?}"
+    );
+}
+
 /// The control frame is derived from the point list, so it names controls in leg order and names
 /// nothing at all for a fit spline, whose points are on the curve rather than off it.
 #[test]

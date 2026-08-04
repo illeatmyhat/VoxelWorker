@@ -535,6 +535,11 @@ pub(super) fn build_rail(
                     if state.sketch_mode.is_some() {
                         build_sketch_rail(ui, state, response);
                     } else {
+                        // Only the sketch rail has families, and the mode can end without a
+                        // pointer press — undo deleting the sketch node, or a load that finds the
+                        // id stale. Clearing here rather than at each of those exits means a
+                        // flyout cannot survive to pop open unprompted on the next entry.
+                        state.open_rail_group = None;
                         rail_heading(ui, "Shape");
                         for &(icon, kind) in SHAPES {
                             shape_cell(ui, icon, kind, state, response);

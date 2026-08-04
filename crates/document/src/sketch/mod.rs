@@ -4371,6 +4371,30 @@ impl Sketch {
             || self.conics.iter().any(|conic| conic.shoulder == id)
     }
 
+    /// Every point some authored relation reaches — named outright, or standing on a curve the
+    /// relation names.
+    ///
+    /// A point in here is the solver's to place, so anything that moves points on its own
+    /// authority ([`carry_authored_handles`](Self::carry_authored_handles)) has to leave it alone.
+    fn constrained_points(&self) -> Vec<EntityId> {
+        let mut named = Vec::new();
+        for constraint in &self.constraints {
+            named.extend(constraint.kind.points());
+            for curve in constraint.kind.curves() {
+                named.extend(self.points_of(curve));
+            }
+            // A relation's segment slot can hold an arc or a circle id too (Equal compares radii),
+            // and `points_of` finds nothing for a kind the id does not belong to, so asking all
+            // three costs a miss rather than a wrong answer.
+            for id in constraint.kind.segments() {
+                named.extend(self.points_of(SketchCurve::Segment(id)));
+                named.extend(self.points_of(SketchCurve::Arc(id)));
+                named.extend(self.points_of(SketchCurve::Circle(id)));
+            }
+        }
+        named
+    }
+
     /// Every authored point that STANDS OFF another, as `(anchor, follower)`.
     ///
     /// Both are authored — neither is [`is_derived_point`](Self::is_derived_point) — but the
@@ -4407,11 +4431,16 @@ impl Sketch {
     /// offset, silently re-aims. A constraint that never mentioned a spline's tangent would rotate
     /// it as a side effect of moving the fit point under it.
     ///
-    /// So the handle follows its anchor's displacement, UNLESS the solve moved the handle too: a
-    /// constraint that reached the handle itself decided where it goes, and that answer wins over
-    /// this one. Comparison is exact because a point's stored position is exact — this asks
-    /// whether the writeback touched it, not whether it is nearly where it was.
+    /// So the handle follows its anchor's displacement, UNLESS a constraint reached the handle
+    /// itself: that constraint decided where it goes, and its answer wins over this one.
+    ///
+    /// The test is whether a relation NAMES the handle, not whether the solve moved it. A handle
+    /// pinned where it already stood does not move while its anchor does, and a
+    /// did-it-move test cannot tell that apart from a loose handle — it would carry the pinned one
+    /// off its pin, and the next solve would drag the pin's partner back toward it, so moving one
+    /// fit point would perturb geometry nobody connected to it.
     fn carry_authored_handles(&mut self, before: &[Point]) {
+        let claimed = self.constrained_points();
         let stood = |points: &[Point], id: EntityId| {
             points
                 .iter()
@@ -4419,6 +4448,9 @@ impl Sketch {
                 .map(|point| point.at)
         };
         for (anchor, follower) in self.authored_followers() {
+            if claimed.contains(&follower) {
+                continue;
+            }
             let (Some(was), Some(now)) = (stood(before, anchor), stood(&self.points, anchor))
             else {
                 continue;
@@ -4428,15 +4460,9 @@ impl Sketch {
             if delta[0] == 0.0 && delta[1] == 0.0 {
                 continue;
             }
-            let (Some(held_before), Some(held_now)) =
-                (stood(before, follower), stood(&self.points, follower))
-            else {
+            let Some(held) = stood(&self.points, follower).map(|point| point.in_plane()) else {
                 continue;
             };
-            if held_before != held_now {
-                continue;
-            }
-            let held = held_now.in_plane();
             if let Some(index) = self.point_index(follower) {
                 self.points[index].at =
                     SketchPoint::from_continuous(held[0] + delta[0], held[1] + delta[1]);
