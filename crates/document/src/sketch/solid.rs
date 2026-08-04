@@ -1087,37 +1087,11 @@ impl SketchSolid {
             // A straight-spined slot whose rails came back as anything but segments is not a slot.
             (None, _, _) => return Err(SlotRefusal::Unrepresentable),
         };
-        // Each spine handle is pinned to a center the boundary already derives: the caps' centers
-        // are the spine's two ends, and a turning spine's center is the one both rails share. The
-        // handle is a REAL point tied by Coincident rather than the derived center itself —
-        // dragging a derived center authors the quantity behind it and does not settle, which
-        // would make the slot's own center a dead handle.
-        let handles = [
-            (placement.spine.start, start_cap),
-            (placement.spine.end, end_cap),
-        ]
-        .into_iter()
-        .chain(placement.spine.center.map(|center| (center, first_rail)))
-        .map(|(at, curve)| {
-            let derived = next
-                .sketch
-                .center_point_of(curve)
-                .ok_or(SlotRefusal::Unrepresentable)?;
-            // A handle has to be a point that can be DRAGGED, and the ordinary "reuse whatever is
-            // standing here" lookup cannot give one: this spot is already occupied by the very
-            // center being tied to, and — where two rails share a center — by its twin as well.
-            // Tying to either would assert a coincidence the drawing already keeps and leave the
-            // author no handle at all.
-            let standing = next
-                .sketch
-                .points()
-                .iter()
-                .find(|point| !next.sketch.is_derived_point(point.id) && point.at.coincides(&at))
-                .map(|point| point.id);
-            let handle = standing.unwrap_or_else(|| next.sketch.add_free_point(at));
-            Ok((handle, derived))
-        })
-        .collect::<Result<Vec<_>, SlotRefusal>>()?;
+        let handles = slot_spine_handles(
+            &mut next.sketch,
+            placement,
+            [start_cap, end_cap, first_rail],
+        )?;
         let coincidences = handles
             .iter()
             .map(|&(handle, derived)| ConstraintKind::Coincident {
@@ -1978,6 +1952,53 @@ enum RectangleFrame {
     AxisAligned,
     /// Corners stay square but the rectangle may rotate — the three-point construction.
     Oriented,
+}
+
+/// The slot's spine handles, each paired with the derived center it is to be tied to.
+///
+/// Each handle is pinned to a center the boundary already derives: the caps' centers are the
+/// spine's two ends, and a turning spine's center is the one both rails share (`curves` names the
+/// start cap, the end cap, and a rail, in that order). The handle is a REAL point tied by
+/// Coincident rather than the derived center itself — dragging a derived center authors the
+/// quantity behind it and does not settle, which would make the slot's own center a dead handle.
+fn slot_spine_handles(
+    sketch: &mut Sketch,
+    placement: &SlotPlacement,
+    curves: [SketchCurve; 3],
+) -> Result<Vec<(EntityId, EntityId)>, SlotRefusal> {
+    let [start_cap, end_cap, rail] = curves;
+    [
+        (placement.spine.start, start_cap),
+        (placement.spine.end, end_cap),
+    ]
+    .into_iter()
+    .chain(placement.spine.center.map(|center| (center, rail)))
+    .map(|(at, curve)| {
+        let derived = sketch
+            .center_point_of(curve)
+            .ok_or(SlotRefusal::Unrepresentable)?;
+        // A handle has to be a point that can be DRAGGED, and the ordinary "reuse whatever is
+        // standing here" lookup cannot give one: this spot is already occupied by the very center
+        // being tied to, and — where two rails share a center — by its twin as well. Tying to
+        // either would assert a coincidence the drawing already keeps and leave the author no
+        // handle at all.
+        let standing = sketch
+            .points()
+            .iter()
+            .find(|point| !sketch.is_derived_point(point.id) && point.at.coincides(&at))
+            .map(|point| point.id);
+        // A handle the slot MINTED outlives only the slot: nothing but its coincidence names it,
+        // so once the boundary goes the dot has no job and should not be left behind. A handle
+        // that reuses a point the author already placed keeps that point's own lifetime — the
+        // slot borrowed it, it does not own it.
+        let handle = standing.unwrap_or_else(|| {
+            let minted = sketch.add_free_point(at);
+            sketch.set_point_lifetime(minted, PointLifetime::CurveAnchored);
+            minted
+        });
+        Ok((handle, derived))
+    })
+    .collect()
 }
 
 /// Draw an Overall Slot's middle as a construction line, and return what holds it there.

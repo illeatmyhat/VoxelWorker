@@ -18,6 +18,43 @@ fn holds_a_corner_near(made: &SketchSolid, want: SketchPoint) -> bool {
     })
 }
 
+/// A slot's spine handles are the slot's, not the drawing's: deleting the boundary takes them
+/// with it instead of leaving loose dots where the slot used to be.
+#[test]
+fn deleting_a_slots_boundary_takes_its_spine_handles_with_it() {
+    let made = source()
+        .with_linear_slot(
+            ::parametric::sketch::LinearSlotKind::CenterToCenter,
+            SketchPoint::new(0, 0),
+            SketchPoint::new(6, 0),
+            SketchPoint::new(0, 1),
+            ctx(16),
+        )
+        .unwrap();
+    let mut sketch = made.sketch;
+    // The two cap centers are derived, the two handles sit on top of them, and the four boundary
+    // corners are shared by a rail and a cap.
+    assert_eq!(sketch.points().len(), 8);
+
+    for arc in sketch.arcs().iter().map(|arc| arc.id).collect::<Vec<_>>() {
+        sketch.delete_arc(arc);
+    }
+    for segment in sketch
+        .segments()
+        .iter()
+        .map(|segment| segment.id)
+        .collect::<Vec<_>>()
+    {
+        sketch.delete_segment(segment);
+    }
+
+    assert!(
+        sketch.points().is_empty(),
+        "the slot left {:?} behind",
+        sketch.points()
+    );
+}
+
 #[test]
 fn every_linear_slot_grammar_commits_two_lines_and_two_native_caps() {
     for (kind, first, second) in [
