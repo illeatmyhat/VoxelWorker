@@ -1098,6 +1098,7 @@ impl SketchSolid {
                 first: handle.min(derived),
                 second: handle.max(derived),
             });
+        slot_spine_curve(&mut next.sketch, placement, &handles)?;
         let spine_line =
             slot_spine_line(&mut next.sketch, placement, &handles, [start_cap, end_cap])?;
         let tangencies = placement
@@ -2016,6 +2017,50 @@ fn slot_spine_handles(
         Ok((handle, derived))
     })
     .collect()
+}
+
+/// Draw the slot's own centerline, cap center to cap center, as construction.
+///
+/// A slot IS a spine plus a width, and the boundary the tool emits is exactly the curve that does
+/// not contain it — so without this the centerline is a thing the author reasoned in and the
+/// drawing does not have. Every grammar draws one (owner, 2026-08-03); the Overall Slot's longer
+/// line out to the extremes is a DIFFERENT curve, answering "how long end to end" rather than
+/// "where does the middle run", and [`slot_spine_line`] still adds it on top.
+///
+/// A turning slot's centerline is an ARC, and it turns about the slot's own center rather than
+/// about anything fitted through the two ends: it takes a rail's stored sweep, which is the same
+/// signed angle because a rail is the spine offset sideways and traversal runs start cap to end
+/// cap. Reading the rail is what keeps the two concentric by construction.
+///
+/// No relation is asserted. The curve is pinned by what it is drawn from — two endpoints already
+/// tied to the caps' centers, plus a stored sweep — so a relation here would be a second authority
+/// over a shape that has no freedom left.
+fn slot_spine_curve(
+    sketch: &mut Sketch,
+    placement: &SlotPlacement,
+    handles: &[(EntityId, EntityId)],
+) -> Result<(), SlotRefusal> {
+    let [(start, _), (end, _), ..] = handles else {
+        return Err(SlotRefusal::Unrepresentable);
+    };
+    let (start, end) = (*start, *end);
+    let curve = match placement.spine.center {
+        None => sketch
+            .connect(start, end)
+            .or_else(|| sketch.segment_between(start, end)),
+        Some(_) => {
+            let SlotEdgePlacement::Arc { sweep, .. } = placement.edges[0] else {
+                // A turning spine whose rails are not arcs is not a slot.
+                return Err(SlotRefusal::Unrepresentable);
+            };
+            sketch
+                .connect_arc(start, end, sweep)
+                .or_else(|| sketch.arc_between(start, end, sweep))
+        }
+    }
+    .ok_or(SlotRefusal::Unrepresentable)?;
+    sketch.set_construction(curve);
+    Ok(())
 }
 
 /// Draw an Overall Slot's middle as a construction line, and return what holds it there.

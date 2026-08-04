@@ -390,11 +390,13 @@ mod tests {
             let SlotEdit::Document(made) = result else {
                 panic!("final click completes")
             };
-            // Four boundary curves, plus the construction line down an Overall Slot's middle.
-            let spine_line = usize::from(kind == SlotKind::Overall);
+            // Four boundary curves, plus the construction centerline every grammar draws down its
+            // middle, plus the second one an Overall Slot draws out to the extremes it was
+            // authored by.
+            let reach_line = usize::from(kind == SlotKind::Overall);
             assert_eq!(
                 made.sketch.segments().len() + made.sketch.arcs().len(),
-                4 + spine_line
+                4 + 1 + reach_line
             );
             assert!(gesture.pending.is_none());
         }

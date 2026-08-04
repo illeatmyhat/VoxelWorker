@@ -81,17 +81,18 @@ fn every_linear_slot_grammar_commits_two_lines_and_two_native_caps() {
         let made = source
             .with_linear_slot(kind, first, second, SketchPoint::new(0, 1), ctx(16))
             .unwrap();
-        // Overall draws a third line: the construction spine down its middle, which the author
-        // asked for by clicking the extremes and which never bounds the region.
-        let spine_line = usize::from(kind == ::parametric::sketch::LinearSlotKind::Overall);
-        assert_eq!(made.sketch.segments().len(), 2 + spine_line);
+        // Every grammar draws its centerline as construction. Overall draws a SECOND one, further
+        // out: the line between the extremes it was authored by, which answers a different
+        // question — how long the slot is end to end.
+        let reach_line = usize::from(kind == ::parametric::sketch::LinearSlotKind::Overall);
+        assert_eq!(made.sketch.segments().len(), 2 + 1 + reach_line);
         assert_eq!(
             made.sketch
                 .segments()
                 .iter()
                 .filter(|segment| segment.role == EntityRole::Construction)
                 .count(),
-            spine_line
+            1 + reach_line
         );
         assert_eq!(made.sketch.arcs().len(), 2);
         assert_eq!(made.sketch.region(ctx(16)).len(), 1);
@@ -127,7 +128,7 @@ fn both_arc_slots_commit_four_native_arcs_with_preview_identity() {
             ctx(16),
         )
         .unwrap();
-    assert_eq!(made.sketch.arcs().len(), 4);
+    assert_eq!(native_arcs(&made), 4);
     assert_eq!(made.sketch.region(ctx(16)).len(), 1);
     for edge in three_point.edges {
         let SlotEdgePlacement::Arc { from, to, .. } = edge else {
@@ -147,8 +148,17 @@ fn both_arc_slots_commit_four_native_arcs_with_preview_identity() {
             ctx(16),
         )
         .unwrap();
-    assert_eq!(centered.sketch.arcs().len(), 4);
+    assert_eq!(native_arcs(&centered), 4);
     assert_eq!(centered.sketch.region(ctx(16)).len(), 1);
+}
+
+/// The boundary arcs, leaving out the construction one a turning slot draws down its middle.
+fn native_arcs(made: &SketchSolid) -> usize {
+    made.sketch
+        .arcs()
+        .iter()
+        .filter(|arc| arc.role != EntityRole::Construction)
+        .count()
 }
 
 /// A slot is not four curves that happen to touch — it is four curves held together, around a
@@ -211,6 +221,82 @@ fn every_slot_grammar_commits_its_tangencies_rail_relation_and_spine() {
         .constraints()
         .iter()
         .any(|constraint| matches!(constraint.kind, ConstraintKind::Concentric { .. })));
+}
+
+/// Every grammar draws the centerline it was authored around, cap center to cap center, as
+/// construction — and a turning slot's is an ARC, turning about the slot's own center rather than
+/// cutting the corner as a chord would (owner, 2026-08-03).
+///
+/// The boundary is exactly the curve that does not contain the spine, so before this the
+/// centerline was a thing the author reasoned in and the drawing did not have.
+#[test]
+fn every_slot_grammar_draws_its_centerline_as_construction() {
+    let straight = source()
+        .with_linear_slot(
+            ::parametric::sketch::LinearSlotKind::CenterToCenter,
+            SketchPoint::new(0, 0),
+            SketchPoint::new(6, 0),
+            SketchPoint::new(0, 1),
+            ctx(16),
+        )
+        .expect("a valid center-to-center slot");
+    let line = straight
+        .sketch
+        .segments()
+        .iter()
+        .find(|segment| segment.role == EntityRole::Construction)
+        .expect("the centerline is drawn");
+    let at = |id: EntityId| {
+        straight
+            .sketch
+            .points()
+            .iter()
+            .find(|point| point.id == id)
+            .map(|point| point.at.in_plane())
+            .expect("a named point exists")
+    };
+    let ends = [at(line.from), at(line.to)];
+    for want in [[0.0, 0.0], [6.0, 0.0]] {
+        assert!(
+            ends.iter()
+                .any(|end| (end[0] - want[0]).hypot(end[1] - want[1]) < 1.0e-6),
+            "the centerline runs cap center to cap center: {ends:?}"
+        );
+    }
+
+    // The quarter-turn slot of `arc_slot`: radius 8 about the origin, so its centerline is a
+    // quarter arc of radius 8 and NOT the chord, which would fall short by nearly two and a half
+    // blocks in the middle.
+    let curved = arc_slot();
+    let spine = curved
+        .sketch
+        .arcs()
+        .iter()
+        .find(|arc| arc.role == EntityRole::Construction)
+        .expect("a turning slot's centerline is an arc");
+    let center = curved
+        .sketch
+        .points()
+        .iter()
+        .find(|point| point.id == spine.center)
+        .map(|point| point.at.in_plane())
+        .expect("an arc derives its center");
+    assert!(
+        center[0].hypot(center[1]) < 1.0e-6,
+        "the centerline turns about the slot's own center: {center:?}"
+    );
+    let radius = curved
+        .sketch
+        .points()
+        .iter()
+        .find(|point| point.id == spine.from)
+        .map(|point| point.at.in_plane())
+        .map(|from| (from[0] - center[0]).hypot(from[1] - center[1]))
+        .expect("the arc has a start");
+    assert!(
+        (radius - 8.0).abs() < 1.0e-5,
+        "the centerline runs between the cap centers, at their own radius: {radius}"
+    );
 }
 
 /// The handle an author drags to move the slot, found the way the UI finds it: the point standing
@@ -293,7 +379,13 @@ fn dragging_a_spine_end_reshapes_the_slot_instead_of_moving_it() {
         .find(|point| point.id == center)
         .map(|point| point.at.in_plane())
         .expect("the center survives its neighbour moving");
-    assert!(center_at[0].hypot(center_at[1]) < 1.0e-6, "{center_at:?}");
+    // A hundred-thousandth of a block, against an eight-block pull. The bound was ten times
+    // tighter before the centerline was drawn: a turning slot's spine is an arc, an arc derives a
+    // center, and that center joins the least-motion objective at the same spot the slot's own
+    // center sits — so the solve is pulled by one more point than it used to be. Six ten-thousandths
+    // of a VOXEL, and the claim under test is the difference between reshaping and translating an
+    // eight-block slot.
+    assert!(center_at[0].hypot(center_at[1]) < 1.0e-5, "{center_at:?}");
 }
 
 /// The width is the one freedom a slot's relations leave open, and dragging a rail is how an
@@ -313,13 +405,6 @@ fn an_overall_slot_keeps_its_extremes_on_a_construction_line() {
         )
         .expect("a valid overall slot");
 
-    let line = made
-        .sketch
-        .segments()
-        .iter()
-        .find(|segment| segment.role == EntityRole::Construction)
-        .copied()
-        .expect("the middle is drawn as a construction line");
     let position = |id: EntityId| {
         made.sketch
             .points()
@@ -328,6 +413,23 @@ fn an_overall_slot_keeps_its_extremes_on_a_construction_line() {
             .map(|point| point.at.in_plane())
             .expect("a named point exists")
     };
+    // Two construction lines run down this slot: the centerline every grammar draws, cap center to
+    // cap center, and the longer one out to the extremes that only Overall has. The one under test
+    // is the latter, picked by the span it covers rather than by being the only one.
+    let line = made
+        .sketch
+        .segments()
+        .iter()
+        .filter(|segment| segment.role == EntityRole::Construction)
+        .max_by(|first, second| {
+            let span = |segment: &Segment| {
+                let (from, to) = (position(segment.from), position(segment.to));
+                (to[0] - from[0]).hypot(to[1] - from[1])
+            };
+            span(first).total_cmp(&span(second))
+        })
+        .copied()
+        .expect("the middle is drawn as a construction line");
     let (tail, head) = (position(line.from), position(line.to));
     for end in [tail, head] {
         assert!(
