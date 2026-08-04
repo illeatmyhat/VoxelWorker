@@ -2581,7 +2581,8 @@ impl Sketch {
         let before_conics = self.conics.clone();
         // Any drag can leave a conic with nothing to shape — a hand on its control point, or a
         // settle that walked an endpoint onto it. One check covers them all.
-        let result = attempt(self).map(|stood| stood && self.every_conic_resolves());
+        let result = attempt(self)
+            .map(|stood| stood && self.every_conic_resolves() && self.every_tangent_lever_stands());
         if matches!(result, Ok(true)) {
             return result;
         }
@@ -4260,6 +4261,39 @@ impl Sketch {
     /// now that the control is a draggable handle the DRAG has to refuse it too — otherwise the
     /// curve silently disappears from the handles, the faces and the patterns while the entity
     /// stays in the document.
+    /// Whether every tangent lever still has a direction to give.
+    ///
+    /// An arm dragged exactly onto its own fit point leaves a zero-length tangent, and
+    /// [`spline_tangents`](Self::spline_tangents) reports `None` for it. That reads like a harmless
+    /// degeneracy and is not one. An authored tangent is a DIRICHLET ROW in the interpolation, so
+    /// every fit point having one is precisely what makes the tridiagonal system the identity and
+    /// the spline LOCAL — each span decided by its own two ends and their two arms. A single `None`
+    /// puts a genuine C2 row back and couples that span to the whole curve again.
+    ///
+    /// So the drag refuses, for the reason [`every_conic_resolves`](Self::every_conic_resolves)
+    /// refuses: the author cannot see the consequence, and there is no way back but to guess where
+    /// the arm stood. Checking it HERE rather than at the grab covers the settle too — a solve is
+    /// as able to walk an arm onto its point as a cursor is.
+    fn every_tangent_lever_stands(&self) -> bool {
+        self.splines.iter().all(|spline| {
+            spline.points.iter().all(|fit| {
+                let Some(handle) = spline.tangents.get(fit) else {
+                    return true;
+                };
+                let (Some(at), Some(arm)) = (
+                    self.point_in_plane(*fit),
+                    self.point_in_plane(handle.forward),
+                ) else {
+                    return true;
+                };
+                // The same arithmetic `spline_tangents` filters on, so the invariant this keeps is
+                // exactly "that function never answers `None`".
+                let tangent = [(arm[0] - at[0]) * 3.0, (arm[1] - at[1]) * 3.0];
+                tangent[0] != 0.0 || tangent[1] != 0.0
+            })
+        })
+    }
+
     fn every_conic_resolves(&self) -> bool {
         self.conics
             .iter()

@@ -857,3 +857,79 @@ fn spline_points_retarget_and_invalid_loaded_splines_repair_atomically() {
     assert_eq!(loaded.repair(ctx(32)), 1);
     assert!(loaded.splines().is_empty());
 }
+
+/// Dragging a tangent arm onto its own fit point is refused, and the drawing is left exactly as it
+/// was.
+///
+/// A zero-length arm is not a small lever, it is NO lever: `spline_tangents` filters it out, the
+/// interpolation stops treating that point as authored, and the span silently re-couples to the
+/// rest of the curve. It was reachable by an ordinary drag and cost nothing to reach — the snap
+/// makes landing exactly on the point easy rather than hard.
+#[test]
+fn an_arm_dragged_onto_its_own_fit_point_is_refused() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    sketch
+        .add_fit_point_spline(
+            &[
+                SketchPoint::new(0, 0),
+                SketchPoint::new(4, 4),
+                SketchPoint::new(8, 0),
+            ],
+            false,
+        )
+        .expect("a three-point fit spline");
+    let spline = sketch.splines()[0].clone();
+    let fit = spline.points[0];
+    let arm = spline
+        .tangents
+        .get(&fit)
+        .expect("born with a lever")
+        .forward;
+    let stood = sketch.point_in_plane(fit).expect("the fit point stands");
+    let before = sketch.point_in_plane(arm).expect("the arm stands");
+
+    let moved = sketch
+        .move_point(
+            arm,
+            SketchPoint::from_continuous(stood[0], stood[1]),
+            ctx(16),
+        )
+        .expect("the drag is answered rather than erroring");
+
+    assert!(
+        !moved,
+        "collapsing a lever onto its own point should be refused"
+    );
+    assert_eq!(
+        sketch.point_in_plane(arm),
+        Some(before),
+        "a refused drag must leave the arm where it was"
+    );
+    // The point of the refusal: every tangent stays authored, so the interpolation stays local.
+    let live = sketch.splines()[0].clone();
+    let points: Vec<[f64; 2]> = live
+        .points
+        .iter()
+        .filter_map(|id| sketch.point_in_plane(*id))
+        .collect();
+    let far = points.len() - 1;
+    let mut moved_far = points.clone();
+    moved_far[far] = [40.0, 30.0];
+    let near = ::parametric::sketch::fit_point_spline(
+        &points,
+        &vec![Some([1.0, 1.0]); points.len()],
+        false,
+    )
+    .expect("the spline interpolates");
+    let hauled = ::parametric::sketch::fit_point_spline(
+        &moved_far,
+        &vec![Some([1.0, 1.0]); moved_far.len()],
+        false,
+    )
+    .expect("the spline interpolates");
+    assert_eq!(
+        format!("{:?}", near.pieces[0].control),
+        format!("{:?}", hauled.pieces[0].control),
+        "with every tangent authored the first span must not feel the far end"
+    );
+}
