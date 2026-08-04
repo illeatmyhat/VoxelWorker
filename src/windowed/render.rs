@@ -3945,6 +3945,9 @@ impl WindowedState {
                     ui::panel::PickRequirement::Circle => {
                         "nothing under the cursor — pick a circle"
                     }
+                    ui::panel::PickRequirement::PointOrCurve => {
+                        "nothing under the cursor — pick a point or a curve"
+                    }
                 });
                 return;
             }
@@ -4048,11 +4051,20 @@ impl WindowedState {
         cursor_x: f64,
         cursor_y: f64,
     ) -> Option<ui::panel::SketchEntity> {
-        if slot == ui::panel::PickRequirement::Point {
-            return self
+        // A vertex under the cursor beats an edge under the same cursor — the priority the rest of
+        // sketch picking already uses, since the vertex is the more specific thing. So the
+        // either-kind slot asks for a point first and only falls through to the curves on a miss.
+        if matches!(
+            slot,
+            ui::panel::PickRequirement::Point | ui::panel::PickRequirement::PointOrCurve
+        ) {
+            let vertex = self
                 .sketch_vertex_at(cursor_x, cursor_y)
                 .and_then(|index| self.sketch_point_ids.get(index).copied())
                 .map(ui::panel::SketchEntity::Point);
+            if vertex.is_some() || slot == ui::panel::PickRequirement::Point {
+                return vertex;
+            }
         }
         let cursor = egui::Pos2::new(cursor_x as f32, cursor_y as f32);
         let segment = self
@@ -6475,7 +6487,7 @@ fn nearest_sketch_edge_for_requirement(
         ui::panel::PickRequirement::Segment => segment.map(|(hit, _)| hit),
         ui::panel::PickRequirement::Arc => arc.map(|(hit, _)| hit),
         ui::panel::PickRequirement::Circle => circle.map(|(hit, _)| hit),
-        ui::panel::PickRequirement::Curve => {
+        ui::panel::PickRequirement::Curve | ui::panel::PickRequirement::PointOrCurve => {
             nearest_sketch_edge_from_candidates([segment, arc, circle])
         }
         ui::panel::PickRequirement::CircularCurve => {

@@ -43,6 +43,9 @@ pub enum SlotKind {
     Segment,
     Curve,
     CircularCurve,
+    /// Either — the verb asserts a different relation depending on which arrives. Coincident is
+    /// the only one: a point on a point and a point on a curve are the same claim to the author.
+    PointOrCurve,
 }
 
 /// The exact kind the current gesture asks the shell to resolve before comparing distances.
@@ -54,6 +57,7 @@ pub enum PickRequirement {
     CircularCurve,
     Arc,
     Circle,
+    PointOrCurve,
 }
 
 impl PickRequirement {
@@ -72,6 +76,13 @@ impl PickRequirement {
                 )
                 | (Self::Arc, SketchEntity::Arc(_))
                 | (Self::Circle, SketchEntity::Circle(_))
+                | (
+                    Self::PointOrCurve,
+                    SketchEntity::Point(_)
+                        | SketchEntity::Segment(_)
+                        | SketchEntity::Arc(_)
+                        | SketchEntity::Circle(_)
+                )
         )
     }
 
@@ -83,6 +94,7 @@ impl PickRequirement {
             Self::CircularCurve => "an arc or circle",
             Self::Arc => "an arc",
             Self::Circle => "a circle",
+            Self::PointOrCurve => "a point or a curve",
         }
     }
 }
@@ -94,6 +106,7 @@ impl From<SlotKind> for PickRequirement {
             SlotKind::Segment => Self::Segment,
             SlotKind::Curve => Self::Curve,
             SlotKind::CircularCurve => Self::CircularCurve,
+            SlotKind::PointOrCurve => Self::PointOrCurve,
         }
     }
 }
@@ -106,6 +119,7 @@ impl SlotKind {
             SlotKind::Segment => "a line",
             SlotKind::Curve => "a curve",
             SlotKind::CircularCurve => "an arc or circle",
+            SlotKind::PointOrCurve => "a point or a curve",
         }
     }
 }
@@ -126,7 +140,11 @@ pub enum ConstraintVerb {
     Fix,
     /// Both coordinates of the picked point stay on the whole-voxel lattice.
     Quantize,
-    /// Two picked points occupy one place.
+    /// A picked point occupies one place with a second point, or STANDS ON a picked curve.
+    ///
+    /// One verb, two relations. Fusion spells both as coincident and so does the badge, because
+    /// the author is making the same claim either way — put this here. The kinds stay separate
+    /// underneath because they pin a different number of coordinates.
     Coincident,
     /// Two picked segments run the same way.
     Parallel,
@@ -158,7 +176,9 @@ impl ConstraintVerb {
         match self {
             ConstraintVerb::HorizontalOrVertical => &[SlotKind::Segment],
             ConstraintVerb::Fix | ConstraintVerb::Quantize => &[SlotKind::Point],
-            ConstraintVerb::Coincident => &[SlotKind::Point, SlotKind::Point],
+            // The point first: the gesture reads "put THIS on THAT", and the second slot is what
+            // decides which of the two relations is asserted.
+            ConstraintVerb::Coincident => &[SlotKind::Point, SlotKind::PointOrCurve],
             ConstraintVerb::Parallel
             | ConstraintVerb::Perpendicular
             | ConstraintVerb::Equal
@@ -184,7 +204,7 @@ impl ConstraintVerb {
             ConstraintVerb::HorizontalOrVertical => "Horizontal / Vertical — then pick a line",
             ConstraintVerb::Fix => "Fix — then pick a point",
             ConstraintVerb::Quantize => "Quantize — then pick a point to keep on the voxel lattice",
-            ConstraintVerb::Coincident => "Coincident — then pick two points",
+            ConstraintVerb::Coincident => "Coincident — then pick a point and what to put it on",
             ConstraintVerb::Parallel => "Parallel — then pick two lines",
             ConstraintVerb::Perpendicular => "Perpendicular — then pick two lines",
             ConstraintVerb::Equal => "Equal — then pick two lines",
@@ -387,6 +407,9 @@ impl ArmedConstraint {
                 PickRequirement::CircularCurve => "pick an arc or circle — lines have no center",
                 PickRequirement::Arc => "pick another arc",
                 PickRequirement::Circle => "pick another circle",
+                // Nothing a sketch holds is refused by this slot, so the message is unreachable
+                // rather than merely unlikely. It stays honest in case a fifth entity kind lands.
+                PickRequirement::PointOrCurve => "that is not a point or a curve",
             });
         }
         if self.picked.contains(&candidate) {
@@ -463,10 +486,33 @@ impl ArmedConstraint {
                 }),
                 SketchEntity::Segment(_) | SketchEntity::Arc(_) | SketchEntity::Circle(_) => None,
             },
-            ConstraintVerb::Coincident => {
-                let (first, second) = point_pair()?;
-                Some(ConstraintKind::Coincident { first, second })
-            }
+            ConstraintVerb::Coincident => match (self.picked.first()?, self.picked.get(1)?) {
+                (SketchEntity::Point(first), SketchEntity::Point(second)) => {
+                    Some(ConstraintKind::Coincident {
+                        first: *first,
+                        second: *second,
+                    })
+                }
+                (SketchEntity::Point(point), SketchEntity::Segment(id)) => {
+                    Some(ConstraintKind::PointOnCurve {
+                        point: *point,
+                        curve: SketchCurve::Segment(*id),
+                    })
+                }
+                (SketchEntity::Point(point), SketchEntity::Arc(id)) => {
+                    Some(ConstraintKind::PointOnCurve {
+                        point: *point,
+                        curve: SketchCurve::Arc(*id),
+                    })
+                }
+                (SketchEntity::Point(point), SketchEntity::Circle(id)) => {
+                    Some(ConstraintKind::PointOnCurve {
+                        point: *point,
+                        curve: SketchCurve::Circle(*id),
+                    })
+                }
+                _ => None,
+            },
             ConstraintVerb::Parallel => {
                 let (first, second) = segment_pair()?;
                 Some(ConstraintKind::Parallel { first, second })
@@ -633,6 +679,60 @@ mod tests {
         let to = sketch.add_free_point(SketchPoint::from_continuous(8.0, 3.0));
         let segment = sketch.connect(from, to).expect("two distinct points join");
         (sketch, from, to, segment)
+    }
+
+    /// Coincident's second pick may be a CURVE, and then it asserts point-on-curve.
+    ///
+    /// One verb, two relations, because to the author it is one claim: put this here. Fusion
+    /// spells it the same way, and the badge already did — this is the gesture catching up.
+    #[test]
+    fn coincident_takes_a_curve_for_its_second_pick_and_stands_the_point_on_it() {
+        let (mut sketch, from, _, segment) = one_segment();
+        let loose = sketch.add_free_point(SketchPoint::from_continuous(40.0, 17.0));
+
+        let mut armed = ArmedConstraint::new(ConstraintVerb::Coincident);
+        assert_eq!(armed.wants(), Some(PickRequirement::Point));
+        assert_eq!(
+            armed.offer(SketchEntity::Point(loose), &sketch),
+            Offer::Taken
+        );
+        // The second slot admits either kind, and says so.
+        assert_eq!(armed.wants(), Some(PickRequirement::PointOrCurve));
+        assert_eq!(
+            armed.offer(SketchEntity::Segment(segment), &sketch),
+            Offer::Complete
+        );
+        assert_eq!(
+            armed.kind(&sketch),
+            Some(ConstraintKind::PointOnCurve {
+                point: loose,
+                curve: SketchCurve::Segment(segment),
+            })
+        );
+
+        // A point in that same slot still means what it always meant.
+        let mut pair = ArmedConstraint::new(ConstraintVerb::Coincident);
+        pair.offer(SketchEntity::Point(loose), &sketch);
+        pair.offer(SketchEntity::Point(from), &sketch);
+        assert_eq!(
+            pair.kind(&sketch),
+            Some(ConstraintKind::Coincident {
+                first: loose,
+                second: from,
+            })
+        );
+    }
+
+    /// The FIRST pick is still a point only: "put this line on that point" is not the gesture.
+    #[test]
+    fn coincident_still_refuses_a_curve_for_its_first_pick() {
+        let (sketch, _, _, segment) = one_segment();
+        let mut armed = ArmedConstraint::new(ConstraintVerb::Coincident);
+        assert_eq!(
+            armed.offer(SketchEntity::Segment(segment), &sketch),
+            Offer::Refused("that is not a point")
+        );
+        assert_eq!(armed.wants(), Some(PickRequirement::Point));
     }
 
     /// One pick fills the only slot, so the gesture completes on it.
