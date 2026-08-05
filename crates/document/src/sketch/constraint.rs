@@ -799,16 +799,18 @@ impl PreparedProblem {
     pub(super) fn drag_together(
         &self,
         hands: &[(EntityId, [f64; 2])],
+        was: &[(EntityId, [f64; 2])],
     ) -> Result<parametric::sketch::DragOutcome, parametric::sketch::RequestError> {
-        let hands = hands
-            .iter()
-            .map(|(held, at)| {
-                self.point(*held)
-                    .map(|point| (point, *at))
-                    .ok_or(parametric::sketch::RequestError::UnknownPoint)
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        self.problem.drag_together(&hands)
+        let local = |set: &[(EntityId, [f64; 2])]| {
+            set.iter()
+                .map(|(held, at)| {
+                    self.point(*held)
+                        .map(|point| (point, *at))
+                        .ok_or(parametric::sketch::RequestError::UnknownPoint)
+                })
+                .collect::<Result<Vec<_>, _>>()
+        };
+        self.problem.drag_together(&local(hands)?, &local(was)?)
     }
 
     /// An arc takes no part here. Its shape is its three placed points (ADR 0038), and those

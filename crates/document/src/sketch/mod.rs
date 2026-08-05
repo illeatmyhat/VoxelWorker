@@ -2573,13 +2573,18 @@ impl Sketch {
         };
         hands.extend(self.handles_a_widening_must_hold(curve, &hands));
         self.drag_or_leave_it_alone(|sketch| {
+            // Where they stood, read before they are written down. See `settle_under_the_hands`.
+            let was: Vec<(EntityId, [f64; 2])> = hands
+                .iter()
+                .filter_map(|(point, _)| Some((*point, sketch.point_in_plane(*point)?)))
+                .collect();
             for (point, to) in &hands {
                 if let Some(index) = sketch.point_index(*point) {
                     sketch.points[index].at = SketchPoint::from_continuous(to[0], to[1]);
                 }
             }
             sketch.sync_derived_points();
-            sketch.settle_under_the_hands(&hands, context)
+            sketch.settle_under_the_hands(&hands, &was, context)
         })
     }
 
@@ -2648,7 +2653,7 @@ impl Sketch {
                         }
                     }
                     sketch.sync_derived_points();
-                    stood = sketch.settle_under_the_hands(&asked.pulled, context)?;
+                    stood = sketch.settle_under_the_hands(&asked.pulled, &[], context)?;
                     if !stood {
                         break;
                     }
@@ -2682,8 +2687,8 @@ impl Sketch {
         );
         // Minted BEFORE the rollback point, so a refused drag restores a drawing that still has the
         // grip in it and the same two lines take it away either way.
-        let stood =
-            self.drag_or_leave_it_alone(|sketch| sketch.settle_under_the_hands(&hands, context));
+        let stood = self
+            .drag_or_leave_it_alone(|sketch| sketch.settle_under_the_hands(&hands, &[], context));
         self.constraints
             .retain(|constraint| constraint.id != holding);
         self.points.retain(|point| point.id != grip);
@@ -2957,13 +2962,18 @@ impl Sketch {
             return Ok(false);
         }
         self.drag_or_leave_it_alone(|sketch| {
+            // Where they stood, read before they are written down. See `settle_under_the_hands`.
+            let was: Vec<(EntityId, [f64; 2])> = hands
+                .iter()
+                .filter_map(|(point, _)| Some((*point, sketch.point_in_plane(*point)?)))
+                .collect();
             for (point, to) in &hands {
                 if let Some(index) = sketch.point_index(*point) {
                     sketch.points[index].at = SketchPoint::from_continuous(to[0], to[1]);
                 }
             }
             sketch.sync_derived_points();
-            sketch.settle_under_the_hands(&hands, context)
+            sketch.settle_under_the_hands(&hands, &was, context)
         })
     }
 
@@ -3073,7 +3083,16 @@ impl Sketch {
         // solve path guards against, arriving one step earlier.
         self.carry_authored_handles(&before);
         self.sync_derived_points();
-        self.settle_under_the_hands(&hands, context)
+        let was: Vec<(EntityId, [f64; 2])> = hands
+            .iter()
+            .filter_map(|(point, _)| {
+                before
+                    .iter()
+                    .find(|stood| stood.id == *point)
+                    .map(|stood| (*point, stood.at.in_plane()))
+            })
+            .collect();
+        self.settle_under_the_hands(&hands, &was, context)
     }
 
     /// Whether the standing constraint system is met by the drawing exactly as it stands, with
@@ -3626,11 +3645,30 @@ impl Sketch {
     ///
     /// A drag that IS achievable is unaffected: stage one meets the pull exactly, so stage two
     /// starts at a solution and moves nothing.
+    /// `was` names where the hands stood before the caller wrote them down, so the rigidity
+    /// preference can be measured on the shape it is trying to keep rather than on the one the
+    /// hand has already bent. A caller that has not moved anything yet passes nothing, and every
+    /// hand it did not name is read where it currently stands — which, for a caller that moved
+    /// nothing, is where it stood. What goes down is therefore always the WHOLE hand set, and the
+    /// kernel leans on that: knowing what the hand has hold of is how it tells a corner being
+    /// pulled from a whole rail being moved.
     fn settle_under_the_hands(
         &mut self,
         hands: &[(EntityId, [f64; 2])],
+        was: &[(EntityId, [f64; 2])],
         context: parametric::EvaluationContext,
     ) -> Result<bool, SketchEvaluationError> {
+        let was: Vec<(EntityId, [f64; 2])> = hands
+            .iter()
+            .filter_map(|(point, _)| {
+                let stood = was
+                    .iter()
+                    .find(|(named, _)| named == point)
+                    .map(|(_, at)| *at)
+                    .or_else(|| self.point_in_plane(*point))?;
+                Some((*point, stood))
+            })
+            .collect();
         // Only the part of the drawing the hands can reach takes part. What the rest of the plane
         // holds cannot change the answer, but it does change what the answer COSTS: the kernel
         // prices a solve by how many free coordinates and drawn edges it carries, and its dense
@@ -3659,7 +3697,7 @@ impl Sketch {
         }
         let prepared = constraint::prepare_scoped(self, &standing, Some(context), Some(&reach))
             .map_err(map_prepare_evaluation_error)?;
-        let (settled, accepted) = match prepared.drag_together(hands) {
+        let (settled, accepted) = match prepared.drag_together(hands, &was) {
             Ok(parametric::sketch::DragOutcome::Accepted(settled)) => (settled, true),
             Ok(parametric::sketch::DragOutcome::Rejected(settled)) => (settled, false),
             Err(_) => return Ok(false),

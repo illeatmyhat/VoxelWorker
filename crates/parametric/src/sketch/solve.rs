@@ -284,6 +284,11 @@ struct ArcCenter {
     center: PointId,
     from: PointId,
     to: PointId,
+    /// The arc's radius as a solver COLUMN, the way a circle has always had one.
+    ///
+    /// `None` only for an arc whose seed geometry is degenerate — an end sitting on the center —
+    /// where there is no positive radius to name. That arc keeps the single equal-radius row.
+    radius: Option<ParameterId>,
 }
 
 /// One scalar represented in a topology-safe solver coordinate.
@@ -420,21 +425,52 @@ impl ProblemBuilder {
 
     /// Add an arc running counter-clockwise from `from` to `to` about `center`.
     ///
-    /// All three are ordinary points the caller placed. The arc adds no scalar parameter and asks
-    /// for no sweep: what it adds is one equal-radius residual, which is how the center's freedom
-    /// along the chord is spent rather than left as a gauge the solve cannot see.
+    /// All three are ordinary points the caller placed (ADR 0038), and the arc names its RADIUS as
+    /// a solver column beside them — seeded from those points, spent on two rows saying each end
+    /// stands that far from the center.
+    ///
+    /// The column costs nothing in freedom. Six coordinates and one equal-radius row is five, and
+    /// so is six coordinates, one column and two rows. What it buys is a name: the radius stops
+    /// being a nonlinear function of four coordinates that the solve can only reach through them,
+    /// and becomes a quantity a preference can hold, a dimension can pin, and a drag can pull. A
+    /// circle has always had one; this is the arc stopping being the exception.
+    ///
+    /// It is SOLVER-INTERNAL. Nothing writes it back, because the document derives an arc's radius
+    /// from its points on demand and never stores it beside them — which is what ADR 0038 means by
+    /// a derived quantity, and why naming it here does not persist one. `planegcs` reaches the same
+    /// arrangement from the other side, its `Arc` inheriting `rad` from its `Circle`.
     pub fn add_arc(&mut self, center: PointId, from: PointId, to: PointId) -> ArcId {
         let key = ArcId {
             owner: self.owner,
             index: self.arc_centers.len(),
         };
+        let seed = self.arc_radius_seed(center, from, to);
+        let radius = seed.and_then(|seed| self.add_free_positive_radius(seed).ok());
         self.arc_centers.push(ArcCenter {
             key,
             center,
             from,
             to,
+            radius,
         });
         key
+    }
+
+    /// The radius to seed a new arc's column with: the mean of what its two ends currently say,
+    /// so neither end is privileged when they disagree — and they do, mid-drag, which is exactly
+    /// when the seed is read.
+    ///
+    /// `None` where either end is close enough to the center that no positive radius is meant.
+    fn arc_radius_seed(&self, center: PointId, from: PointId, to: PointId) -> Option<f64> {
+        let at = |id: PointId| {
+            (id.owner == self.owner)
+                .then(|| self.points.get(id.index).map(|point| point.at))
+                .flatten()
+        };
+        let (center, from, to) = (at(center)?, at(from)?, at(to)?);
+        let reach = |end: [f64; 2]| (end[0] - center[0]).hypot(end[1] - center[1]);
+        let mean = f64::midpoint(reach(from), reach(to));
+        (mean.is_finite() && mean > 0.0).then_some(mean)
     }
 
     /// Add a whole circle with an authored center point and an intrinsic radius parameter.
@@ -1871,25 +1907,23 @@ mod tests {
         assert_eq!(relation.residual_count(), 5);
         arcs.add_constraint(relation);
         let analysis = arcs.finish().unwrap().analyze();
-        // Eight points, so sixteen coordinates, and seven rows stand — five for the symmetry and
-        // one equal-radius row per arc (ADR 0038).
+        // Eight points and two arc radii, so eighteen columns, against nine rows — five for the
+        // symmetry and two per arc, each end standing its own radius from its center. All nine are
+        // independent, leaving nine freedoms.
         //
-        // Only FIVE of the seven are independent, and both dependencies are the drawing's rather
-        // than the relation's. A mirror already makes the two radii agree, so the second arc's row
-        // is implied by the first's and the symmetry. And these particular numbers settle into a
-        // COLLAPSE: each arc's two ends land on each other about a millionth of a unit apart, and
-        // an arc with no sweep has an equal-radius row whose Jacobian degenerates too. Sixteen
-        // coordinates less five independent equations is eleven freedoms.
+        // These particular numbers settle into a COLLAPSE: each arc's two ends land on each other
+        // about a millionth of a unit apart. That used to cost the reading two of its rows. An arc
+        // with no sweep has an equal-radius row `|from - c| = |to - c|` that says nothing once the
+        // two ends coincide, and its Jacobian degenerates with it, so the rank came back five and
+        // the freedom eleven. Named, the radius keeps the pair honest: `|from - c| = r` and
+        // `|to - c| = r` still constrain the ends even where the difference between them does not,
+        // and the reading no longer depends on the drawing being non-degenerate to be right.
         //
-        // The collapse is the geometry, not the solver — the same three numbers collapsed to the
-        // same place before the solver took least-norm steps. What changed is that it now stops
-        // three ten-millionths from the degeneracy instead of two millionths, near enough for the
-        // rank reading to see the second dependency it was previously just missing. This test is
-        // about row counts and rank, so a degenerate answer serves it; nothing here draws.
-        assert_eq!(
-            (analysis.witness_rank, analysis.degrees_of_freedom),
-            (7, 11)
-        );
+        // The freedom itself is unchanged, which is the point — a column and a row per arc net to
+        // nothing. Sixteen coordinates less seven rows would also have been nine, had the rank
+        // reading been able to see it. This test is about row counts and rank, so a degenerate
+        // answer serves it; nothing here draws.
+        assert_eq!((analysis.witness_rank, analysis.degrees_of_freedom), (9, 9));
     }
 
     #[test]
@@ -2054,6 +2088,7 @@ mod tests {
             Rigidity::Preferred {
                 anchored: &[lower_center, upper_center],
                 flexible_curves: &[SketchCurve::Segment(first), SketchCurve::Segment(second)],
+                was: &[],
             },
         )
         .unwrap();
@@ -2311,7 +2346,8 @@ pub enum RequestError {
 }
 
 /// Whether the system carries the **rigidity regularizer**: one row per edge and axis asking that
-/// the edge's span come out of the solve as it went in.
+/// the edge's span come out of the solve as it went in, plus one per curve whose shape is a scalar
+/// rather than a span — see [`ScalarHold`].
 ///
 /// A relation should have a small blast radius — geometry it does not name should move as little
 /// as it can, and when it must move, it should move as a piece. Minimizing each point's
@@ -2341,6 +2377,21 @@ enum Rigidity<'a> {
     Preferred {
         anchored: &'a [PointId],
         flexible_curves: &'a [SketchCurve],
+        /// Where the hand's own points stood BEFORE it moved them, and nothing else.
+        ///
+        /// A preference describes the shape being PRESERVED, so it has to be measured on the
+        /// drawing that still has that shape. A drag writes its hands down before it solves, so by
+        /// the time the preference is built the drawing is already distorted around the one point
+        /// that led — and a preference read from there asks to keep the distortion.
+        ///
+        /// Spans survived that only by luck: a span whose end is the hand becomes its own answer,
+        /// so it stops asking for anything rather than asking for the wrong thing. An arc's radius
+        /// has no such luck. Measured after a center drag, its two ends disagree about how far
+        /// away they are, and the average of the two is a radius NEITHER end has — an invented
+        /// target the solve then rebuilds the whole arc around.
+        ///
+        /// Only the hands need naming. Every other point is where it always was.
+        was: &'a [(PointId, [f64; 2])],
     },
 }
 
@@ -2349,6 +2400,25 @@ struct EdgeSpan {
     from: usize,
     to: usize,
     span: [f64; 2],
+}
+
+/// One curve's SHAPE parameter held at the value it went into the solve with — a segment's span
+/// row's counterpart for the curves whose shape is a scalar rather than a displacement.
+///
+/// This is the whole of what the rigidity preference means for an arc or a circle. A segment says
+/// "keep my span"; a curve with a radius column says "keep my radius", and both let the curve
+/// travel for free while pricing any change of shape. Nothing here is arc-specific: it holds every
+/// free scalar the problem carries, because every one of them is some curve's shape.
+///
+/// The row is on the COLUMN, not on a distance computed from four coordinates. That is why it is
+/// worth having the column at all — the hold is linear, exactly conditioned, and cannot fight the
+/// geometry through a badly-scaled derivative. It reads in voxels, like a span row, because
+/// [`parameter_coordinate`] keeps a radius in voxels; the two preferences are therefore directly
+/// comparable and a drag trades one against the other at par.
+#[derive(Debug, Clone, Copy)]
+struct ScalarHold {
+    slot: usize,
+    at: f64,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -2480,6 +2550,8 @@ struct Residuals<'a> {
     resolved: Vec<Resolved>,
     /// Every author-drawn edge span to preserve during the preference pass, absent in exact mode.
     rigidity: Vec<EdgeSpan>,
+    /// Every curve's scalar shape held through that same pass. See [`ScalarHold`].
+    scalars: Vec<ScalarHold>,
     /// Anchored points held at their starting place through the preference pass.
     holds: Vec<PointHold>,
     /// Whole-coordinate values at the start of this pass; anchored values remain here unchanged.
@@ -2488,9 +2560,26 @@ struct Residuals<'a> {
     free: Vec<usize>,
 }
 
+/// A scalar's SOLVER COORDINATE, which for a length is the length itself.
+///
+/// The identity is load-bearing, not laziness. A solve picks, among the corrections that satisfy
+/// its rows, the SHORTEST one — and "shortest" is measured in whatever coordinates the columns are
+/// written in. That makes the transform a statement about relative cost: a coordinate whose
+/// derivative is large is a coordinate the solve will spend first, because a little of it goes a
+/// long way. A radius held as `ln r` has derivative `r` in every row that reads it, so a forty-
+/// voxel arc's radius is forty times cheaper than moving any of its points, and the solve pays with
+/// the radius every time. Rescaling one coordinate silently re-prices the whole drawing.
+///
+/// Held as the radius itself, a voxel of radius costs the same as a voxel of travel, which is the
+/// only exchange rate a drag can be reasoned about in. `planegcs` and `SolveSpace` both carry a plain
+/// radius for the same reason.
+///
+/// Positivity, which the logarithm used to guarantee, comes instead from the clamp in
+/// [`physical_parameter_value`] and from the geometry: every row that reads a radius equates it to
+/// a distance, and a distance cannot pull it below zero.
 fn parameter_coordinate(parameter: Parameter) -> f64 {
     match parameter.kind {
-        ParameterKind::PositiveRadius => parameter.stored.ln(),
+        ParameterKind::PositiveRadius => parameter.stored,
     }
 }
 
@@ -2501,10 +2590,9 @@ fn physical_parameter_value(parameter: Parameter, coordinate: f64) -> f64 {
         return parameter.stored;
     }
     match parameter.kind {
-        ParameterKind::PositiveRadius => coordinate
-            .clamp(min_exact_positive().ln(), max_exact_positive().ln())
-            .exp()
-            .clamp(min_exact_positive(), max_exact_positive()),
+        ParameterKind::PositiveRadius => {
+            coordinate.clamp(min_exact_positive(), max_exact_positive())
+        }
     }
 }
 
@@ -2648,8 +2736,9 @@ impl<'a> Residuals<'a> {
                 })
                 .collect::<Vec<_>>()
         };
-        let (rigidity, holds, mut free) = match rigidity {
+        let (rigidity, scalars, holds, mut free) = match rigidity {
             Rigidity::Ignored => (
+                Vec::new(),
                 Vec::new(),
                 Vec::new(),
                 (0..point_coordinates).collect::<Vec<_>>(),
@@ -2657,8 +2746,15 @@ impl<'a> Residuals<'a> {
             Rigidity::Preferred {
                 anchored,
                 flexible_curves,
+                was,
             } => {
                 let at = |slot: usize| [base[slot * 2], base[slot * 2 + 1]];
+                // The drawing as it stood before the hand — see [`Rigidity::Preferred::was`].
+                let shape = |slot: usize| {
+                    was.iter()
+                        .find(|(point, _)| point.index == slot)
+                        .map_or_else(|| at(slot), |(_, stood)| *stood)
+                };
                 let flexible_segment = |index| {
                     flexible_curves.iter().any(
                         |curve| matches!(curve, SketchCurve::Segment(segment) if segment.index == index),
@@ -2684,7 +2780,7 @@ impl<'a> Residuals<'a> {
                             .map(|(_, arc)| (arc.from.index, arc.to.index)),
                     )
                     .map(|(from, to)| {
-                        let (tail, head) = (at(from), at(to));
+                        let (tail, head) = (shape(from), shape(to));
                         EdgeSpan {
                             from,
                             to,
@@ -2692,11 +2788,83 @@ impl<'a> Residuals<'a> {
                         }
                     })
                     .collect();
+                // Every free scalar is some curve's shape, so every one is held. See
+                // [`ScalarHold`] for why this is the arc's and the circle's span row.
+                //
+                // An arc's radius is measured off the drawing rather than read off the column,
+                // because the column was seeded after the hand landed. A flexible arc is skipped
+                // exactly as a flexible segment's span is: that curve is the one being reshaped.
+                // `was` names the hands. Membership is the question every rule below asks:
+                // what the hand has hold of is what the gesture is authoring, and a preference
+                // must not price the very thing the author is setting.
+                let in_hand = |point: PointId| was.iter().any(|(held, _)| *held == point);
+                let mut scalars: Vec<ScalarHold> = Vec::new();
+                let mut spoken_for: Vec<usize> = Vec::new();
+                for (index, arc) in problem.arc_centers.iter().enumerate() {
+                    let Some(radius) = arc.radius else { continue };
+                    let Some(slot) = point_coordinates.checked_add(radius.index) else {
+                        continue;
+                    };
+                    spoken_for.push(slot);
+                    // NOT `flexible_arc`. Loosening is about the chord, and an arc grabbed by
+                    // one end keeps its radius. Only a gesture holding the arc ENTIRE is authoring
+                    // that radius, and then the hands say what it becomes and a hold could only
+                    // fight them.
+                    let _ = index;
+                    if [arc.center, arc.from, arc.to].iter().copied().all(in_hand) {
+                        continue;
+                    }
+                    // CONCENTRIC arcs are one rail family, and the gap between them is a width —
+                    // exactly the freedom a slot keeps on purpose. Holding each rail's radius
+                    // holds that gap by the back door, so widening one rail has to buy its way
+                    // past every other, and the drawing settles by splitting the difference
+                    // instead of moving the rail it was told to move. Measured on a curved slot
+                    // pulled two voxels out, the far rail crept 0.29 in; unheld, it stays put and
+                    // the width answers the pull exactly. A lone arc — a slot's cap — keeps its
+                    // hold, which is what makes a straight slot widen by just what was asked.
+                    // ...but only when the gesture has hold of a whole rail. One end in hand is a
+                    // corner being pulled, and then the family's radii are the shape being kept;
+                    // both ends is the rail itself being moved, and then they are the shape being
+                    // authored. The same arc, told apart by how much of it the hand has.
+                    let family_is_in_hand = problem.arc_centers.iter().any(|other| {
+                        other.center == arc.center && in_hand(other.from) && in_hand(other.to)
+                    });
+                    let concentric = problem
+                        .arc_centers
+                        .iter()
+                        .filter(|other| other.center == arc.center)
+                        .count()
+                        > 1;
+                    if concentric && family_is_in_hand {
+                        continue;
+                    }
+                    let hub = shape(arc.center.index);
+                    let reach = |end: [f64; 2]| (end[0] - hub[0]).hypot(end[1] - hub[1]);
+                    let at =
+                        f64::midpoint(reach(shape(arc.from.index)), reach(shape(arc.to.index)));
+                    if at.is_finite() && at > 0.0 {
+                        scalars.push(ScalarHold { slot, at });
+                    }
+                }
+                // A circle's radius is authored rather than derived from points a hand can move,
+                // so its own coordinate is already the value to keep.
+                for (index, parameter) in problem.parameters.iter().enumerate() {
+                    let Some(slot) = point_coordinates.checked_add(index) else {
+                        continue;
+                    };
+                    if !parameter.free || spoken_for.contains(&slot) {
+                        continue;
+                    }
+                    if let Some(stood) = base.get(slot) {
+                        scalars.push(ScalarHold { slot, at: *stood });
+                    }
+                }
                 let held: Vec<_> = anchored.iter().map(|point| point.index).collect();
                 // An anchored point is removed from the free set outright, so nothing has to hold
                 // it with a row. `holds` stays for the case a later pass wants a soft anchor.
                 (
                     spans,
+                    scalars,
                     Vec::new(),
                     (0..point_coordinates)
                         .filter(|index| !held.contains(&(index / 2)))
@@ -2709,6 +2877,7 @@ impl<'a> Residuals<'a> {
             problem,
             resolved,
             rigidity,
+            scalars,
             holds,
             base,
             free,
@@ -2726,6 +2895,22 @@ impl<'a> Residuals<'a> {
             })
             .collect()
     }
+    /// A scalar parameter's PHYSICAL value out of a widened coordinate vector. The transform is
+    /// the same one every other reader goes through, so a finite-difference Jacobian sees the
+    /// dependency by the identical route.
+    fn scalar(&self, parameter: ParameterId, whole: &[f64]) -> f64 {
+        let Some(specification) = self.problem.parameters.get(parameter.index) else {
+            return 0.0;
+        };
+        let slot = self
+            .problem
+            .points
+            .len()
+            .saturating_mul(2)
+            .saturating_add(parameter.index);
+        physical_parameter_value(*specification, whole.get(slot).copied().unwrap_or_default())
+    }
+
     fn widen(&self, parameters: &[f64]) -> Vec<f64> {
         let mut whole = self.base.clone();
         for (parameter, index) in parameters.iter().zip(&self.free) {
@@ -2745,8 +2930,14 @@ impl ResidualSystem for Residuals<'_> {
             .iter()
             .map(|constraint| constraint.relation.residual_count())
             .sum::<usize>()
-            + self.problem.arc_centers.len()
+            + self
+                .problem
+                .arc_centers
+                .iter()
+                .map(|arc| if arc.radius.is_some() { 2 } else { 1 })
+                .sum::<usize>()
             + self.rigidity.len() * 2
+            + self.scalars.len()
             + self.holds.len() * 2
     }
     #[allow(clippy::too_many_lines)]
@@ -2960,9 +3151,20 @@ impl ResidualSystem for Residuals<'_> {
         // the least-squares system cannot see, and a rank-deficient column is worse than a row.
         for arc in &self.problem.arc_centers {
             let (center, from, to) = (at(arc.center.index), at(arc.from.index), at(arc.to.index));
-            into[row] = (from[0] - center[0]).hypot(from[1] - center[1])
-                - (to[0] - center[0]).hypot(to[1] - center[1]);
-            row += 1;
+            let reach = |end: [f64; 2]| (end[0] - center[0]).hypot(end[1] - center[1]);
+            // Two rows against the arc's own radius column where it has one. Subtract them and the
+            // equal-radius condition comes back exactly, so everything that reads an arc through
+            // its chord bisector still agrees — but stated this way the drawing also says WHAT the
+            // two ends are equidistant to, which is the quantity a preference can hold.
+            if let Some(radius) = arc.radius {
+                let named = self.scalar(radius, &whole);
+                into[row] = reach(from) - named;
+                into[row + 1] = reach(to) - named;
+                row += 2;
+            } else {
+                into[row] = reach(from) - reach(to);
+                row += 1;
+            }
         }
         for edge in &self.rigidity {
             // Per-axis spans intentionally do not leave a group free to rotate. The exact pass
@@ -2971,6 +3173,10 @@ impl ResidualSystem for Residuals<'_> {
             into[row] = (head[0] - tail[0]) - edge.span[0];
             into[row + 1] = (head[1] - tail[1]) - edge.span[1];
             row += 2;
+        }
+        for hold in &self.scalars {
+            into[row] = whole.get(hold.slot).copied().unwrap_or_default() - hold.at;
+            row += 1;
         }
         for hold in &self.holds {
             let here = at(hold.slot);
@@ -3094,6 +3300,7 @@ impl Problem {
             Rigidity::Preferred {
                 anchored: &[],
                 flexible_curves: &[],
+                was: &[],
             },
         );
         let report = run(
@@ -3123,14 +3330,22 @@ impl Problem {
         );
         let degrees_of_freedom = report.as_ref().map_or_else(
             || {
-                // Every point is a freedom, an arc's center included, and every arc spends one of
-                // them on holding its two ends the same distance away.
-                self.points.len() * 2 - self.arc_centers.len()
+                // Every point is a freedom, an arc's center included, and every free scalar is
+                // one more. An arc spends two of them on standing its ends its own radius away —
+                // which is its radius column back again, so an arc is a net one freedom down,
+                // exactly as the single equal-radius row it replaced left it.
+                let arc_rows: usize = self
+                    .arc_centers
+                    .iter()
+                    .map(|arc| if arc.radius.is_some() { 2 } else { 1 })
+                    .sum();
+                (self.points.len() * 2
                     + self
                         .parameters
                         .iter()
                         .filter(|parameter| parameter.free)
-                        .count()
+                        .count())
+                .saturating_sub(arc_rows)
             },
             |report| report.degrees_of_freedom,
         );
@@ -3203,7 +3418,7 @@ impl Problem {
     ///
     /// Returns an error if the held point is not local to this problem.
     pub fn drag(&self, held: PointId, at: [f64; 2]) -> Result<DragOutcome, RequestError> {
-        self.drag_together(&[(held, at)])
+        self.drag_together(&[(held, at)], &[])
     }
 
     /// Pull SEVERAL local points toward their targets at once, then release and settle.
@@ -3226,6 +3441,7 @@ impl Problem {
     pub fn drag_together(
         &self,
         hands: &[(PointId, [f64; 2])],
+        was: &[(PointId, [f64; 2])],
     ) -> Result<DragOutcome, RequestError> {
         let mut pulled = self.clone();
         for (held, at) in hands.iter().copied() {
@@ -3238,6 +3454,39 @@ impl Problem {
                 self.resolve(pull).map_err(RequestError::InvalidRelation)?,
             );
         }
+        // A hand on a curve's END is the author saying "change THIS curve", so that curve stops
+        // asking to keep its span. Nothing else loosens: the rest of the drawing still prefers to
+        // travel rather than deform, which is what carries a shape under one finger.
+        //
+        // Without this the preference is too strong to be useful. Measured pre-hand, a span row is
+        // an honest statement that the shape is rigid, and a rigid drawing under a pinned hand has
+        // exactly one answer — translate — whatever was grabbed and whatever else is asserted. A
+        // level segment dragged by one end took its far end along instead of leaving it where the
+        // level allowed, and a segment whose other end was FIXED translated anyway and stayed
+        // translated once the hand lost.
+        //
+        // A curve's SHAPE parameter is untouched by this: an arc grabbed by an end gives up its
+        // chord, not its radius, which is what lets the end sweep around a center that stays put
+        // rather than dragging the whole arc after it.
+        let grabbed = |point: PointId| hands.iter().any(|(held, _)| *held == point);
+        let loosened: Vec<SketchCurve> = self
+            .segments
+            .iter()
+            .enumerate()
+            .filter(|(_, segment)| grabbed(segment.from) || grabbed(segment.to))
+            .map(|(index, _)| {
+                SketchCurve::Segment(SegmentId {
+                    owner: self.owner,
+                    index,
+                })
+            })
+            .chain(
+                self.arc_centers
+                    .iter()
+                    .filter(|arc| grabbed(arc.from) || grabbed(arc.to))
+                    .map(|arc| SketchCurve::Arc(arc.key)),
+            )
+            .collect();
         let mut positions: Vec<_> = self.points.iter().map(|point| point.at).collect();
         let mut scalar_coordinates = self.scalar_coordinates();
         // Two passes, and the split is the whole idea. A drawing that is not fully determined has a
@@ -3267,7 +3516,8 @@ impl Problem {
             &mut scalar_coordinates,
             Rigidity::Preferred {
                 anchored: &held,
-                flexible_curves: &[],
+                flexible_curves: &loosened,
+                was,
             },
         );
         run(
@@ -3318,6 +3568,7 @@ impl Problem {
             Rigidity::Preferred {
                 anchored,
                 flexible_curves,
+                was: &[],
             },
         );
         let preferred_report = preferred_trace
