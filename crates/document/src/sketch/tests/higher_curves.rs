@@ -1246,3 +1246,35 @@ fn curvature_is_refused_without_a_free_end_standing_on_the_curve() {
         Err(ConstraintRefusal::CurvatureNeedsAJoint)
     );
 }
+
+/// A conic's shoulder is a reading of the curve, and it comes back to the author as a mark.
+///
+/// ADR 0038 took away the stored shoulder point — it was recomputed every sync and so could not be
+/// placed — and with it went the dot the author had just picked to author rho. The mark is not the
+/// point: the shoulder is derived here, and it is drawn because rho is the conic's one authored
+/// freedom and this is the only place it is legible.
+#[test]
+fn a_conics_shoulder_reads_off_its_rho_and_follows_a_body_drag() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let id = sketch
+        .add_conic(
+            SketchPoint::new(-20, 0),
+            SketchPoint::new(20, 0),
+            SketchPoint::new(0, 30),
+            0.5,
+        )
+        .expect("a conic");
+    // The track runs from the chord midpoint [0, 0] out to the control point [0, 30], and rho is
+    // how far along it the curve sits, so a half is the halfway mark.
+    assert_eq!(sketch.conic_shoulders(), vec![(id, [0.0, 15.0])]);
+
+    // Dragging the conic's BODY is the rho gesture, so the shoulder is where the drag left it.
+    assert!(sketch
+        .drag_curve_through(SketchCurve::Conic(id), [0.0, 15.0], [0.0, 21.0], ctx(16))
+        .expect("the drag is answered"));
+    let (_, at) = sketch.conic_shoulders()[0];
+    assert!(
+        (at[0]).abs() < 1.0e-9 && (at[1] - 21.0).abs() < 1.0e-9,
+        "the shoulder follows the body drag that authored rho: {at:?}"
+    );
+}

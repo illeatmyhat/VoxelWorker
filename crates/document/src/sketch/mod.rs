@@ -2850,6 +2850,42 @@ impl Sketch {
         Some(([reach * across[0], reach * across[1]], reach))
     }
 
+    /// Where each conic's SHOULDER stands — the point of the curve at `t = 0.5`, one per conic.
+    ///
+    /// A reading, never a point. ADR 0038 took the stored shoulder away because it was a value
+    /// wearing a point's clothes: it was recomputed from the other three and rho on every sync, so
+    /// it could not be placed and dragging it authored a number rather than a position. None of
+    /// that is a reason for the author to lose the MARK. The shoulder is where the conic's one
+    /// remaining freedom is legible — how hard the curve pulls toward its control point — and it
+    /// is the place the author already reaches for, because it is the pick they made to author rho
+    /// in the first place (owner, 2026-08-05).
+    ///
+    /// So it comes back as a derived handle. Nothing has to be added to make it grabbable: the
+    /// shoulder lies ON the ink by construction, and a conic's body drag is already a rho drag
+    /// ([`drag_curve_through`](Self::drag_curve_through)), so the dot marks a gesture the drawing
+    /// already answers rather than introducing one.
+    ///
+    /// A conic whose points have gone missing, or whose control has collapsed onto its chord, has
+    /// no shoulder to report and is skipped.
+    #[must_use]
+    pub fn conic_shoulders(&self) -> Vec<(EntityId, [f64; 2])> {
+        self.conics
+            .iter()
+            .filter_map(|conic| {
+                let at = parametric::sketch::conic_vertex_from_rho(
+                    self.point_in_plane(conic.from)?,
+                    self.point_in_plane(conic.to)?,
+                    self.point_in_plane(conic.control)?,
+                    conic.rho.value(),
+                )?;
+                at.iter()
+                    .copied()
+                    .all(f64::is_finite)
+                    .then_some((conic.id, at))
+            })
+            .collect()
+    }
+
     /// Whether `curve` is a curve this drawing actually holds.
     ///
     /// The identity is stable but not a guarantee: a pick, a persisted gesture, or a stored
@@ -5913,7 +5949,9 @@ const SAME_ARC_SWEEP_DEGREES: f64 = 1.0e-3;
 fn arc_center_on_bisector(from: [f64; 2], to: [f64; 2], center: [f64; 2]) -> Option<[f64; 2]> {
     let chord = [to[0] - from[0], to[1] - from[1]];
     let chord_length = chord[0].hypot(chord[1]);
-    if !(chord_length > f64::EPSILON) {
+    // A NaN chord fails both halves, which is the point: a length that cannot be compared is not a
+    // length this can divide by.
+    if !chord_length.is_finite() || chord_length <= f64::EPSILON {
         return None;
     }
     let along = [chord[0] / chord_length, chord[1] / chord_length];

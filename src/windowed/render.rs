@@ -1402,6 +1402,21 @@ impl WindowedState {
             .collect()
     }
 
+    /// Every conic's shoulder in this sketch, in profile space. See
+    /// [`conic_shoulders`](document::sketch::Sketch::conic_shoulders) for why it is a reading.
+    fn conic_shoulders_in_profile(
+        &self,
+        target: document::scene::NodeId,
+    ) -> Vec<(document::sketch::EntityId, [f64; 2])> {
+        let Some(node) = self.panel_state.scene.node_by_id(target) else {
+            return Vec::new();
+        };
+        let document::scene::NodeContent::SketchTool { producer, .. } = &node.content else {
+            return Vec::new();
+        };
+        producer.sketch.conic_shoulders()
+    }
+
     /// The points the drawing already accounts for, and so may draw with nothing hovered.
     ///
     /// [`point_draws_at_rest`](document::sketch::Sketch::point_draws_at_rest) is the rule; this
@@ -5128,6 +5143,32 @@ impl WindowedState {
             if point_id.is_none_or(|id| revealed.contains(&id) && !stacked.contains(&id)) {
                 self.sketch_overlay_points.push(handle);
             }
+        }
+        // A conic's shoulder, which is a reading rather than a point and so has no id to be
+        // revealed by. It draws unconditionally: rho is the conic's one authored freedom and this
+        // is the only mark that shows it, where every other dot here is answering the question of
+        // whether the ink has already said the same thing.
+        //
+        // It reads as ON the ink because it is, and it needs no grab of its own for the same
+        // reason — the press under it lands on the conic, whose body drag is already the rho drag.
+        for (_, at) in self.conic_shoulders_in_profile(target) {
+            let Some(px) = to_viewport_px(at) else {
+                continue;
+            };
+            let hovered = self
+                .last_cursor_position
+                .map(|(cx, cy)| (cx as f32 - px.x).hypot(cy as f32 - px.y) <= hover_radius_px)
+                .unwrap_or(false);
+            self.sketch_overlay_points
+                .push(ui::chrome::SketchVertexHandle {
+                    at: egui::Pos2::new(px.x / pixels_per_point, px.y / pixels_per_point),
+                    state: if hovered {
+                        ui::gizmos::HandleState::Hover
+                    } else {
+                        ui::gizmos::HandleState::Idle
+                    },
+                    ink: ui::chrome::SketchVertexInk::OnInk,
+                });
         }
 
         self.refresh_sketch_constraint_badges(
