@@ -1019,8 +1019,8 @@ impl Problem {
             Relation::Concentric { first, second } => {
                 let center =
                     |subject| match curve(subject).map_err(|_| BuildError::InvalidConcentric)? {
-                        ResolvedCurve::Arc(arc) => Ok(arc.center),
-                        ResolvedCurve::Circle(circle) => Ok(circle.center),
+                        ResolvedCurve::Arc(arc) => Ok(CenterOf::Arc(arc)),
+                        ResolvedCurve::Circle(circle) => Ok(CenterOf::Point(circle.center)),
                         ResolvedCurve::Segment(_) => Err(BuildError::InvalidConcentric),
                     };
                 if first == second {
@@ -2517,6 +2517,20 @@ struct ArcCurveSlots {
     sweep_degrees: f64,
 }
 
+/// Where a relation about a CENTER reads that center from.
+///
+/// A circle stores its center as a point the author can move. An arc does not have one: its center
+/// is whatever its two ends and its sweep put it at, and the point the drawing shows there is an
+/// echo of that arithmetic rather than an input to it. Naming the arc and recomputing keeps the two
+/// cases honestly apart, and lets several arcs turning about one place SHARE the dot they echo to —
+/// each still measured from its own ends, so a relation between them is a real comparison and not
+/// a slot index accidentally equal to itself.
+#[derive(Debug, Clone, Copy)]
+enum CenterOf {
+    Point(usize),
+    Arc(ArcCurveSlots),
+}
+
 #[derive(Debug, Clone, Copy)]
 struct CircleSlots {
     center: usize,
@@ -2591,8 +2605,8 @@ enum Resolved {
         branch: TangentBranch,
     },
     Concentric {
-        first: usize,
-        second: usize,
+        first: CenterOf,
+        second: CenterOf,
     },
     Symmetry {
         first: ResolvedCurve,
@@ -2637,6 +2651,28 @@ struct Residuals<'a> {
 /// Derived-center chains are not authored topology, so this follows exactly one level. A degenerate
 /// arc falls back to its stored slot: repair owns invalid-document cleanup, while the solver must
 /// retain a finite value to evaluate the rest of a drawing.
+/// Where a [`CenterOf`] stands, given the current parameters.
+///
+/// An arc's answer is recomputed from its own ends rather than read off the point it echoes to,
+/// because that point may be shared: concentric arcs show ONE dot, and reading it would compare an
+/// arc against whichever sharer last wrote there instead of against itself.
+fn center_position(
+    source: CenterOf,
+    at: &impl Fn(usize) -> [f64; 2],
+    specifications: &[Parameter],
+    whole: &[f64],
+    point_count: usize,
+) -> [f64; 2] {
+    match source {
+        CenterOf::Point(slot) => at(slot),
+        CenterOf::Arc(arc) => {
+            let (from, to) = (at(arc.from), at(arc.to));
+            let sweep = physical_sweep(arc, specifications, whole, point_count);
+            arc_center_radius(from, to, sweep).map_or_else(|| at(arc.center), |(center, _)| center)
+        }
+    }
+}
+
 fn position_of(
     derived: &[Option<ArcSlots>],
     specifications: &[Parameter],
@@ -2777,7 +2813,9 @@ fn curve_geometry(
             to: at(segment.to),
         },
         ResolvedCurve::Arc(arc) => {
-            let (center, from, to) = (at(arc.center), at(arc.from), at(arc.to));
+            let center =
+                center_position(CenterOf::Arc(arc), &at, specifications, whole, point_count);
+            let (from, to) = (at(arc.from), at(arc.to));
             CurveGeometry::Circular(CircularCurve {
                 center,
                 radius: ((from[0] - center[0]).powi(2) + (from[1] - center[1]).powi(2)).sqrt(),
@@ -2832,6 +2870,12 @@ impl<'a> Residuals<'a> {
         }
         let mut derived = vec![None; problem.points.len()];
         for (arc, sweep) in problem.arc_centers.iter().zip(&problem.arc_parameters) {
+            // FIRST writer keeps it. Several arcs may echo to one dot, and the dot can only stand
+            // in one place; letting the last one win would move it by nothing more than arc order.
+            // Every relation now measures an arc from its own ends, so this decides the ECHO only.
+            if derived[arc.center.index].is_some() {
+                continue;
+            }
             derived[arc.center.index] = Some(ArcSlots {
                 from: arc.from.index,
                 to: arc.to.index,
@@ -3021,8 +3065,23 @@ impl ResidualSystem for Residuals<'_> {
                         ((head[0] - tail[0]).powi(2) + (head[1] - tail[1]).powi(2)).sqrt() - length;
                     row += 1;
                 }
-                Resolved::Coincident { first, second } | Resolved::Concentric { first, second } => {
+                Resolved::Coincident { first, second } => {
                     let (a, b) = (at(first), at(second));
+                    into[row] = a[0] - b[0];
+                    into[row + 1] = a[1] - b[1];
+                    row += 2;
+                }
+                Resolved::Concentric { first, second } => {
+                    let center = |source| {
+                        center_position(
+                            source,
+                            &at,
+                            &self.problem.parameters,
+                            &whole,
+                            self.problem.points.len(),
+                        )
+                    };
+                    let (a, b) = (center(first), center(second));
                     into[row] = a[0] - b[0];
                     into[row + 1] = a[1] - b[1];
                     row += 2;
@@ -3353,7 +3412,14 @@ impl Problem {
         );
         let degrees_of_freedom = report.as_ref().map_or_else(
             || {
-                self.points.len() * 2 - self.arc_centers.len() * 2
+                self.points.len() * 2
+                    - self
+                        .arc_centers
+                        .iter()
+                        .map(|arc| arc.center.index)
+                        .collect::<std::collections::BTreeSet<_>>()
+                        .len()
+                        * 2
                     + self
                         .parameters
                         .iter()

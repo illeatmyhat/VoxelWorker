@@ -945,10 +945,15 @@ fn dragging_an_overall_slots_centerline_does_not_fight_its_own_hands() {
     }
 }
 
-/// An arc slot stacks four points at its middle: the two rails' derived centers, the centerline's,
-/// and the real handle tied to them. The author is owed ONE dot there, and it has to be the handle
-/// — dragging a derived center authors the quantity behind it instead of moving the slot, so the
-/// dot most likely to be under the cursor was the one least able to answer for the gesture.
+/// An arc slot's middle holds exactly two points, and draws one.
+///
+/// Its three arcs — both rails and the construction centerline — turn about one place, so they
+/// SHARE one center rather than each echoing its own; three of the four dots this used to stack
+/// were the same answer written again, and they are gone rather than hidden. The two that remain
+/// cannot be collapsed: the shared center is derived, and a handle has to be draggable, so the
+/// author is owed the handle and only the handle. Dragging a derived center authors the quantity
+/// behind it instead of moving the slot, which would leave the dot most likely to be under the
+/// cursor the one least able to answer for the gesture.
 ///
 /// Both arc grammars are checked because the three-point one is sugar for the center-point one and
 /// commits the same drawing; a difference between them would mean it had stopped being sugar.
@@ -986,5 +991,37 @@ fn an_arc_slot_draws_one_dot_at_its_middle_and_it_is_the_draggable_one() {
                 "{grammar} kept the dot the author cannot drag"
             );
         }
+
+        // Standing there, not merely drawn there: a dot suppressed is a dot the author can still
+        // hover, select and wonder about, so the count that matters is of POINTS.
+        let standing: Vec<&Point> = made
+            .sketch
+            .points()
+            .iter()
+            .filter(|point| point.at.in_plane()[0].hypot(point.at.in_plane()[1]) < 1.0e-3)
+            .collect();
+        assert_eq!(
+            standing.len(),
+            2,
+            "{grammar} stacks {} points at its middle",
+            standing.len()
+        );
+        let centers: std::collections::BTreeSet<EntityId> = made
+            .sketch
+            .arcs()
+            .iter()
+            .filter(|arc| {
+                made.sketch
+                    .point_in_plane(arc.center)
+                    .is_some_and(|at| at[0].hypot(at[1]) < 1.0e-3)
+            })
+            .map(|arc| arc.center)
+            .collect();
+        assert_eq!(
+            centers.len(),
+            1,
+            "{grammar} gave its concentric arcs {} centers",
+            centers.len()
+        );
     }
 }

@@ -4889,9 +4889,16 @@ impl Sketch {
     /// skipped this would put the stack straight back the moment the author looked at the shape.
     ///
     /// Ranked so exactly one of a derived stack survives: a real point beats a derived one, and
-    /// among derived twins the earliest wins. An arc slot stacks four dots at its middle — the two
-    /// rails' centers, the centerline's, and the handle tied to them — and three of those are the
-    /// same answer written again.
+    /// among derived twins the earliest wins.
+    ///
+    /// **This is the remedy of last resort, not the first one.** A dot that is the same answer
+    /// written twice should not EXIST, and mostly no longer does: arcs turning about one place now
+    /// share the center they echo to, so an arc slot's middle holds two points where it once held
+    /// four. What is left is the pair that cannot be collapsed — a derived center and the real
+    /// handle tied to it by a coincidence. The handle has to be a separate point because it has to
+    /// be draggable, and a derived center is not: dragging one authors the quantity behind it. So
+    /// the drawing genuinely has two points there, standing in one place on purpose, and only the
+    /// one the author can grab is worth drawing.
     ///
     /// **Only ever hides a derived point.** Two REAL points at one spot are the seam case, and
     /// there both dots are the message: "these ends coincide" and "these ends are joined" are the
@@ -5115,6 +5122,24 @@ impl Sketch {
     /// its control point and rho. A curve whose defining points are missing or degenerate is left
     /// alone; [`repair`](Self::repair) erases it.
     pub fn sync_derived_points(&mut self) {
+        // Which center each arc has just put where. Arcs turning about ONE place get ONE dot: the
+        // endpoints of a curve already reuse whatever point is standing where they land, and a
+        // center that did not was the whole of why an arc slot carried four marks at its middle
+        // where the author drew one. Three of those four were the same answer computed again.
+        //
+        // Adoption is only ever from another ARC's center, never from an ordinary point that
+        // happens to be there. Naming an author's corner as a center would make it derived, and a
+        // derived point is not draggable — the drawing would silently take a handle away.
+        //
+        // Sharing lasts exactly as long as agreement. An arc that comes to want its center
+        // somewhere else takes a fresh one rather than overwrite a neighbour's: concentric-looking
+        // is not concentric, and two arcs that merely passed through the same arrangement must be
+        // able to leave it. Nothing here asserts they are concentric; a relation does that, and it
+        // stays the thing that HOLDS them so, which is why it must remain free to be deleted.
+        let mut placed: Vec<(EntityId, [f64; 2])> = Vec::new();
+        let apart = |first: [f64; 2], second: [f64; 2]| {
+            (first[0] - second[0]).hypot(first[1] - second[1]) > STACKED_DOT_VOXELS
+        };
         for index in 0..self.arcs.len() {
             let arc = self.arcs[index];
             let (Some(tail), Some(head)) = (self.point_index(arc.from), self.point_index(arc.to))
@@ -5130,8 +5155,27 @@ impl Sketch {
             };
             let at = SketchPoint::from_continuous(center[0], center[1]);
             match self.point_index(arc.center) {
-                Some(existing) => self.points[existing].at = at,
-                None => self.arcs[index].center = self.add_construction_point(at),
+                Some(existing) => match placed.iter().find(|(id, _)| *id == arc.center) {
+                    Some(&(_, stood)) if apart(stood, center) => {
+                        let fresh = self.add_construction_point(at);
+                        self.arcs[index].center = fresh;
+                        placed.push((fresh, center));
+                    }
+                    Some(_) => {}
+                    None => {
+                        self.points[existing].at = at;
+                        placed.push((arc.center, center));
+                    }
+                },
+                None => {
+                    let adopted = placed
+                        .iter()
+                        .find(|(_, stood)| !apart(*stood, center))
+                        .map(|(id, _)| *id);
+                    let center_point = adopted.unwrap_or_else(|| self.add_construction_point(at));
+                    self.arcs[index].center = center_point;
+                    placed.push((center_point, center));
+                }
             }
         }
         for index in 0..self.conics.len() {
