@@ -1090,3 +1090,88 @@ fn resizing_an_arc_slot_keeps_its_three_arcs_on_one_center() {
         "the centerline kept {spine} while its rails turned {rails}"
     );
 }
+
+/// Dragging a rail changes the slot's RADIUS, and the middle it turns about holds.
+///
+/// A rim is dragged by its radius — the rule a circle here has always had, and an arc is a circle
+/// with two ends. It is worth a test because the arithmetic does not want to: carrying a shape
+/// costs a least-deformation solve nothing and reshaping it costs something, so with only the grip
+/// to go on the solve moved the whole slot and left its width exactly as it found it.
+#[test]
+fn dragging_an_arc_slots_rail_spends_its_radius_about_a_center_that_holds() {
+    let mut made = arc_slot();
+    let (rail, center) = made
+        .sketch
+        .arcs()
+        .iter()
+        .find(|arc| {
+            arc.role != EntityRole::Construction
+                && arc.sweep_degrees().abs() < 170.0
+                && made
+                    .sketch
+                    .point_in_plane(arc.from)
+                    .is_some_and(|at| at[0].hypot(at[1]) > 8.5)
+        })
+        .map(|arc| (SketchCurve::Arc(arc.id), arc.center))
+        .expect("the outer rail, ten out from the middle");
+    let stood_at = made.sketch.point_in_plane(center).expect("its middle");
+    let out = |radius: f64| {
+        [
+            stood_at[0] + radius / 2.0_f64.sqrt(),
+            stood_at[1] + radius / 2.0_f64.sqrt(),
+        ]
+    };
+
+    assert!(made
+        .sketch
+        .drag_curve_through(rail, out(10.0), out(12.0), ctx(16))
+        .expect("the rail drag is answered"));
+
+    let now = made.sketch.point_in_plane(center).expect("its middle");
+    // A ten-thousandth of a block — two thousandths of a VOXEL — against a two-block widening.
+    // The center is held by a relation rather than by being left out of the solve, so it carries
+    // the solver's dust; the claim under test is travelling versus widening, and this is neither.
+    assert!(
+        (now[0] - stood_at[0]).hypot(now[1] - stood_at[1]) < 1.0e-4,
+        "the slot travelled instead of widening: {stood_at:?} -> {now:?}"
+    );
+    let reach = made
+        .sketch
+        .arcs()
+        .iter()
+        .find(|arc| SketchCurve::Arc(arc.id) == rail)
+        .and_then(|arc| made.sketch.point_in_plane(arc.from))
+        .map(|end| (end[0] - now[0]).hypot(end[1] - now[1]))
+        .expect("the rail still stands");
+    assert!(
+        (reach - 12.0).abs() < 1.0e-4,
+        "the rail should reach twelve out: {reach}"
+    );
+}
+
+/// A line has no middle to turn about, so the same gesture carries it instead — and carries it
+/// only SIDEWAYS, because dragging a line along its own direction produces the same line and the
+/// grip slides rather than pushing anything.
+#[test]
+fn dragging_a_lines_body_carries_it_across_and_not_along() {
+    for (tag, from, to, want) in [
+        ("across", [3.0, 0.0], [3.0, 3.0], [0.0, 3.0]),
+        ("along", [3.0, 0.0], [6.0, 0.0], [0.0, 0.0]),
+    ] {
+        let mut made = source();
+        let tail = made.sketch.add_free_point(SketchPoint::new(0, 0));
+        let head = made.sketch.add_free_point(SketchPoint::new(6, 0));
+        let line = SketchCurve::Segment(made.sketch.connect(tail, head).expect("a line"));
+
+        assert!(made
+            .sketch
+            .drag_curve_through(line, from, to, ctx(16))
+            .expect("the drag is answered"));
+
+        let at = made.sketch.point_in_plane(tail).expect("the tail stands");
+        assert!(
+            (at[0] - want[0]).abs() < 1.0e-6 && (at[1] - want[1]).abs() < 1.0e-6,
+            "dragged {tag}, the tail went to {at:?} rather than {want:?}"
+        );
+    }
+}

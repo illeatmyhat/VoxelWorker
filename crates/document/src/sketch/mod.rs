@@ -2536,6 +2536,94 @@ impl Sketch {
         })
     }
 
+    /// Drag `curve` by the place on it the author actually grabbed: `grabbed` goes to `to`, and
+    /// what the rest of the drawing does about it is the relations' answer.
+    ///
+    /// ONE verb for every curve, and no reading of what a body drag "must have meant" for this
+    /// shape. The gesture states the only thing the author expressed — the bit of curve under the
+    /// cursor should end up under the cursor — by putting a point there, holding it ON the curve,
+    /// and pulling that. Which of the curve's own points give way is then a question the drawing
+    /// already has the answer to, and different answers for different shapes come out of the
+    /// relations rather than out of a ladder here:
+    ///
+    /// - a slot's rail has both ends pinned by the tangency web, so nothing can move but the
+    ///   radius — the drag WIDENS it, which is the gesture that authors a slot's width;
+    /// - that slot's centerline runs between two handles that are free to travel, so carrying it
+    ///   is cheaper than reshaping it and the whole slot comes along;
+    /// - a line the author drew between two loose points simply travels.
+    ///
+    /// The grip is temporary in the strictest sense: it is minted, held, and taken away again
+    /// inside the gesture, so a drag leaves the drawing with exactly the entities it started with.
+    pub fn drag_curve_through(
+        &mut self,
+        curve: SketchCurve,
+        grabbed: [f64; 2],
+        to: [f64; 2],
+        context: parametric::EvaluationContext,
+    ) -> Result<bool, SketchEvaluationError> {
+        if self.curve_points_exist(curve).is_none() {
+            return Ok(false);
+        }
+        // Only three forms can be HELD by relation mathematics, and a curve the grip cannot be
+        // pinned to would simply not move. That is a gap in what the solver can say, not a decision
+        // about what the gesture means, so the meaning is kept and the drawing carries the curve
+        // bodily instead — the answer the grip would have produced for a shape with nothing else
+        // holding it.
+        if !matches!(
+            curve,
+            SketchCurve::Segment(_) | SketchCurve::Arc(_) | SketchCurve::Circle(_)
+        ) {
+            return self.translate_curve(curve, [to[0] - grabbed[0], to[1] - grabbed[1]], context);
+        }
+        let grip = self.add_free_point(SketchPoint::from_continuous(grabbed[0], grabbed[1]));
+        self.set_point_lifetime(grip, PointLifetime::CurveAnchored);
+        let holding = self.alloc_id();
+        self.constraints.push(Constraint {
+            id: holding,
+            kind: ConstraintKind::PointOnCurve { point: grip, curve },
+            redundant: false,
+        });
+        // A curve that TURNS is dragged by its rim, and a rim drag is about the radius: the center
+        // holds and the distance out to it is what the author is changing. That is not a rule for
+        // arcs, it is the rule a circle has always had here — dragging its rim grows it — and an
+        // arc is a circle with two ends, so it would be strange for the same gesture on the same
+        // shape to mean something else. Without it the arithmetic simply carries the whole shape,
+        // because travelling costs a least-deformation solve nothing and reshaping costs it
+        // something; measured, a slot rail moved the slot and left its width alone.
+        //
+        // The center is held, not moved, so naming a DERIVED point here is sound where dragging one
+        // would not be: it asks the solve to keep the center where it computes to, which the ends
+        // and the sweep between them are free to arrange.
+        let mut hands = vec![(grip, to)];
+        hands.extend(
+            self.center_point_of(curve)
+                .and_then(|center| Some((center, self.point_in_plane(center)?))),
+        );
+        // Minted BEFORE the rollback point, so a refused drag restores a drawing that still has the
+        // grip in it and the same two lines take it away either way.
+        let stood =
+            self.drag_or_leave_it_alone(|sketch| sketch.settle_under_the_hands(&hands, context));
+        self.constraints
+            .retain(|constraint| constraint.id != holding);
+        self.points.retain(|point| point.id != grip);
+        self.sync_derived_points();
+        stood
+    }
+
+    /// Whether `curve` is a curve this drawing actually holds.
+    fn curve_points_exist(&self, curve: SketchCurve) -> Option<()> {
+        let known = match curve {
+            SketchCurve::Segment(id) => self.segments.iter().any(|segment| segment.id == id),
+            SketchCurve::Arc(id) => self.arcs.iter().any(|arc| arc.id == id),
+            SketchCurve::Circle(id) => self.circles.iter().any(|circle| circle.id == id),
+            SketchCurve::Bezier(id) => self.beziers.iter().any(|bezier| bezier.id == id),
+            SketchCurve::Ellipse(id) => self.ellipses.iter().any(|ellipse| ellipse.id == id),
+            SketchCurve::Conic(id) => self.conics.iter().any(|conic| conic.id == id),
+            SketchCurve::Spline(id) => self.splines.iter().any(|spline| spline.id == id),
+        };
+        known.then_some(())
+    }
+
     /// Slide a whole curve by `by`, carrying every point it stands on, and settle around it.
     /// Reports whether the drawing accepted the move.
     ///

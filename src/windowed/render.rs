@@ -1146,15 +1146,16 @@ impl WindowedState {
                     None => Ok(false),
                 }
             }
+            // Absolute, not summed: the place the author pressed goes where the cursor is now.
             SketchGrab::Translate {
                 curve,
                 from: Some(from),
-            } if began => {
-                let (from, now) = (from.in_plane(), snapped.in_plane());
-                preview
-                    .sketch
-                    .translate_curve(curve, [now[0] - from[0], now[1] - from[1]], context)
-            }
+            } if began => preview.sketch.drag_curve_through(
+                curve,
+                from.in_plane(),
+                snapped.in_plane(),
+                context,
+            ),
             // The press could not read a profile coordinate, so the first frame that can records
             // where the gesture started and moves nothing.
             SketchGrab::TranslateLever { fit, from: None } => {
