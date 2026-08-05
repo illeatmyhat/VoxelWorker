@@ -1278,3 +1278,44 @@ fn a_conics_shoulder_reads_off_its_rho_and_follows_a_body_drag() {
         "the shoulder follows the body drag that authored rho: {at:?}"
     );
 }
+
+/// A conic body drag is measured from where the author PRESSED, so reaching the shoulder from
+/// somewhere else on the curve does not snap it.
+///
+/// The body is how the shoulder is grabbed, and the body is most of the curve. Read absolutely, a
+/// press near an end projects to a rho far from the one standing and the conic changed shape before
+/// the cursor had moved — the curve jumped out from under the press. Read as a displacement, every
+/// point of the body is an equally good place to take hold of the same one mark.
+#[test]
+fn a_conic_pressed_away_from_its_shoulder_does_not_snap_before_it_moves() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let id = sketch
+        .add_conic(
+            SketchPoint::new(-20, 0),
+            SketchPoint::new(20, 0),
+            SketchPoint::new(0, 30),
+            0.5,
+        )
+        .expect("a conic");
+
+    // A press out near the curve's left flank, going nowhere.
+    let flank = [-14.0, 6.0];
+    assert!(sketch
+        .drag_curve_through(SketchCurve::Conic(id), flank, flank, ctx(16))
+        .expect("the drag is answered"));
+    assert!(
+        (sketch.conics()[0].rho.value() - 0.5).abs() < 1.0e-9,
+        "a press that has not moved authors nothing: {}",
+        sketch.conics()[0].rho.value()
+    );
+
+    // And from there the shoulder travels by exactly what the cursor did, not to where it landed.
+    assert!(sketch
+        .drag_curve_through(SketchCurve::Conic(id), flank, [-14.0, 12.0], ctx(16))
+        .expect("the drag is answered"));
+    let (_, at) = sketch.conic_shoulders()[0];
+    assert!(
+        (at[1] - 21.0).abs() < 1.0e-9,
+        "six up at the flank is six up at the shoulder: {at:?}"
+    );
+}

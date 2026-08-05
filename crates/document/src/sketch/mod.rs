@@ -2625,7 +2625,7 @@ impl Sketch {
                 return Ok(false);
             };
             return self.drag_or_leave_it_alone(|sketch| {
-                sketch.reshape_conic_toward(index, to);
+                sketch.reshape_conic_toward(index, grabbed, to);
                 sketch.standing_constraints_hold(context)
             });
         }
@@ -3688,7 +3688,14 @@ impl Sketch {
     /// onto the track and reads rho off it, the same one definition
     /// ([`parametric::sketch::conic_rho_from_shoulder`]) the gesture uses, clamped short of both
     /// degenerate ends. A conic whose defining points have gone missing is left alone.
-    fn reshape_conic_toward(&mut self, conic_index: usize, target: [f64; 2]) {
+    ///
+    /// Measured as a DISPLACEMENT from where the author pressed, not as an absolute reading of
+    /// where the cursor is. The two agree when the press landed on the shoulder, and they disagree
+    /// everywhere else: a press near an end projects to a rho far from the one standing, so an
+    /// absolute reading snapped the curve to a new shape before the cursor had moved at all. The
+    /// shoulder is a mark on the curve and the rest of the curve is a place to reach it from —
+    /// either way, the gesture starts by changing nothing.
+    fn reshape_conic_toward(&mut self, conic_index: usize, grabbed: [f64; 2], target: [f64; 2]) {
         let conic = self.conics[conic_index];
         let position = |id| {
             self.points
@@ -3703,7 +3710,16 @@ impl Sketch {
         ) else {
             return;
         };
-        let Some(rho) = parametric::sketch::conic_rho_from_shoulder(from, to, control, target)
+        let Some(stood) =
+            parametric::sketch::conic_vertex_from_rho(from, to, control, conic.rho.value())
+        else {
+            return;
+        };
+        let asked = [
+            stood[0] + target[0] - grabbed[0],
+            stood[1] + target[1] - grabbed[1],
+        ];
+        let Some(rho) = parametric::sketch::conic_rho_from_shoulder(from, to, control, asked)
         else {
             return;
         };

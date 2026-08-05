@@ -4593,13 +4593,24 @@ impl WindowedState {
     /// about everything else — and it is only ever needed when the solve's objective prefers
     /// stretching to moving. Ours no longer does (owner, 2026-08-05).
     ///
+    /// A CONIC is here for the opposite reason to everything else: its body drag does not move it,
+    /// it reshapes it. Rho is the conic's one authored freedom and ADR 0038 took away the point
+    /// that used to carry it, so the body IS the handle, and the shoulder mark
+    /// ([`Sketch::conic_shoulders`](document::sketch::Sketch::conic_shoulders)) is where the author
+    /// reaches for it. Without this arm that mark is a dot that does nothing: the drawing has
+    /// answered a conic body drag as a rho drag since the shoulder was removed, and the press
+    /// simply never arrived.
+    ///
     /// A circle is still not offered: dragging its rim already means growing it, through its own
     /// handles. The remaining higher curves are fixed-arity handles the author moves one at a time.
     fn grabbable_sketch_curve_at(&self, cursor_x: f64, cursor_y: f64) -> Option<SketchGrab> {
         let curve = match self.nearest_sketch_edge(cursor_x, cursor_y)? {
             SketchEdgeHit::Segment(id) => document::sketch::SketchCurve::Segment(id),
             SketchEdgeHit::Arc(id) => document::sketch::SketchCurve::Arc(id),
-            SketchEdgeHit::HigherCurve(curve @ document::sketch::SketchCurve::Spline(_)) => curve,
+            SketchEdgeHit::HigherCurve(
+                curve @ (document::sketch::SketchCurve::Spline(_)
+                | document::sketch::SketchCurve::Conic(_)),
+            ) => curve,
             SketchEdgeHit::Circle(_) | SketchEdgeHit::HigherCurve(_) => return None,
         };
         Some(SketchGrab::Translate { curve, from: None })
