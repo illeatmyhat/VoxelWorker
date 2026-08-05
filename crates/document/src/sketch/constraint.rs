@@ -763,10 +763,12 @@ impl PreparedProblem {
             .map_err(TrialMapError::Request)
     }
 
-    /// Pull one or more points at once. See [`parametric::sketch::Problem::drag_together`].
-    pub(super) fn drag_together(
+    /// Pull one or more points at once, saying whether the gesture moves the shape or reshapes it.
+    /// See [`parametric::sketch::Problem::drag_together_holding`].
+    pub(super) fn drag_together_holding(
         &self,
         hands: &[(EntityId, [f64; 2])],
+        shape: parametric::sketch::ShapeUnderTheHands,
     ) -> Result<parametric::sketch::DragOutcome, parametric::sketch::RequestError> {
         let hands = hands
             .iter()
@@ -776,7 +778,7 @@ impl PreparedProblem {
                     .ok_or(parametric::sketch::RequestError::UnknownPoint)
             })
             .collect::<Result<Vec<_>, _>>()?;
-        self.problem.drag_together(&hands)
+        self.problem.drag_together_holding(&hands, shape)
     }
 
     pub(super) fn plan_apply(

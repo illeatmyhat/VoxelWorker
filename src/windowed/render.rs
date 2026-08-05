@@ -4554,20 +4554,37 @@ impl WindowedState {
 
     /// The curve under the cursor that a drag can move as a WHOLE, if there is one.
     ///
-    /// A segment or an arc has a single perpendicular direction, so "drag it sideways" names one
-    /// motion. A circle would have to grow, which is what dragging its rim already means through
+    /// A BOUNDARY segment or arc has a single perpendicular direction, so "drag it sideways" names
+    /// one motion. A circle would have to grow, which is what dragging its rim already means through
     /// its own handles. A spline has no perpendicular at all, so it TRANSLATES instead — a
     /// different verb, and the one the author means when they grab the body of a curve whose shape
     /// lives in its points. The remaining higher curves are fixed-arity handles the author moves
     /// one at a time, and moving the aggregate would need a decision this gesture cannot offer.
+    ///
+    /// A CONSTRUCTION segment or arc translates for the same reason a spline does: it bounds no
+    /// region, so there is nothing for it to be the near or far side of and an offset says nothing
+    /// about it. Whether that carries the drawing with it is the constraints' answer, not this
+    /// function's — a slot's centerline moves the slot because its cap centers stand on the line,
+    /// and a construction line the author drew between two loose points moves alone.
     fn grabbable_sketch_curve_at(&self, cursor_x: f64, cursor_y: f64) -> Option<SketchGrab> {
-        match self.nearest_sketch_edge(cursor_x, cursor_y)? {
-            SketchEdgeHit::Segment(id) => Some(SketchGrab::Curve(
-                document::sketch::SketchCurve::Segment(id),
-            )),
-            SketchEdgeHit::Arc(id) => {
-                Some(SketchGrab::Curve(document::sketch::SketchCurve::Arc(id)))
+        let target = self.panel_state.sketch_mode?;
+        let node = self.panel_state.scene.node_by_id(target)?;
+        let document::scene::NodeContent::SketchTool { producer, .. } = &node.content else {
+            return None;
+        };
+        let sketch = &producer.sketch;
+        let body_drag = |curve: document::sketch::SketchCurve| {
+            if sketch.curve_role(curve) == Some(document::sketch::EntityRole::Construction) {
+                SketchGrab::Translate { curve, from: None }
+            } else {
+                SketchGrab::Curve(curve)
             }
+        };
+        match self.nearest_sketch_edge(cursor_x, cursor_y)? {
+            SketchEdgeHit::Segment(id) => {
+                Some(body_drag(document::sketch::SketchCurve::Segment(id)))
+            }
+            SketchEdgeHit::Arc(id) => Some(body_drag(document::sketch::SketchCurve::Arc(id))),
             // A spline moves as a whole because that is the only motion its aggregate has: it
             // carries its shape in control points, and there is no perpendicular to offset along.
             SketchEdgeHit::HigherCurve(curve @ document::sketch::SketchCurve::Spline(_)) => {

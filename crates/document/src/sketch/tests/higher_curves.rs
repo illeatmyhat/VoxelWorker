@@ -771,13 +771,22 @@ fn dragging_a_splines_body_carries_every_point_by_the_same_step() {
         "the handle stayed home: {tangent:?} became {after:?}"
     );
 
-    // Only a spline translates. A segment already has a gesture that means something else.
+    // Carrying is not a spline's private verb: any curve can be taken somewhere, and WHICH curves
+    // the author reaches it through is the shell's routing question rather than this one's. A
+    // segment translates whole, and its own two points are the whole of it.
     let tail = sketch.add_free_point(SketchPoint::new(-9, -9));
     let head = sketch.add_free_point(SketchPoint::new(-9, -3));
     let segment = sketch.connect(tail, head).expect("a segment");
-    assert!(!sketch
+    assert!(sketch
         .translate_curve(SketchCurve::Segment(segment), [1.0, 1.0], ctx(16))
         .expect("the translate is answered"));
+    for (point, want) in [(tail, [-8.0, -8.0]), (head, [-8.0, -2.0])] {
+        let at = sketch.point_in_plane(point).expect("the segment stands");
+        assert!(
+            (at[0] - want[0]).abs() < 1.0e-6 && (at[1] - want[1]).abs() < 1.0e-6,
+            "{at:?} is not {want:?}"
+        );
+    }
 }
 
 /// A point's lifetime rode the `role` field, spelled with a curve's role names, until the two

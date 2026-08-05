@@ -2471,6 +2471,30 @@ enum Rigidity<'a> {
     },
 }
 
+/// What a set of hands means about the shape they hold, and the one thing a drag cannot infer.
+///
+/// The hands say where some points are going. They never say whether the points NOT named are
+/// supposed to follow, and the two answers are different gestures on the same geometry: grabbing a
+/// slot's rail spends its width, and grabbing its centerline moves the slot. Least motion answers
+/// the first, because the cheapest way to satisfy one hand is always to move that point alone and
+/// leave the rest — maximum deformation for minimum travel. The caller is the only one who knows
+/// which gesture it is, so it says.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShapeUnderTheHands {
+    /// A RESHAPE. Whatever the hands do not name may take up the difference, which is how a
+    /// deliberate freedom gets spent. Least motion alone, and the cheaper of the two.
+    FreeToChange,
+    /// A MOVE. Every edge span is asked to come out as it went in, so a pure translation of a
+    /// connected group is free and any stretch, rotation, or shear is paid for — see
+    /// [`Rigidity`]. Use it when the gesture is "take this with you" rather than "make this
+    /// different": without it, a translation is exactly the motion least travel refuses to pick.
+    ///
+    /// It is not free: the regularizer adds two rows per edge, and the Jacobian is taken by finite
+    /// differences over every one of them. Measured on an arc slot, a drag frame went from 0.15ms
+    /// to 1.67ms — invisible for one gesture and a laggy sketch if every drag pays it.
+    Carried,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct EdgeSpan {
     from: usize,
@@ -3455,6 +3479,19 @@ impl Problem {
         &self,
         hands: &[(PointId, [f64; 2])],
     ) -> Result<DragOutcome, RequestError> {
+        self.drag_together_holding(hands, ShapeUnderTheHands::FreeToChange)
+    }
+
+    /// [`drag_together`](Self::drag_together), saying whether the gesture is a RESHAPE or a MOVE.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any held point is not local to this problem.
+    pub fn drag_together_holding(
+        &self,
+        hands: &[(PointId, [f64; 2])],
+        shape: ShapeUnderTheHands,
+    ) -> Result<DragOutcome, RequestError> {
         let mut pulled = self.clone();
         for (held, at) in hands.iter().copied() {
             if held.owner != self.owner || held.index >= self.points.len() {
@@ -3472,7 +3509,13 @@ impl Problem {
             &pulled,
             &mut positions,
             &mut scalar_coordinates,
-            Rigidity::Ignored,
+            match shape {
+                ShapeUnderTheHands::FreeToChange => Rigidity::Ignored,
+                ShapeUnderTheHands::Carried => Rigidity::Preferred {
+                    anchored: &[],
+                    flexible_curves: &[],
+                },
+            },
         );
         let report = run(
             self,

@@ -785,3 +785,162 @@ fn a_straight_slots_caps_bulge_outward_whichever_side_the_width_was_picked() {
         );
     }
 }
+
+fn straight_slot() -> SketchSolid {
+    source()
+        .with_linear_slot(
+            ::parametric::sketch::LinearSlotKind::CenterToCenter,
+            SketchPoint::new(0, 0),
+            SketchPoint::new(6, 0),
+            SketchPoint::new(0, 1),
+            ctx(16),
+        )
+        .expect("a six-block slot of half-width one")
+}
+
+fn centerline_of(made: &SketchSolid) -> EntityId {
+    made.sketch
+        .segments()
+        .iter()
+        .find(|segment| matches!(segment.role, EntityRole::Construction))
+        .map(|segment| segment.id)
+        .expect("every slot grammar draws its centerline")
+}
+
+/// How far the drawing strayed from carrying every point by exactly `by`.
+fn worst_slip(made: &SketchSolid, before: &[(EntityId, [f64; 2])], by: [f64; 2]) -> f64 {
+    before.iter().fold(0.0_f64, |worst, (id, was)| {
+        let now = made
+            .sketch
+            .points()
+            .iter()
+            .find(|point| point.id == *id)
+            .map(|point| point.at.in_plane())
+            .expect("a translation loses no point");
+        worst.max((now[0] - was[0] - by[0]).hypot(now[1] - was[1] - by[1]))
+    })
+}
+
+fn stood_at(made: &SketchSolid) -> Vec<(EntityId, [f64; 2])> {
+    made.sketch
+        .points()
+        .iter()
+        .map(|point| (point.id, point.at.in_plane()))
+        .collect()
+}
+
+/// The owner's report: "I can only drag a center-to-center slot up and down."
+///
+/// A body drag used to be a perpendicular OFFSET for every segment, which is the right gesture for
+/// a rail — sideways off a boundary means nearer or further — and throws away the whole of what it
+/// means for a centerline. Sliding a straight slot along its own length is a real motion the
+/// drawing has the freedom for, and half of any diagonal one.
+#[test]
+fn a_straight_slots_centerline_carries_it_in_any_direction() {
+    for by in [[4.0, 0.0], [0.0, 3.0], [4.0, 5.0], [-2.5, -1.5]] {
+        let mut made = straight_slot();
+        let centerline = centerline_of(&made);
+        let before = stood_at(&made);
+        assert!(
+            made.sketch
+                .translate_curve(SketchCurve::Segment(centerline), by, ctx(16))
+                .unwrap(),
+            "the drawing refused to be carried by {by:?}"
+        );
+        assert!(
+            worst_slip(&made, &before, by) < 1.0e-4,
+            "carried by {by:?} left something behind by {}",
+            worst_slip(&made, &before, by)
+        );
+    }
+}
+
+/// Translating is a MOVE, so the width — the one freedom a slot leaves open — is not what the
+/// motion gets spent on.
+///
+/// Least motion alone picks the opposite: the cheapest way to satisfy a hand is to move that point
+/// and leave the rest, which is maximum deformation for minimum travel. Measured before the
+/// gesture said which it was, a diagonal carry of 4 across and 5 up grew the half-width from 1.0
+/// to 3.43.
+#[test]
+fn carrying_a_slot_does_not_spend_its_width() {
+    let mut made = straight_slot();
+    let centerline = centerline_of(&made);
+    made.sketch
+        .translate_curve(SketchCurve::Segment(centerline), [4.0, 5.0], ctx(16))
+        .unwrap();
+    let rails: Vec<f64> = made
+        .sketch
+        .points()
+        .iter()
+        .map(|point| point.at.in_plane()[1])
+        .filter(|height| (height - 5.0).abs() > 1.0e-6)
+        .collect();
+    assert_eq!(rails.len(), 4, "four corners off the spine: {rails:?}");
+    for height in rails {
+        assert!(
+            ((height - 5.0).abs() - 1.0).abs() < 1.0e-4,
+            "the half-width is no longer one: {height}"
+        );
+    }
+}
+
+/// The owner's report: dragging an Overall Slot's centerline "has a large blast radius, causing all
+/// of the other segments to change size."
+///
+/// The pin that holds a slot's spine while a RAIL widens was finding the cap centers standing on
+/// the centerline and holding them there — against the hands carrying the very curve they stand on.
+/// Half the hands said move and half said stay, so least squares split the difference: a 5.0 pull
+/// arrived as 2.25, stretched the slot by 0.8 and grew its half-width by half again.
+#[test]
+fn dragging_an_overall_slots_centerline_does_not_fight_its_own_hands() {
+    let mut made = source()
+        .with_linear_slot(
+            ::parametric::sketch::LinearSlotKind::Overall,
+            SketchPoint::new(0, 0),
+            SketchPoint::new(6, 0),
+            SketchPoint::new(0, 1),
+            ctx(16),
+        )
+        .unwrap();
+    let centerline = centerline_of(&made);
+    let extremes: Vec<EntityId> = made
+        .sketch
+        .points()
+        .iter()
+        .filter(|point| {
+            let at = point.at.in_plane();
+            at[1].abs() < 1.0e-9 && (at[0].abs() < 1.0e-9 || (at[0] - 6.0).abs() < 1.0e-9)
+        })
+        .map(|point| point.id)
+        .collect();
+    assert_eq!(
+        extremes.len(),
+        2,
+        "the slot keeps the ends the author picked"
+    );
+
+    assert!(made
+        .sketch
+        .move_curve(SketchCurve::Segment(centerline), [3.0, 5.0], ctx(16))
+        .unwrap());
+
+    for id in extremes {
+        let at = made
+            .sketch
+            .points()
+            .iter()
+            .find(|point| point.id == id)
+            .map(|point| point.at.in_plane())
+            .expect("an extreme survives the drag");
+        assert!(
+            (at[1] - 5.0).abs() < 1.0e-4,
+            "an extreme went {} of the 5.0 it was pulled",
+            at[1]
+        );
+        assert!(
+            at[0].abs() < 1.0e-3 || (at[0] - 6.0).abs() < 1.0e-3,
+            "and the slot stretched along its own length: {at:?}"
+        );
+    }
+}

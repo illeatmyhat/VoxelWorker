@@ -2110,6 +2110,13 @@ impl Sketch {
         }
     }
 
+    /// Whether `curve` draws as real geometry or as reference, or nothing if the drawing has no
+    /// such curve. The question a body drag asks before deciding whether it is an offset or a
+    /// translation — see [`translate_curve`](Self::translate_curve).
+    pub fn curve_role(&self, curve: SketchCurve) -> Option<EntityRole> {
+        self.curve_lineage_and_role(curve).map(|(_, role)| role)
+    }
+
     /// Flip one CURVE between real and construction while retaining its stable id.
     ///
     /// Points, constraint ids and unknown ids are harmless no-ops — see
@@ -2506,7 +2513,7 @@ impl Sketch {
         let Some(mut hands) = self.hands_moving_a_curve(curve, at) else {
             return Ok(false);
         };
-        hands.extend(self.handles_a_widening_must_hold(&hands));
+        hands.extend(self.handles_a_widening_must_hold(curve, &hands));
         self.drag_or_leave_it_alone(|sketch| {
             for (point, to) in &hands {
                 if let Some(index) = sketch.point_index(*point) {
@@ -2514,44 +2521,58 @@ impl Sketch {
                 }
             }
             sketch.sync_derived_points();
-            sketch.settle_under_the_hands(&hands, context)
+            sketch.settle_under_the_hands(
+                &hands,
+                parametric::sketch::ShapeUnderTheHands::FreeToChange,
+                context,
+            )
         })
     }
 
-    /// Slide a whole SPLINE by `by`, carrying every point it stands on, and settle around it.
+    /// Slide a whole curve by `by`, carrying every point it stands on, and settle around it.
     /// Reports whether the drawing accepted the move.
     ///
     /// A translation, where [`move_curve`](Self::move_curve) is a perpendicular offset. The two
-    /// gestures are different because the curves are: a segment dragged along itself is the same
-    /// segment, so the only thing sideways can mean is nearer or further — but a spline has no
-    /// single perpendicular, and the one motion that means anything for the aggregate is moving
-    /// all of it. Nothing about the shape changes, which is what makes it safe to state as equal
+    /// gestures answer different questions, and which one a curve gets is decided by what a body
+    /// drag of it could possibly mean:
+    ///
+    /// - A **boundary** curve bounds a region, so sideways means NEARER OR FURTHER — a rail dragged
+    ///   away from its slot's middle is how the author spends the width, and `move_curve` is that.
+    /// - A **spline** has no single perpendicular to offset along, so the only motion its aggregate
+    ///   has is moving all of it.
+    /// - A **construction** curve bounds nothing. There is no region for it to be the near or far
+    ///   side of, so an offset says nothing about it, and translating is the whole of what dragging
+    ///   its body can mean. This is how a slot's centerline moves the slot: not because a
+    ///   centerline is a special kind of curve the drawing knows about, but because the cap centers
+    ///   stand on it, and carrying it carries them.
+    ///
+    /// Which is why this takes the displacement WHOLE and does not project it. Sliding a straight
+    /// slot along its own length is a real motion of the shape and the drawing has the freedom for
+    /// it; a perpendicular reading throws that component away and the slot only ever moves
+    /// sideways (owner, 2026-08-04).
+    ///
+    /// Nothing about the curve's own shape changes, which is what makes it safe to state as equal
     /// hands: a rigid displacement satisfies every relation that held before it, so the settle has
-    /// nothing to trade off and no configuration to split the difference between.
+    /// nothing to trade off and no configuration to split the difference between. What the rest of
+    /// the drawing does about it is the constraints' business, not this function's — there is no
+    /// walk out to a "whole shape" here, because a coincidence is already the statement that two
+    /// points travel together.
     ///
     /// This is a DISPLACEMENT and not an absolute reading, unlike every other sketch drag. The
-    /// caller measures it from where the press landed, because "the spline goes where the cursor
-    /// is" names no particular place on a curve with no single handle.
+    /// caller measures it from where the press landed, because "the curve goes where the cursor is"
+    /// names no particular place on a curve the author grabbed the middle of.
     pub fn translate_curve(
         &mut self,
         curve: SketchCurve,
         by: [f64; 2],
         context: parametric::EvaluationContext,
     ) -> Result<bool, SketchEvaluationError> {
-        let SketchCurve::Spline(id) = curve else {
-            return Ok(false);
-        };
-        let Some(spline) = self.splines.iter().find(|spline| spline.id == id) else {
-            return Ok(false);
-        };
-        // The tangent handles travel with the fit points they steer. A handle left standing would
-        // re-aim its tangent by exactly the distance the spline moved, which is the one thing a
-        // rigid translation must not do.
-        let hands: Vec<_> = spline
-            .points
-            .iter()
-            .copied()
-            .chain(spline.tangents.values().flat_map(|handle| handle.arms()))
+        // A derived point is a function of the ones being carried and follows on its own; naming it
+        // as a hand would assert a position the sync is about to overwrite.
+        let hands: Vec<_> = self
+            .points_a_translation_carries(curve)
+            .into_iter()
+            .filter(|point| !self.is_derived_point(*point))
             .filter_map(|point| {
                 let stood = self.point_in_plane(point)?;
                 Some((point, [stood[0] + by[0], stood[1] + by[1]]))
@@ -2567,8 +2588,59 @@ impl Sketch {
                 }
             }
             sketch.sync_derived_points();
-            sketch.settle_under_the_hands(&hands, context)
+            sketch.settle_under_the_hands(
+                &hands,
+                parametric::sketch::ShapeUnderTheHands::Carried,
+                context,
+            )
         })
+    }
+
+    /// Every point a translation of `curve` has to carry with it.
+    ///
+    /// Not [`points_of`](Self::points_of), which answers for the curves a drag walks THROUGH and so
+    /// stops at the three forms relation mathematics sees. A translation has to name the whole
+    /// curve or it will leave part of it standing: a higher curve carries its shape in its points,
+    /// and a spline's tangent handles are points too — a handle left behind would re-aim its
+    /// tangent by exactly the distance the spline moved, which is the one thing a rigid translation
+    /// must not do.
+    fn points_a_translation_carries(&self, curve: SketchCurve) -> Vec<EntityId> {
+        match curve {
+            SketchCurve::Segment(_) | SketchCurve::Arc(_) | SketchCurve::Circle(_) => {
+                self.points_of(curve)
+            }
+            SketchCurve::Bezier(id) => self
+                .beziers
+                .iter()
+                .find(|bezier| bezier.id == id)
+                .map(|bezier| bezier.controls.to_vec())
+                .unwrap_or_default(),
+            SketchCurve::Ellipse(id) => self
+                .ellipses
+                .iter()
+                .find(|ellipse| ellipse.id == id)
+                .map(|ellipse| vec![ellipse.center, ellipse.major_endpoint, ellipse.width_point])
+                .unwrap_or_default(),
+            SketchCurve::Conic(id) => self
+                .conics
+                .iter()
+                .find(|conic| conic.id == id)
+                .map(|conic| vec![conic.from, conic.to, conic.shoulder])
+                .unwrap_or_default(),
+            SketchCurve::Spline(id) => self
+                .splines
+                .iter()
+                .find(|spline| spline.id == id)
+                .map(|spline| {
+                    spline
+                        .points
+                        .iter()
+                        .copied()
+                        .chain(spline.tangents.values().flat_map(|handle| handle.arms()))
+                        .collect()
+                })
+                .unwrap_or_default(),
+        }
     }
 
     /// Run a drag attempt, and put the drawing back exactly as it was unless it stands.
@@ -2644,7 +2716,11 @@ impl Sketch {
                 // one step earlier.
                 self.carry_authored_handles(&before);
                 self.sync_derived_points();
-                self.settle_under_the_hands(&hands, context)
+                self.settle_under_the_hands(
+                    &hands,
+                    parametric::sketch::ShapeUnderTheHands::FreeToChange,
+                    context,
+                )
             }
         }
     }
@@ -2814,14 +2890,41 @@ impl Sketch {
     /// the drag already holds. That is a slot's cap centers and its turning center, and it is not
     /// a corner, an endpoint, or anything in the rest of the drawing. Points the drag is already
     /// moving are left alone: a hand that both moves and holds is not a hand.
+    ///
+    /// # A handle standing on the dragged curve is one of those
+    ///
+    /// The pin says "hold the spine while a RAIL widens", and it only means anything because the
+    /// rail and the spine are different curves. Drag the spine itself and the same walk finds the
+    /// handles standing on it and pins them where they were — against the very hands carrying the
+    /// curve they stand on. Half the hands then say move and half say stay, and least squares does
+    /// what it is asked: it splits the difference. Measured on an Overall Slot, a 5.0 pull on the
+    /// centerline arrived as 2.25, stretched the slot by 0.8 and grew its half-width by half again.
+    ///
+    /// A handle is only free to be pinned if the drag does not already carry it. Standing at one of
+    /// the dragged curve's own ends is one way to be carried and is caught by `held`; standing
+    /// ANYWHERE on it under [`PointOnCurve`](ConstraintKind::PointOnCurve) is the other, and is why
+    /// this needs to know which curve the hands came from. An Overall Slot is authored by its far
+    /// ends, so its centerline runs out past both cap centers and holds them on it that way — the
+    /// ends of the curve are not the handles, and identity alone never sees them.
     fn handles_a_widening_must_hold(
         &self,
+        curve: SketchCurve,
         hands: &[(EntityId, [f64; 2])],
     ) -> Vec<(EntityId, [f64; 2])> {
         let held: Vec<EntityId> = hands.iter().map(|(point, _)| *point).collect();
+        let carried = |point: EntityId| {
+            held.contains(&point)
+                || self.constraints.iter().any(|constraint| {
+                    matches!(
+                        constraint.kind,
+                        ConstraintKind::PointOnCurve { point: on, curve: along }
+                            if on == point && along == curve
+                    )
+                })
+        };
         self.what_a_drag_of_these_can_reach(&held)
             .iter()
-            .filter(|point| !held.contains(point))
+            .filter(|point| !carried(**point))
             .filter(|point| !self.is_derived_point(**point))
             .filter(|point| self.center_this_handle_stands_on(**point).is_some())
             .filter_map(|point| Some((*point, self.point_in_plane(*point)?)))
@@ -3180,6 +3283,7 @@ impl Sketch {
     fn settle_under_the_hands(
         &mut self,
         hands: &[(EntityId, [f64; 2])],
+        shape: parametric::sketch::ShapeUnderTheHands,
         context: parametric::EvaluationContext,
     ) -> Result<bool, SketchEvaluationError> {
         // Only the part of the drawing the hands can reach takes part. What the rest of the plane
@@ -3200,7 +3304,7 @@ impl Sketch {
         }
         let prepared = constraint::prepare_scoped(self, &standing, Some(context), Some(&reach))
             .map_err(map_prepare_evaluation_error)?;
-        let (settled, accepted) = match prepared.drag_together(hands) {
+        let (settled, accepted) = match prepared.drag_together_holding(hands, shape) {
             Ok(parametric::sketch::DragOutcome::Accepted(settled)) => (settled, true),
             Ok(parametric::sketch::DragOutcome::Rejected(settled)) => (settled, false),
             Err(_) => return Ok(false),

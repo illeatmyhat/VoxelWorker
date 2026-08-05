@@ -100,7 +100,8 @@ fn drag_settle_zones_by_population() {
 
         // 5. The kernel itself, on a problem whose size does NOT depend on `count`.
         let started = Instant::now();
-        let outcome = prepared.drag_together(&hands);
+        let outcome = prepared
+            .drag_together_holding(&hands, parametric::sketch::ShapeUnderTheHands::FreeToChange);
         let solve_ms = milliseconds(started);
         assert!(outcome.is_ok(), "the drag resolves");
 
