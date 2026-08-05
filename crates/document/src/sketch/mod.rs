@@ -81,7 +81,7 @@ pub use solid::SketchSolid;
 pub use substrate::geom2d::LoopRole;
 pub use transform::{SketchTransformEntity, SketchTransformRefusal};
 
-use parametric::sketch::HandRole;
+use parametric::sketch::{HandRole, KeptQuantity};
 use parametric::units::{AngleMeasurement, Measurement};
 use std::num::NonZeroU32;
 
@@ -303,6 +303,29 @@ fn nudges_a_drag_is_delivered_in(grabbed: [f64; 2], to: [f64; 2]) -> Vec<([f64; 
 /// Below this a curve is too small for the direction across it to be read from its own points,
 /// and a drag of it would report a wild displacement out of a rounding difference.
 const DEGENERATE_CURVE_VOXELS: f64 = 1.0e-9;
+
+/// What a drag answered: whether it stood, and the quantity it was pulled onto if it snapped.
+///
+/// The snap is the reason this is not just a bool. A drag that keeps a radius puts the hand
+/// somewhere slightly other than the cursor, and from the outside that is indistinguishable from
+/// a solve that could not reach — the author reported exactly that: "I can't really tell if it's
+/// snapping." So the drag says what it kept, and the overlay draws it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DragAnswer {
+    /// Whether the drawing stood under the gesture. A drag that did not is rolled back whole.
+    pub moved: bool,
+    /// The quantity the hand was pulled onto, where one was — see
+    /// [`parametric::sketch::KeptQuantity`].
+    pub kept: Option<KeptQuantity>,
+}
+
+impl DragAnswer {
+    /// A gesture that stood or did not, with no quantity to show for it. Every drag but a point's
+    /// answers this way: a snap needs a LEAD hand to measure from, and a body drag has none.
+    const fn stood(moved: bool) -> Self {
+        Self { moved, kept: None }
+    }
+}
 
 /// One point a drag asserts, on the document's own ids, and what it is doing there.
 ///
@@ -2537,8 +2560,21 @@ impl Sketch {
         }
     }
 
-    /// Move the point `id` to `at` and settle the drawing around it — the drag write path.
-    /// Reports whether the point exists.
+    /// Move the point `id` to `at` and settle the drawing around it, reporting only whether the
+    /// drawing stood. [`move_point_reporting_its_snap`](Self::move_point_reporting_its_snap) is
+    /// the same gesture for a caller that also wants to DRAW what the drag kept.
+    pub fn move_point(
+        &mut self,
+        id: EntityId,
+        at: SketchPoint,
+        context: parametric::EvaluationContext,
+    ) -> Result<bool, SketchEvaluationError> {
+        self.move_point_reporting_its_snap(id, at, context)
+            .map(|answered| answered.moved)
+    }
+
+    /// [`move_point`](Self::move_point), and what the drag was pulled onto — the write path an
+    /// overlay uses, because it can show the author the quantity their hand is sliding along.
     ///
     /// One path, for every point (ADR 0038). There is no arm that reads the cursor as a quantity
     /// instead of a position: an arc's center is a placed point like any other, and a conic's rho
@@ -2549,19 +2585,19 @@ impl Sketch {
     /// pinned there — see [`settle_under_the_hands`](Self::settle_under_the_hands). A constraint
     /// that only held at the moment it was asserted is not a constraint; it has to survive the
     /// next drag, which is the first thing the author does to test it.
-    pub fn move_point(
+    pub fn move_point_reporting_its_snap(
         &mut self,
         id: EntityId,
         at: SketchPoint,
         context: parametric::EvaluationContext,
-    ) -> Result<bool, SketchEvaluationError> {
+    ) -> Result<DragAnswer, SketchEvaluationError> {
         // Grabbing the BACK arm of a tangent lever steers the FRONT one. The two ends name one
         // quantity, so only one of them can be the thing that moves; the mirror is restored by
         // `sync_tangent_arms` once the drag settles.
         let (id, at) = match self.back_arm_steers(id) {
             Some((fit, forward)) => {
                 let Some(anchor) = self.point_in_plane(fit) else {
-                    return Ok(false);
+                    return Ok(DragAnswer::stood(false));
                 };
                 let grabbed = at.in_plane();
                 (
@@ -2575,7 +2611,7 @@ impl Sketch {
             None => (id, at),
         };
         if self.point_index(id).is_none() {
-            return Ok(false);
+            return Ok(DragAnswer::stood(false));
         }
         self.drag_or_leave_it_alone(|sketch| sketch.point_move_attempt(id, at, context))
     }
@@ -2623,6 +2659,7 @@ impl Sketch {
             sketch.sync_derived_points();
             sketch.settle_under_the_hands(&hands, &was, context)
         })
+        .map(|answered| answered.moved)
     }
 
     /// Drag `curve` by the place on it the author actually grabbed: `grabbed` goes to `to`, and
@@ -2666,10 +2703,14 @@ impl Sketch {
             let Some(index) = self.conics.iter().position(|conic| conic.id == id) else {
                 return Ok(false);
             };
-            return self.drag_or_leave_it_alone(|sketch| {
-                sketch.reshape_conic_toward(index, grabbed, to);
-                sketch.standing_constraints_hold(context)
-            });
+            return self
+                .drag_or_leave_it_alone(|sketch| {
+                    sketch.reshape_conic_toward(index, grabbed, to);
+                    sketch
+                        .standing_constraints_hold(context)
+                        .map(DragAnswer::stood)
+                })
+                .map(|answered| answered.moved);
         }
         if !curve.carries_relation_geometry() {
             return self.translate_curve(curve, [to[0] - grabbed[0], to[1] - grabbed[1]], context);
@@ -2678,25 +2719,29 @@ impl Sketch {
         // own points somewhere the relations no longer hold and let the solve repair them. A circle
         // has none, so it keeps the grip below.
         if self.curve_a_body_drag_can_seed(curve) {
-            return self.drag_or_leave_it_alone(|sketch| {
-                let mut stood = true;
-                for (from, until) in nudges_a_drag_is_delivered_in(grabbed, to) {
-                    let Some(asked) = sketch.what_a_body_drag_asks_of(curve, from, until) else {
-                        return Ok(false);
-                    };
-                    for (point, at) in &asked.seeded {
-                        if let Some(index) = sketch.point_index(*point) {
-                            sketch.points[index].at = SketchPoint::from_continuous(at[0], at[1]);
+            return self
+                .drag_or_leave_it_alone(|sketch| {
+                    let mut answered = DragAnswer::stood(true);
+                    for (from, until) in nudges_a_drag_is_delivered_in(grabbed, to) {
+                        let Some(asked) = sketch.what_a_body_drag_asks_of(curve, from, until)
+                        else {
+                            return Ok(DragAnswer::stood(false));
+                        };
+                        for (point, at) in &asked.seeded {
+                            if let Some(index) = sketch.point_index(*point) {
+                                sketch.points[index].at =
+                                    SketchPoint::from_continuous(at[0], at[1]);
+                            }
+                        }
+                        sketch.sync_derived_points();
+                        answered = sketch.settle_under_the_hands(&asked.pulled, &[], context)?;
+                        if !answered.moved {
+                            break;
                         }
                     }
-                    sketch.sync_derived_points();
-                    stood = sketch.settle_under_the_hands(&asked.pulled, &[], context)?;
-                    if !stood {
-                        break;
-                    }
-                }
-                Ok(stood)
-            });
+                    Ok(answered)
+                })
+                .map(|answered| answered.moved);
         }
         let grip = self.add_free_point(SketchPoint::from_continuous(grabbed[0], grabbed[1]));
         self.set_point_lifetime(grip, PointLifetime::CurveAnchored);
@@ -2729,7 +2774,8 @@ impl Sketch {
         // Minted BEFORE the rollback point, so a refused drag restores a drawing that still has the
         // grip in it and the same two lines take it away either way.
         let stood = self
-            .drag_or_leave_it_alone(|sketch| sketch.settle_under_the_hands(&hands, &[], context));
+            .drag_or_leave_it_alone(|sketch| sketch.settle_under_the_hands(&hands, &[], context))
+            .map(|answered| answered.moved);
         self.constraints
             .retain(|constraint| constraint.id != holding);
         self.points.retain(|point| point.id != grip);
@@ -3016,6 +3062,7 @@ impl Sketch {
             sketch.sync_derived_points();
             sketch.settle_under_the_hands(&hands, &was, context)
         })
+        .map(|answered| answered.moved)
     }
 
     /// Every point a translation of `curve` has to carry with it.
@@ -3071,17 +3118,21 @@ impl Sketch {
     /// — meets ONE rollback here rather than one apiece.
     fn drag_or_leave_it_alone(
         &mut self,
-        attempt: impl FnOnce(&mut Self) -> Result<bool, SketchEvaluationError>,
-    ) -> Result<bool, SketchEvaluationError> {
+        attempt: impl FnOnce(&mut Self) -> Result<DragAnswer, SketchEvaluationError>,
+    ) -> Result<DragAnswer, SketchEvaluationError> {
         let before_points = self.points.clone();
         let before_arcs = self.arcs.clone();
         let before_circles = self.circles.clone();
         let before_conics = self.conics.clone();
         // Any drag can leave a conic with nothing to shape — a hand on its control point, or a
         // settle that walked an endpoint onto it. One check covers them all.
-        let result = attempt(self)
-            .map(|stood| stood && self.every_conic_resolves() && self.every_tangent_lever_stands());
-        if matches!(result, Ok(true)) {
+        let result = attempt(self).map(|answered| DragAnswer {
+            moved: answered.moved
+                && self.every_conic_resolves()
+                && self.every_tangent_lever_stands(),
+            ..answered
+        });
+        if matches!(result, Ok(DragAnswer { moved: true, .. })) {
             return result;
         }
         self.points = before_points;
@@ -3101,7 +3152,7 @@ impl Sketch {
         id: EntityId,
         at: SketchPoint,
         context: parametric::EvaluationContext,
-    ) -> Result<bool, SketchEvaluationError> {
+    ) -> Result<DragAnswer, SketchEvaluationError> {
         // Every point moves the same way now, an arc's center included: ADR 0038 left the
         // drawing with no point whose coordinates are somebody else's arithmetic, so there is no
         // longer a second kind of drag that authors a quantity instead of a position.
@@ -3730,7 +3781,7 @@ impl Sketch {
         hands: &[Hand],
         was: &[(EntityId, [f64; 2])],
         context: parametric::EvaluationContext,
-    ) -> Result<bool, SketchEvaluationError> {
+    ) -> Result<DragAnswer, SketchEvaluationError> {
         let was: Vec<(EntityId, [f64; 2])> = hands
             .iter()
             .filter_map(|hand| {
@@ -3766,18 +3817,18 @@ impl Sketch {
                 }
             }
             self.sync_derived_points();
-            return Ok(true);
+            return Ok(DragAnswer::stood(true));
         }
         let prepared = constraint::prepare_scoped(self, &standing, Some(context), Some(&reach))
             .map_err(map_prepare_evaluation_error)?;
         let (settled, accepted) = match prepared.drag_together(hands, &was) {
             Ok(parametric::sketch::DragOutcome::Accepted(settled)) => (settled, true),
             Ok(parametric::sketch::DragOutcome::Rejected(settled)) => (settled, false),
-            Err(_) => return Ok(false),
+            Err(_) => return Ok(DragAnswer::stood(false)),
         };
         validate_prepared_tangent_contacts(&prepared, &settled.solution)?;
         if !accepted {
-            return Ok(false);
+            return Ok(DragAnswer::stood(false));
         }
         let plan = prepared
             .plan_apply(&self.points, &self.circles, &settled.solution)
@@ -3786,7 +3837,10 @@ impl Sketch {
         plan.apply(self);
         self.carry_authored_handles(&before);
         self.sync_derived_points();
-        Ok(true)
+        Ok(DragAnswer {
+            moved: true,
+            kept: settled.kept,
+        })
     }
 
     /// Re-solve a conic's rho from a body drag — the post-commit half of the authoring gesture's

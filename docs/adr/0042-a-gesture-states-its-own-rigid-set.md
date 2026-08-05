@@ -106,9 +106,15 @@ of it authored the sweep. [ADR 0038](0038-a-point-is-placed-never-computed.md) e
 these were what survived it. A center drag now lands where it is put, both freedoms of it, and the
 sweep is authored by dragging an END or the rim.
 
+**The snap is now visible.** A drag reports the quantity it kept — `KeptQuantity { about, radius }`,
+riding home on `Settled` and out through `Sketch::move_point_reporting_its_snap` — and the overlay
+draws that circle dashed at the guide weight, the linetype already reserved for the thing a shape is
+being derived from. A snap puts the point a little off the cursor, which from the outside is
+indistinguishable from a solve that could not reach; the author said so plainly — "I can't really
+tell if it's snapping." The cone is unchanged at a quarter of the gesture's travel. It was never
+measured to be wrong, only invisible, and the ghost is the instrument for measuring it.
+
 **What is not done.** The preference pass survives. It is still a mechanism no other solver has, and
 the honest next step is to try deleting it and letting least motion be emergent from the initial
 guess the way planegcs and SolveSpace do — but that is a separate change with its own measurements,
-and this one is already load-bearing. The author also asked for a dashed ghost showing the circle a
-drag has snapped to, which needs the snap reported out of the solve and up to the overlay; nothing
-in the solver currently tells anyone that it fired.
+and this one is already load-bearing.

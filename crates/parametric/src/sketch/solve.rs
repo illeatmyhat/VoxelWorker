@@ -2301,6 +2301,11 @@ pub struct TangentContactFailure {
 pub struct Settled {
     pub solution: Solution,
     pub diagnostics: Diagnostics,
+    /// The quantity a DRAG was pulled onto, where this settle answered one and it snapped.
+    ///
+    /// Not a fact about the equations — a fact about how the gesture was read, riding home with
+    /// the answer because there is nowhere else for it to ride. A plain settle leaves it empty.
+    pub kept: Option<KeptQuantity>,
 }
 
 #[derive(Debug, Clone)]
@@ -2498,9 +2503,35 @@ impl Hand {
     }
 }
 
+/// The quantity a drag was pulled onto, in enough detail to DRAW.
+///
+/// A snap is invisible from the outside: the hand goes somewhere slightly other than where the
+/// cursor is, and the author is left guessing whether that was the drawing keeping a radius for
+/// them or the solve failing to reach. So the drag says which quantity it kept and what it is
+/// measured from, and the overlay draws the circle — the author sees the thing they are moving
+/// along and can feel the difference between sticking to it and pulling off it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct KeptQuantity {
+    /// What the quantity is measured from, in plane coordinates: an arc's center, or the far end
+    /// of the segment whose length is being kept.
+    pub about: [f64; 2],
+    /// How far the held point stood from it. The radius of the circle the hand is sliding along.
+    pub radius: f64,
+}
+
+/// What one frame of a walked drag answered: how the solve went, and what the hand was pulled
+/// onto if anything. The walk keeps the LAST frame's, because that is the one that delivered.
+#[derive(Debug, Clone, Copy, Default)]
+struct Frame {
+    report: Option<SolveReport>,
+    kept: Option<KeptQuantity>,
+}
+
 /// A hand pulled onto a quantity its own curve already had — see [`Problem::snapped`].
 #[derive(Debug, Clone)]
 struct Snap {
+    /// What the hand was pulled onto, kept so the overlay can draw it.
+    kept: KeptQuantity,
     /// The hand, moved onto the circle the quantity draws.
     hands: Vec<Hand>,
     /// How far around the point the quantity is measured from the hand is asking to go, in
@@ -3436,6 +3467,7 @@ impl Problem {
         Settled {
             solution,
             diagnostics,
+            kept: None,
         }
     }
 
@@ -3655,7 +3687,7 @@ impl Problem {
             .chain(self.arc_centers.iter().filter_map(|arc| {
                 (ends_here(arc.from) || ends_here(arc.to)).then_some(arc.center)
             }));
-        let mut snap: Option<([f64; 2], f64, f64)> = None;
+        let mut snap: Option<([f64; 2], f64, f64, f64)> = None;
         for pivot in circles {
             let Some(about) = stood_at(pivot) else {
                 continue;
@@ -3669,11 +3701,11 @@ impl Problem {
             if across > Self::SNAP_CONE * travel {
                 continue;
             }
-            if snap.is_none_or(|(_, _, nearest)| across < nearest) {
-                snap = Some((about, quantity / reach, across));
+            if snap.is_none_or(|(_, _, _, nearest)| across < nearest) {
+                snap = Some((about, quantity / reach, quantity, across));
             }
         }
-        let (about, scale, _) = snap?;
+        let (about, scale, quantity, _) = snap?;
         let arm = |at: [f64; 2]| [at[0] - about[0], at[1] - about[1]];
         let (from, to) = (arm(stood), arm(now));
         // The snap is a TURN of the whole rigid set, not a correction to one point of it. Moving
@@ -3715,6 +3747,10 @@ impl Problem {
         }
         Some(Snap {
             hands: snapped,
+            kept: KeptQuantity {
+                about,
+                radius: quantity,
+            },
             turn: (from[0] * to[1] - from[1] * to[0])
                 .atan2(from[0] * to[0] + from[1] * to[1])
                 .abs(),
@@ -3813,7 +3849,7 @@ impl Problem {
         }
         let mut scalar_coordinates = self.scalar_coordinates();
         let (origin, frames) = self.walk_of(hands, was, &positions);
-        let mut report = None;
+        let mut answered = Frame::default();
         for frame in 1..=frames {
             let share = f64::from(frame) / f64::from(frames);
             let target: Vec<Hand> = hands
@@ -3845,7 +3881,7 @@ impl Problem {
             // It also stops the answer creeping. A step that measures from the last one snaps to
             // whatever that step settled at, so the quantity it is meant to be keeping drifts a
             // little each time; measured from the origin it is the quantity the author had.
-            report = standing.drag_one_frame(
+            answered = standing.drag_one_frame(
                 &target,
                 &origin,
                 &opening,
@@ -3855,10 +3891,11 @@ impl Problem {
             )?;
         }
         let solution = self.solution(positions, &scalar_coordinates);
-        let diagnostics = diagnostics(self, &solution, report);
+        let diagnostics = diagnostics(self, &solution, answered.report);
         let settled = Settled {
             solution,
             diagnostics: diagnostics.clone(),
+            kept: answered.kept,
         };
         Ok(
             if diagnostics.satisfied && diagnostics.tangent_contacts_valid {
@@ -3933,7 +3970,7 @@ impl Problem {
         loosened: &[SketchCurve],
         positions: &mut Vec<[f64; 2]>,
         scalar_coordinates: &mut Vec<f64>,
-    ) -> Result<Option<SolveReport>, RequestError> {
+    ) -> Result<Frame, RequestError> {
         // Whose gesture this is, said by the caller rather than measured here. A reshape names
         // what it turns ABOUT, so a set with a pin in it is one — and the drawing has to hold
         // still around the moving vertex, or the whole slot slides over to meet the cursor and
@@ -3941,6 +3978,7 @@ impl Problem {
         // and does not need a stillness tolerance to decide that a settled pin is still a pin.
         let reshaping = hands.iter().any(|hand| hand.role == HandRole::Pin);
         let snap = self.snapped(hands, was, positions);
+        let kept = snap.as_ref().map(|snap| snap.kept);
         let hands = snap.as_ref().map_or(hands, |snap| snap.hands.as_slice());
         // The hand is written into the guess as well as asserted, so the pass starts from the
         // drawing the author is looking at rather than from the one they left behind.
@@ -3994,7 +4032,10 @@ impl Problem {
             },
         );
         run(&pulled, positions, scalar_coordinates, Rigidity::Ignored);
-        Ok(run(self, positions, scalar_coordinates, Rigidity::Ignored))
+        Ok(Frame {
+            report: run(self, positions, scalar_coordinates, Rigidity::Ignored),
+            kept,
+        })
     }
 
     /// The points pinned outright, which a shape-holding preference has to leave where they are.
@@ -4041,6 +4082,7 @@ impl Problem {
         Settled {
             solution,
             diagnostics,
+            kept: None,
         }
     }
 

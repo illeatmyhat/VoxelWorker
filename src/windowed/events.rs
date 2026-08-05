@@ -200,6 +200,9 @@ impl ApplicationHandler for App {
                                         // stationary release (this arm only runs under `!egui_consumed`,
                                         // so a press on the context menu never arms it).
                                         state.sketch_select_press = true;
+                                        // A new gesture starts owing nothing: the last drag's snap
+                                        // circle belonged to the hand that has already let go.
+                                        state.forget_the_snap_ghost();
                                         state.sketch_drag =
                                             state.begin_sketch_vertex_drag(cursor_x, cursor_y);
                                         // An EMPTY-SPACE press may become a marquee past the click

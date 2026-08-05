@@ -457,6 +457,11 @@ struct WindowedState {
     /// already taken, and a refusal when the tool cannot complete from here. Empty when no drawing
     /// tool is mid-gesture. Refreshed alongside the handles.
     sketch_draw_preview: Vec<ui::chrome::SketchPreviewMark>,
+    /// The quantity the live vertex drag is being pulled onto, drawn as a dashed guide circle so
+    /// the author can SEE the snap. Without it a snap is indistinguishable from a solve that could
+    /// not reach the cursor, which is exactly how it read: "I can't really tell if it's snapping."
+    /// Set by each drag frame that snapped, cleared with the drag.
+    sketch_snap_ghost: Option<parametric::sketch::KeptQuantity>,
     /// The orbit-center marker for THIS frame: its projected screen position (egui points) and
     /// whether a placement is armed (the marker is riding the cursor), or `None` when the pivot
     /// should not be drawn. Refreshed alongside the sketch overlay, from
@@ -978,6 +983,7 @@ impl WindowedState {
             sketch_menu_face: None,
             sketch_insert_preview: None,
             sketch_draw_preview: Vec::new(),
+            sketch_snap_ghost: None,
             orbit_center_overlay: None,
             last_ray_unprojection: None,
             sketch_edit_press: false,
@@ -1152,6 +1158,7 @@ impl WindowedState {
             sketch_menu_face: _,
             sketch_insert_preview: _,
             sketch_draw_preview: _,
+            sketch_snap_ghost: _,
             orbit_center_overlay: _,
             // Workers + asset plumbing: background threads, their supersede bookkeeping,
             // and the scanned-asset pipeline. In-flight work is never dumpable.

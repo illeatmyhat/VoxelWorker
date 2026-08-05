@@ -1065,7 +1065,7 @@ impl WindowedState {
             return IntentEffect::none();
         };
         let Some(target) = self.panel_state.sketch_mode else {
-            self.sketch_drag = None;
+            self.end_the_vertex_drag();
             return IntentEffect::none();
         };
         let Some((cursor_x, cursor_y)) = self.last_cursor_position else {
@@ -1109,7 +1109,7 @@ impl WindowedState {
         // The snap policy re-authors the whole position (#96/#101): a snapped drag zeroes
         // the fraction, NoSnap carries it; either way a stale retained expression drops.
         let Some(context) = self.sketch_evaluation_context() else {
-            self.sketch_drag = None;
+            self.end_the_vertex_drag();
             return IntentEffect::none();
         };
         // A CLICK IS NOT A TINY DRAG. Every arm below is gated on the gesture having begun, and a
@@ -1117,7 +1117,16 @@ impl WindowedState {
         // being a click, and a click makes things active without making them move.
         let began = drag.began || self.pointer_left_the_press();
         let moved = match held {
-            SketchGrab::Point(id) if began => preview.sketch.move_point(id, snapped, context),
+            SketchGrab::Point(id) if began => preview
+                .sketch
+                .move_point_reporting_its_snap(id, snapped, context)
+                .map(|answered| {
+                    // The ghost is the drag's, not the frame's: a step that did not snap says so
+                    // by clearing it, so the circle appears and disappears with the hand rather
+                    // than lingering once the author has pulled off it.
+                    self.sketch_snap_ghost = answered.kept;
+                    answered.moved
+                }),
             // Measured from the press, and the preview is rebuilt from the pre-drag producer each
             // frame, so the displacement is applied to where the point STOOD rather than summed
             // frame over frame — and it is measured from the PRESS rather than from where the
@@ -1186,15 +1195,15 @@ impl WindowedState {
             drag.began = true;
         }
         let Ok(moved) = moved else {
-            self.sketch_drag = None;
+            self.end_the_vertex_drag();
             return IntentEffect::none();
         };
         if !moved {
-            self.sketch_drag = None;
+            self.end_the_vertex_drag();
             return IntentEffect::none();
         }
         let Some(new_min) = self.profile_bbox_min(&preview) else {
-            self.sketch_drag = None;
+            self.end_the_vertex_drag();
             return IntentEffect::none();
         };
         let [in0, in1] = preview.sketch.plane.in_plane_axes();
@@ -1217,6 +1226,19 @@ impl WindowedState {
         pointer_left_the_press(self.press_position, self.last_cursor_position)
     }
 
+    /// End the vertex drag, and with it the snap ghost — the circle means "your hand is sliding
+    /// along this", which stops being true the moment the hand lets go.
+    fn end_the_vertex_drag(&mut self) {
+        self.sketch_drag = None;
+        self.forget_the_snap_ghost();
+    }
+
+    /// Drop the snap circle. A gesture ending and a gesture starting both owe this: the circle
+    /// says "your hand is sliding along this", which is true of exactly one live hand.
+    pub(super) fn forget_the_snap_ghost(&mut self) {
+        self.sketch_snap_ghost = None;
+    }
+
     /// Commit an in-progress vertex drag — called SYNCHRONOUSLY from the `events` release handler
     /// (not deferred to a render flag: a deferred commit left a window where a second press could
     /// orphan the un-recorded preview). Reads the final previewed producer + offset off the node,
@@ -1225,6 +1247,7 @@ impl WindowedState {
     /// plus a `SetOffset` only when the anchor compensation actually moved the node. A gesture
     /// that ended where it began records nothing (the restored original is left in place).
     pub(super) fn commit_sketch_vertex_drag(&mut self) {
+        self.forget_the_snap_ghost();
         let Some(drag) = self.sketch_drag.take() else {
             return;
         };
@@ -5468,6 +5491,21 @@ impl WindowedState {
                 pixels_per_point,
             )
         };
+        // The quantity a live drag is being pulled onto, under everything else at the guide
+        // weight — the same linetype a polygon's base circle takes, and for the same reason: it is
+        // the thing the shape is being derived FROM, and it is never authored.
+        if let Some(kept) = self.sketch_snap_ghost {
+            let ring = circle_ring(
+                kept.about,
+                kept.radius,
+                document::sketch::ARC_SAGITTA_TOLERANCE_VOXELS,
+            );
+            let projected: Vec<egui::Pos2> =
+                ring.iter().copied().filter_map(snapped_screen).collect();
+            if !ring.is_empty() && projected.len() == ring.len() {
+                self.sketch_draw_preview.push(preview_guide(projected));
+            }
+        }
         match tool {
             ui::panel::SketchTool::Line => {
                 if let (Some(chain), Some((cursor_x, cursor_y))) =
