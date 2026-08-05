@@ -2471,30 +2471,6 @@ enum Rigidity<'a> {
     },
 }
 
-/// What a set of hands means about the shape they hold, and the one thing a drag cannot infer.
-///
-/// The hands say where some points are going. They never say whether the points NOT named are
-/// supposed to follow, and the two answers are different gestures on the same geometry: grabbing a
-/// slot's rail spends its width, and grabbing its centerline moves the slot. Least motion answers
-/// the first, because the cheapest way to satisfy one hand is always to move that point alone and
-/// leave the rest — maximum deformation for minimum travel. The caller is the only one who knows
-/// which gesture it is, so it says.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ShapeUnderTheHands {
-    /// A RESHAPE. Whatever the hands do not name may take up the difference, which is how a
-    /// deliberate freedom gets spent. Least motion alone, and the cheaper of the two.
-    FreeToChange,
-    /// A MOVE. Every edge span is asked to come out as it went in, so a pure translation of a
-    /// connected group is free and any stretch, rotation, or shear is paid for. Use it when the
-    /// gesture is "take this with you" rather than "make this different": without it, a
-    /// translation is exactly the motion least travel refuses to pick.
-    ///
-    /// It is not free: the regularizer adds two rows per edge, and the Jacobian is taken by finite
-    /// differences over every one of them. Measured on an arc slot, a drag frame went from 0.15ms
-    /// to 1.67ms — invisible for one gesture and a laggy sketch if every drag pays it.
-    Carried,
-}
-
 #[derive(Debug, Clone, Copy)]
 struct EdgeSpan {
     from: usize,
@@ -3479,19 +3455,6 @@ impl Problem {
         &self,
         hands: &[(PointId, [f64; 2])],
     ) -> Result<DragOutcome, RequestError> {
-        self.drag_together_holding(hands, ShapeUnderTheHands::FreeToChange)
-    }
-
-    /// [`drag_together`](Self::drag_together), saying whether the gesture is a RESHAPE or a MOVE.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if any held point is not local to this problem.
-    pub fn drag_together_holding(
-        &self,
-        hands: &[(PointId, [f64; 2])],
-        shape: ShapeUnderTheHands,
-    ) -> Result<DragOutcome, RequestError> {
         let mut pulled = self.clone();
         for (held, at) in hands.iter().copied() {
             if held.owner != self.owner || held.index >= self.points.len() {
@@ -3505,17 +3468,41 @@ impl Problem {
         }
         let mut positions: Vec<_> = self.points.iter().map(|point| point.at).collect();
         let mut scalar_coordinates = self.scalar_coordinates();
+        // Two passes, and the split is the whole idea. A drawing that is not fully determined has a
+        // family of answers under the hand, and picking the one nearest where every point already
+        // stood is what makes a shape stretch when it could have travelled: moving a body of N
+        // points by d costs N times d squared, so the arithmetic would always rather deform it.
+        // The first pass ranks that family by how much the drawing has to CHANGE SHAPE rather than
+        // how far it moves, which costs a carry nothing and leaves the author's shape intact.
+        //
+        // But a preference must not be allowed to cost the author the cursor, so it does not get
+        // the last word: it only seeds. The second pass carries the hand at full authority with the
+        // preference switched off, and Gauss-Newton from a near seed lands on the answer beside it
+        // — the branch the first pass chose, reached exactly.
+        //
+        // The third pass is the drawing having the last word over the hand. A hand is a pull and
+        // not an assertion, so what the author already asserted is the only thing acceptance is
+        // measured against: solving it alone leaves an achievable drag exactly where the second
+        // pass put it, and takes an impossible one back to where the relations say it belongs
+        // rather than reporting the author's own drawing as broken.
+        // A point the author fixed does not travel with a body, so the preference is not allowed to
+        // weigh carrying it: anchoring drops it out of the pass entirely rather than leaving the
+        // spans to argue with the relation and lose the drag to a conflict neither one meant.
+        let held = self.points_the_author_fixed();
         run(
             &pulled,
             &mut positions,
             &mut scalar_coordinates,
-            match shape {
-                ShapeUnderTheHands::FreeToChange => Rigidity::Ignored,
-                ShapeUnderTheHands::Carried => Rigidity::Preferred {
-                    anchored: &[],
-                    flexible_curves: &[],
-                },
+            Rigidity::Preferred {
+                anchored: &held,
+                flexible_curves: &[],
             },
+        );
+        run(
+            &pulled,
+            &mut positions,
+            &mut scalar_coordinates,
+            Rigidity::Ignored,
         );
         let report = run(
             self,
@@ -3536,6 +3523,17 @@ impl Problem {
                 DragOutcome::Rejected(settled)
             },
         )
+    }
+
+    /// The points pinned outright, which a shape-holding preference has to leave where they are.
+    fn points_the_author_fixed(&self) -> Vec<PointId> {
+        self.constraints
+            .iter()
+            .filter_map(|constraint| match constraint.relation {
+                Relation::Fix { point, .. } => Some(point),
+                _ => None,
+            })
+            .collect()
     }
 
     fn settle_with(&self, anchored: &[PointId], flexible_curves: &[SketchCurve]) -> Settled {

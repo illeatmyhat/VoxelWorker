@@ -1118,13 +1118,6 @@ impl WindowedState {
         let began = drag.began || self.pointer_left_the_press();
         let moved = match held {
             SketchGrab::Point(id) if began => preview.sketch.move_point(id, snapped, context),
-            // A curve goes where the cursor is, not where a sum of frames left it, so the SNAPPED
-            // cursor is the whole input — the same absolute reading the point path uses.
-            SketchGrab::Curve(curve) if began => {
-                preview
-                    .sketch
-                    .move_curve(curve, snapped.in_plane(), context)
-            }
             // Measured from the press, and the preview is rebuilt from the pre-drag producer each
             // frame, so the displacement is applied to where the point STOOD rather than summed
             // frame over frame — and it is measured from the PRESS rather than from where the
@@ -1440,6 +1433,29 @@ impl WindowedState {
             shown.extend(sketch.points_of(curve));
         }
         shown
+    }
+
+    /// Every point of this sketch that another dot already stands on, and so never draws.
+    ///
+    /// [`a_better_dot_stands_here`](document::sketch::Sketch::a_better_dot_stands_here) is the
+    /// rule; this gathers it once per frame rather than per revealed dot.
+    fn dots_standing_under_another(
+        &self,
+        target: document::scene::NodeId,
+    ) -> std::collections::BTreeSet<document::sketch::EntityId> {
+        let Some(node) = self.panel_state.scene.node_by_id(target) else {
+            return std::collections::BTreeSet::new();
+        };
+        let document::scene::NodeContent::SketchTool { producer, .. } = &node.content else {
+            return std::collections::BTreeSet::new();
+        };
+        producer
+            .sketch
+            .points()
+            .iter()
+            .filter(|point| producer.sketch.a_better_dot_stands_here(point.id))
+            .map(|point| point.id)
+            .collect()
     }
 
     /// The points the curve behind an edge hit stands on.
@@ -4553,44 +4569,38 @@ impl WindowedState {
 
     /// The curve under the cursor that a drag can move as a WHOLE, if there is one.
     ///
-    /// A BOUNDARY segment or arc has a single perpendicular direction, so "drag it sideways" names
-    /// one motion. A circle would have to grow, which is what dragging its rim already means through
-    /// its own handles. A spline has no perpendicular at all, so it TRANSLATES instead — a
-    /// different verb, and the one the author means when they grab the body of a curve whose shape
-    /// lives in its points. The remaining higher curves are fixed-arity handles the author moves
-    /// one at a time, and moving the aggregate would need a decision this gesture cannot offer.
+    /// Grabbing the body of a curve MOVES it, whatever kind of curve it is.
     ///
-    /// A CONSTRUCTION segment or arc translates for the same reason a spline does: it bounds no
-    /// region, so there is nothing for it to be the near or far side of and an offset says nothing
-    /// about it. Whether that carries the drawing with it is the constraints' answer, not this
-    /// function's — a slot's centerline moves the slot because its cap centers stand on the line,
-    /// and a construction line the author drew between two loose points moves alone.
+    /// One verb, and no per-shape reading of what the author must have meant. What happens to the
+    /// rest of the drawing is the constraints' answer: a slot's centerline carries the whole slot
+    /// because the cap centers stand on it, a rail widens the slot because the far rail is not
+    /// asked to move and the tangency web lets the caps grow, and a line the author drew between
+    /// two loose points goes alone. None of those three is written down anywhere — they are what
+    /// the relations already say, read back by a solve that would rather move than deform.
+    ///
+    /// A rail widens the slot about the FAR RAIL, not about its centerline: holding one rail still
+    /// is less change than moving both, so the centerline travels to the new middle. That is not
+    /// the symmetric widening ratified on 2026-08-04, and it is not a regression against it — the
+    /// symmetry was a property of the old dedicated offset verb, which this no longer calls, and
+    /// the drawing does not assert it. A slot that should stay symmetric needs to SAY so, with a
+    /// relation, which is the whole point of removing the branch.
+    ///
+    /// That branch was a perpendicular OFFSET for boundary segments and arcs and a translation for
+    /// splines and construction curves. It is the shape of defect the `FreeCAD` drag code documents —
+    /// a ladder of per-geometry cases, each right about the shape that prompted it and a guess
+    /// about everything else — and it is only ever needed when the solve's objective prefers
+    /// stretching to moving. Ours no longer does (owner, 2026-08-05).
+    ///
+    /// A circle is still not offered: dragging its rim already means growing it, through its own
+    /// handles. The remaining higher curves are fixed-arity handles the author moves one at a time.
     fn grabbable_sketch_curve_at(&self, cursor_x: f64, cursor_y: f64) -> Option<SketchGrab> {
-        let target = self.panel_state.sketch_mode?;
-        let node = self.panel_state.scene.node_by_id(target)?;
-        let document::scene::NodeContent::SketchTool { producer, .. } = &node.content else {
-            return None;
+        let curve = match self.nearest_sketch_edge(cursor_x, cursor_y)? {
+            SketchEdgeHit::Segment(id) => document::sketch::SketchCurve::Segment(id),
+            SketchEdgeHit::Arc(id) => document::sketch::SketchCurve::Arc(id),
+            SketchEdgeHit::HigherCurve(curve @ document::sketch::SketchCurve::Spline(_)) => curve,
+            SketchEdgeHit::Circle(_) | SketchEdgeHit::HigherCurve(_) => return None,
         };
-        let sketch = &producer.sketch;
-        let body_drag = |curve: document::sketch::SketchCurve| {
-            if sketch.curve_role(curve) == Some(document::sketch::EntityRole::Construction) {
-                SketchGrab::Translate { curve, from: None }
-            } else {
-                SketchGrab::Curve(curve)
-            }
-        };
-        match self.nearest_sketch_edge(cursor_x, cursor_y)? {
-            SketchEdgeHit::Segment(id) => {
-                Some(body_drag(document::sketch::SketchCurve::Segment(id)))
-            }
-            SketchEdgeHit::Arc(id) => Some(body_drag(document::sketch::SketchCurve::Arc(id))),
-            // A spline moves as a whole because that is the only motion its aggregate has: it
-            // carries its shape in control points, and there is no perpendicular to offset along.
-            SketchEdgeHit::HigherCurve(curve @ document::sketch::SketchCurve::Spline(_)) => {
-                Some(SketchGrab::Translate { curve, from: None })
-            }
-            SketchEdgeHit::Circle(_) | SketchEdgeHit::HigherCurve(_) => None,
-        }
+        Some(SketchGrab::Translate { curve, from: None })
     }
 
     /// Recompute the sketch overlay for the NEXT frame. Projects
@@ -5122,8 +5132,13 @@ impl WindowedState {
             .collect();
         revealed.retain(|id| !tangent_arms.contains(id) || arms_out.contains(id));
         revealed.extend(arms_out);
+        // A dot standing under another dot never draws, whatever revealed it. Hovering an arc
+        // brings up the points it stands on and one of those is the center it derives, so without
+        // this the stack the rest-rule collapsed comes straight back the moment the author looks
+        // at the shape.
+        let stacked = self.dots_standing_under_another(target);
         for (point_id, handle) in pending_points {
-            if point_id.is_none_or(|id| revealed.contains(&id)) {
+            if point_id.is_none_or(|id| revealed.contains(&id) && !stacked.contains(&id)) {
                 self.sketch_overlay_points.push(handle);
             }
         }

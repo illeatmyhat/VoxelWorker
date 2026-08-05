@@ -2511,6 +2511,10 @@ impl Sketch {
     /// already implies — see
     /// [`handles_a_widening_must_hold`](Self::handles_a_widening_must_hold) for why holding the
     /// spine is the whole of it.
+    /// No gesture in the shell reaches this any more: grabbing a curve translates it, and the width
+    /// it used to author is now what the relations answer on their own. It stays as a verb because
+    /// an explicit offset is a real tool and this is what it would be built on — the objection was
+    /// ever only to a drag that GUESSED between offsetting and moving by reading the geometry.
     pub fn move_curve(
         &mut self,
         curve: SketchCurve,
@@ -2528,11 +2532,7 @@ impl Sketch {
                 }
             }
             sketch.sync_derived_points();
-            sketch.settle_under_the_hands(
-                &hands,
-                parametric::sketch::ShapeUnderTheHands::FreeToChange,
-                context,
-            )
+            sketch.settle_under_the_hands(&hands, context)
         })
     }
 
@@ -2595,11 +2595,7 @@ impl Sketch {
                 }
             }
             sketch.sync_derived_points();
-            sketch.settle_under_the_hands(
-                &hands,
-                parametric::sketch::ShapeUnderTheHands::Carried,
-                context,
-            )
+            sketch.settle_under_the_hands(&hands, context)
         })
     }
 
@@ -2723,11 +2719,7 @@ impl Sketch {
                 // one step earlier.
                 self.carry_authored_handles(&before);
                 self.sync_derived_points();
-                self.settle_under_the_hands(
-                    &hands,
-                    parametric::sketch::ShapeUnderTheHands::FreeToChange,
-                    context,
-                )
+                self.settle_under_the_hands(&hands, context)
             }
         }
     }
@@ -3290,7 +3282,6 @@ impl Sketch {
     fn settle_under_the_hands(
         &mut self,
         hands: &[(EntityId, [f64; 2])],
-        shape: parametric::sketch::ShapeUnderTheHands,
         context: parametric::EvaluationContext,
     ) -> Result<bool, SketchEvaluationError> {
         // Only the part of the drawing the hands can reach takes part. What the rest of the plane
@@ -3311,7 +3302,7 @@ impl Sketch {
         }
         let prepared = constraint::prepare_scoped(self, &standing, Some(context), Some(&reach))
             .map_err(map_prepare_evaluation_error)?;
-        let (settled, accepted) = match prepared.drag_together_holding(hands, shape) {
+        let (settled, accepted) = match prepared.drag_together(hands) {
             Ok(parametric::sketch::DragOutcome::Accepted(settled)) => (settled, true),
             Ok(parametric::sketch::DragOutcome::Rejected(settled)) => (settled, false),
             Err(_) => return Ok(false),
@@ -4892,6 +4883,11 @@ impl Sketch {
 
     /// Whether `id` is a DERIVED point some other dot already stands on.
     ///
+    /// **Asked of every dot about to be drawn, not only of the ones at rest.** Standing under
+    /// another dot is a fact about the point, not about the reason it came up: hovering an arc
+    /// reveals the points it stands on, and one of those is the center it derives, so a reveal that
+    /// skipped this would put the stack straight back the moment the author looked at the shape.
+    ///
     /// Ranked so exactly one of a derived stack survives: a real point beats a derived one, and
     /// among derived twins the earliest wins. An arc slot stacks four dots at its middle — the two
     /// rails' centers, the centerline's, and the handle tied to them — and three of those are the
@@ -4909,7 +4905,7 @@ impl Sketch {
     /// The bound stays far under anything drawable so it can never merge two marks the author meant
     /// to tell apart, and the seam case is out of reach of it regardless — that one is two REAL
     /// points, and this only ever hides a derived one.
-    fn a_better_dot_stands_here(&self, id: EntityId) -> bool {
+    pub fn a_better_dot_stands_here(&self, id: EntityId) -> bool {
         if !self.is_derived_point(id) {
             return false;
         }

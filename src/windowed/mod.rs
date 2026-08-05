@@ -587,9 +587,6 @@ struct WindowedState {
 enum SketchGrab {
     /// A point entity, which goes where the cursor goes.
     Point(document::sketch::EntityId),
-    /// A whole curve, which moves perpendicular to itself to pass under the cursor — the gesture
-    /// that authors a slot's width.
-    Curve(document::sketch::SketchCurve),
     /// A whole spline, which TRANSLATES by however far the cursor has come since the press.
     ///
     /// `from` is where the press landed, in profile coordinates, and it is filled on the first
@@ -621,7 +618,7 @@ impl SketchGrab {
             Self::Point(id) => Some(id),
             // The lever's fit point is not reported as the held handle: the overlay would draw the
             // dot in its dragged state for a gesture the author is running on the stick.
-            Self::Curve(_) | Self::Translate { .. } | Self::TranslateLever { .. } => None,
+            Self::Translate { .. } | Self::TranslateLever { .. } => None,
         }
     }
 }
