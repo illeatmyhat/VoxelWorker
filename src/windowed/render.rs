@@ -1276,16 +1276,17 @@ impl WindowedState {
             .collect()
     }
 
-    /// Every fit point's tangent lever as ids: the spline it steers, and the run back-arm → fit
-    /// point → forward-arm. Ids only, for the same reason
+    /// Every fit point's tangent lever as ids: the FIT POINT whose handle it is, and the run
+    /// back-arm → fit point → forward-arm. Ids only, for the same reason
     /// [`control_polygons`](Self::control_polygons) is.
+    ///
+    /// The spline is dropped on the way through. A control frame's leg has no meaning but the
+    /// spline it steers; a lever's does. It belongs to ONE fit point, and answering as that point
+    /// is what keeps a hover from lighting every lever on the curve.
     fn tangent_levers(
         &self,
         target: document::scene::NodeId,
-    ) -> Vec<(
-        document::sketch::SketchCurve,
-        Vec<document::sketch::EntityId>,
-    )> {
+    ) -> Vec<(document::sketch::EntityId, Vec<document::sketch::EntityId>)> {
         let Some(node) = self.panel_state.scene.node_by_id(target) else {
             return Vec::new();
         };
@@ -1296,12 +1297,7 @@ impl WindowedState {
             .sketch
             .tangent_handle_legs()
             .into_iter()
-            .map(|(spline, lever)| {
-                (
-                    document::sketch::SketchCurve::Spline(spline),
-                    lever.to_vec(),
-                )
-            })
+            .map(|(_, lever)| (lever[1], lever.to_vec()))
             .collect()
     }
 
@@ -1577,11 +1573,14 @@ impl WindowedState {
         // A control frame's legs compete as spans of the spline they steer. They are drawn, not
         // stored, so there is no entity for a leg hit to mean — and the spline is what the author
         // is reaching for when they grab one.
+        //
+        // A TANGENT lever's leg is NOT here, and that is the difference between the two kinds of
+        // leg: a lever belongs to one fit point, so its hit has somewhere better to land than the
+        // whole curve. See [`tangent_lever_at`](Self::tangent_lever_at).
         for (curve, chords) in self
             .sketch_higher_curve_chords
             .iter()
             .chain(&self.sketch_spline_polygons)
-            .chain(&self.sketch_tangent_levers)
         {
             let Some(distance) = chords
                 .array_windows::<2>()
@@ -1595,6 +1594,24 @@ impl WindowedState {
             }
         }
         nearest
+    }
+
+    /// The FIT POINT whose tangent lever is under the cursor, if one is.
+    ///
+    /// A lever is that point's manipulator, drawn through it and out to both arms, so every way of
+    /// reaching for it resolves to the same place: hover lights that lever alone, a click selects
+    /// the point, and a drag moves the point — carrying the handle at the angle and length the
+    /// author left it, which is what dragging the point has always done.
+    ///
+    /// The arms are excluded by ordering rather than by a filter: every caller asks for a VERTEX
+    /// first, and an arm is a vertex. So grabbing the dot at the end of a lever still steers the
+    /// tangent, and only the stick between the dots answers here.
+    fn tangent_lever_at(&self, cursor_x: f64, cursor_y: f64) -> Option<document::sketch::EntityId> {
+        nearest_tangent_lever(
+            &self.sketch_tangent_levers,
+            egui::Pos2::new(cursor_x as f32, cursor_y as f32),
+            ui::chrome::SKETCH_SEGMENT_GRAB_PAD * self.window.scale_factor() as f32,
+        )
     }
 
     /// The sketch EDGE under the cursor — the nearest segment or curve. One resolution so hover
@@ -3477,6 +3494,11 @@ impl WindowedState {
                 return Some(ui::panel::SelectionTarget::SketchPoint { sketch, entity });
             }
         }
+        // A lever answers as its fit point, and beats the curve underneath it — it is drawn over
+        // that curve precisely because it is the thing being reached for.
+        if let Some(entity) = self.tangent_lever_at(cursor_x, cursor_y) {
+            return Some(ui::panel::SelectionTarget::SketchPoint { sketch, entity });
+        }
         self.nearest_sketch_edge(cursor_x, cursor_y)
             .map(|hit| match hit {
                 SketchEdgeHit::Segment(entity) => {
@@ -3501,6 +3523,7 @@ impl WindowedState {
     pub(super) fn cursor_over_sketch_entity(&self, cursor_x: f64, cursor_y: f64) -> bool {
         self.sketch_vertex_at(cursor_x, cursor_y).is_some()
             || self.nearest_sketch_edge(cursor_x, cursor_y).is_some()
+            || self.tangent_lever_at(cursor_x, cursor_y).is_some()
             || self.sketch_constraint_at(cursor_x, cursor_y).is_some()
     }
 
@@ -4242,6 +4265,14 @@ impl WindowedState {
             .sketch_vertex_at(cursor_x, cursor_y)
             .and_then(|index| self.sketch_point_ids.get(index).copied())
             .map(SketchGrab::Point)
+            // A lever's stick moves the point it belongs to, never the spline it steers. The
+            // handle rides along at the angle and length it was left at, which is exactly what a
+            // fit-point drag already does — so this is that same grab, reached for by the
+            // manipulator instead of by the dot.
+            .or_else(|| {
+                self.tangent_lever_at(cursor_x, cursor_y)
+                    .map(SketchGrab::Point)
+            })
             .or_else(|| self.grabbable_sketch_curve_at(cursor_x, cursor_y))?;
         let node = self.panel_state.scene.node_by_id(target)?;
         let document::scene::NodeContent::SketchTool { producer, .. } = &node.content else {
@@ -4615,7 +4646,7 @@ impl WindowedState {
         }
         // The tangent levers, through the same vertex cache and for the same reason: a lever must
         // meet its two green arms exactly, not by two projections agreeing.
-        for (spline, lever) in self.tangent_levers(target) {
+        for (fit, lever) in self.tangent_levers(target) {
             let run: Option<Vec<egui::Pos2>> = lever
                 .iter()
                 .map(|id| {
@@ -4624,7 +4655,7 @@ impl WindowedState {
                 })
                 .collect();
             if let Some(run) = run {
-                self.sketch_tangent_levers.push((spline, run));
+                self.sketch_tangent_levers.push((fit, run));
             }
         }
 
@@ -4756,7 +4787,13 @@ impl WindowedState {
                         .nearest_sketch_segment(cx, cy)
                         .map(|(id, _, _)| (SketchEdgeHit::Segment(id), state));
                 }
-                if self.sketch_vertex_at(cx, cy).is_some() {
+                // A lever suppresses the edge under it for the same reason a vertex does: the
+                // press will act on the lever, and hover has to agree with the press. Near a fit
+                // point a lever and the curve it steers overlap, so without this the whole spline
+                // lights for a cursor that is plainly on the handle.
+                if self.sketch_vertex_at(cx, cy).is_some()
+                    || self.tangent_lever_at(cx, cy).is_some()
+                {
                     None
                 } else {
                     self.nearest_sketch_edge(cx, cy).map(|hit| (hit, state))
@@ -4897,19 +4934,33 @@ impl WindowedState {
             });
         }
 
-        // The tangent levers, in their own teal ink and under their spline's state. Last of the
-        // curve pushes, so a lever draws OVER the curve it steers rather than under it: the
-        // handle is what the author is reaching for, and it is the thinner mark of the two.
-        for (spline, run) in &self.sketch_tangent_levers {
-            let picked = ui::panel::SelectionTarget::SketchHigherCurve {
+        // The tangent levers, in their own teal ink, each under the state of the FIT POINT it
+        // belongs to. Last of the curve pushes, so a lever draws OVER the curve it steers rather
+        // than under it: the handle is what the author is reaching for, and it is the thinner mark
+        // of the two.
+        //
+        // Reading its own point rather than the spline is what makes one lever light instead of
+        // all of them. A spline carries a lever per fit point; taking the curve's state would
+        // paint every one of them for a cursor that is over exactly one.
+        // Under Select alone: a lever is a manipulator, and every other tool is reaching past it
+        // for geometry. Not read off `hovered_edge`, which a lever deliberately suppresses.
+        let hovered_lever = (tool == ui::panel::SketchTool::Select)
+            .then(|| {
+                self.last_cursor_position
+                    .and_then(|(cx, cy)| self.tangent_lever_at(cx, cy))
+            })
+            .flatten();
+        for (fit, run) in &self.sketch_tangent_levers {
+            let picked = ui::panel::SelectionTarget::SketchPoint {
                 sketch: target,
-                curve: *spline,
+                entity: *fit,
             };
-            let selected = self.panel_state.selection.contains(picked);
-            let state = match hovered_edge {
-                _ if selected => ui::gizmos::HandleState::Selected,
-                Some((SketchEdgeHit::HigherCurve(curve), state)) if curve == *spline => state,
-                _ => ui::gizmos::HandleState::Idle,
+            let state = if self.panel_state.selection.contains(picked) {
+                ui::gizmos::HandleState::Selected
+            } else if hovered_lever == Some(*fit) {
+                ui::gizmos::HandleState::Hover
+            } else {
+                ui::gizmos::HandleState::Idle
             };
             let chords = run
                 .iter()
@@ -6463,6 +6514,29 @@ fn aggregate_marquee_picks(
         .collect()
 }
 
+/// The fit point of the nearest tangent lever within `pad_px` of `cursor`, if any.
+///
+/// Free of the renderer so the rule can be tested without a window: the pad and the projected runs
+/// are the whole of the input. See [`tangent_lever_at`](WindowedState::tangent_lever_at) for why the
+/// answer is a fit point rather than the spline the lever steers.
+fn nearest_tangent_lever(
+    levers: &[(document::sketch::EntityId, Vec<egui::Pos2>)],
+    cursor: egui::Pos2,
+    pad_px: f32,
+) -> Option<document::sketch::EntityId> {
+    levers
+        .iter()
+        .filter_map(|(fit, run)| {
+            let distance = run
+                .array_windows::<2>()
+                .map(|pair| point_to_segment_distance(cursor, pair[0], pair[1]))
+                .min_by(|a, b| a.total_cmp(b))?;
+            (distance <= pad_px).then_some((*fit, distance))
+        })
+        .min_by(|(_, left), (_, right)| left.total_cmp(right))
+        .map(|(fit, _)| fit)
+}
+
 /// Resolve the nearest already-qualified edge candidate. Equal distances keep candidate order,
 /// with segments before arcs, then circles, then higher-order aggregates at the call site — so a
 /// simple primitive wins an exact tie against the curve that merely passes through it.
@@ -6890,11 +6964,12 @@ mod tests {
         circle_gesture_is_current, circle_marquee_hit, circle_ring, closest_point_on_segment,
         complete_circle_center_diameter, concentric_badge_anchor,
         nearest_sketch_edge_for_requirement, nearest_sketch_edge_from_candidates,
-        point_in_screen_polygon, point_to_segment_distance, polygon_double_area,
-        reset_failed_sketch_constraint_completion, reset_refused_sketch_constraint_completion,
-        segment_touches_rect, segments_intersect, select_sketch_constraint_refusal_culprits,
-        sketch_constraint_badge_at, sketch_entity_from_curve_hit, sketch_profile_edit_transaction,
-        symmetry_badge_anchor, tangent_badge_anchor, SketchEdgeHit,
+        nearest_tangent_lever, point_in_screen_polygon, point_to_segment_distance,
+        polygon_double_area, reset_failed_sketch_constraint_completion,
+        reset_refused_sketch_constraint_completion, segment_touches_rect, segments_intersect,
+        select_sketch_constraint_refusal_culprits, sketch_constraint_badge_at,
+        sketch_entity_from_curve_hit, sketch_profile_edit_transaction, symmetry_badge_anchor,
+        tangent_badge_anchor, SketchEdgeHit,
     };
     use document::sketch::{
         ConstraintKind, LineSide, PlaneAxis, Sketch, SketchCurve, SketchLength, SketchPoint,
@@ -7178,6 +7253,46 @@ mod tests {
         assert_eq!(
             sketch_entity_from_curve_hit(SketchEdgeHit::Circle(13)),
             Some(ui::panel::SketchEntity::Circle(13))
+        );
+    }
+
+    /// A lever answers as the ONE fit point it belongs to, so a cursor on one handle cannot mean
+    /// the spline — which would light every other handle the spline carries along with the curve.
+    #[test]
+    fn a_tangent_lever_answers_for_its_own_fit_point_alone() {
+        // Two levers on one spline, far apart: fit point 5 near the origin, fit point 9 off right.
+        let levers = vec![
+            (
+                5,
+                vec![
+                    egui::pos2(0.0, 10.0),
+                    egui::pos2(0.0, 0.0),
+                    egui::pos2(0.0, -10.0),
+                ],
+            ),
+            (
+                9,
+                vec![
+                    egui::pos2(200.0, 10.0),
+                    egui::pos2(200.0, 0.0),
+                    egui::pos2(200.0, -10.0),
+                ],
+            ),
+        ];
+        assert_eq!(
+            nearest_tangent_lever(&levers, egui::pos2(2.0, 5.0), 6.0),
+            Some(5),
+            "the near lever answers, and it answers as its own point"
+        );
+        assert_eq!(
+            nearest_tangent_lever(&levers, egui::pos2(198.0, -5.0), 6.0),
+            Some(9),
+            "the far lever answers for itself, not for the one that was hit first"
+        );
+        assert_eq!(
+            nearest_tangent_lever(&levers, egui::pos2(100.0, 0.0), 6.0),
+            None,
+            "between the two handles there is no handle"
         );
     }
 

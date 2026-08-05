@@ -429,11 +429,15 @@ struct WindowedState {
     /// [`sketch_higher_curve_chords`](Self::sketch_higher_curve_chords) because a leg draws in
     /// construction ink while the curve it carries does not; both hit-test to the same spline.
     sketch_spline_polygons: Vec<(document::sketch::SketchCurve, Vec<egui::Pos2>)>,
-    /// Every fit point's tangent lever this frame, in PHYSICAL px: the spline it steers, and the
-    /// run back-arm → fit point → forward-arm. Its own cache rather than a row in
+    /// Every fit point's tangent lever this frame, in PHYSICAL px: the FIT POINT whose handle it
+    /// is, and the run back-arm → fit point → forward-arm. Its own cache rather than a row in
     /// [`sketch_spline_polygons`](Self::sketch_spline_polygons) because it draws in its own ink —
     /// a lever is a manipulator, not the construction geometry a control frame is.
-    sketch_tangent_levers: Vec<(document::sketch::SketchCurve, Vec<egui::Pos2>)>,
+    ///
+    /// Keyed by the fit point rather than by the spline, which is the whole of how a lever answers
+    /// for itself: hover it, click it or drag it and the fit point is what responds, so one lever
+    /// lights rather than every lever the spline carries.
+    sketch_tangent_levers: Vec<(document::sketch::EntityId, Vec<egui::Pos2>)>,
     /// Each derived region as `(its key, its boundary polygon in PHYSICAL px)` for this frame
     /// (#100) — what the right-press hit-test resolves a cursor against. A face with any
     /// behind-camera boundary vertex is culled whole, as an arc is.

@@ -448,10 +448,6 @@ impl ArmedConstraint {
         }
         // The two-slot verbs read their pair the same way, so the pair is pulled out once. A
         // verb's slot list is what guarantees these are the kinds asked for; `offer` enforces it.
-        let point_pair = || match (self.picked.first()?, self.picked.get(1)?) {
-            (SketchEntity::Point(first), SketchEntity::Point(second)) => Some((*first, *second)),
-            _ => None,
-        };
         let segment_pair = || match (self.picked.first()?, self.picked.get(1)?) {
             (SketchEntity::Segment(first), SketchEntity::Segment(second)) => {
                 Some((*first, *second))
