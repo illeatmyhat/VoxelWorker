@@ -2421,6 +2421,16 @@ struct ScalarHold {
     at: f64,
 }
 
+/// A hand pulled onto a quantity its own curve already had — see [`Problem::snapped`].
+#[derive(Debug, Clone)]
+struct Snap {
+    /// The hand, moved onto the circle the quantity draws.
+    hands: Vec<(PointId, [f64; 2])>,
+    /// How far around the point the quantity is measured from the hand is asking to go, in
+    /// radians.
+    turn: f64,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct PointHold {
     slot: usize,
@@ -2861,11 +2871,54 @@ impl<'a> Residuals<'a> {
                 }
                 let held: Vec<_> = anchored.iter().map(|point| point.index).collect();
                 // An anchored point is removed from the free set outright, so nothing has to hold
-                // it with a row. `holds` stays for the case a later pass wants a soft anchor.
+                // it with a row, and the holds below skip it for that reason.
+                //
+                // ONE finger on a curve's END is a corner being reshaped, and the rest of the
+                // drawing then prefers to STAY, not merely to keep its shape. Every other gesture
+                // — a hand on a center, the several hands of a carry — is the drawing being
+                // MOVED, and travel has to stay free or a carry would deform instead.
+                //
+                // Spans alone cannot tell those apart, because a span is translation-invariant:
+                // sliding the whole drawing under the cursor keeps every one of them exactly, so
+                // the preference is indifferent and the arithmetic settles it by spreading the
+                // correction over every coordinate it touches. Measured on a curved slot, an
+                // outer-rail corner pulled six voxels took the far end 3.6 with it. Holding the
+                // points the hand does not have makes travel cost what it is worth, and the
+                // cheapest answer left is to sweep the corner around a drawing that stays.
+                //
+                // This is the objective a commercial drag solves — every point weighted toward
+                // where it stood, the cursor weighted above them — with the span rows added on
+                // top, and it seeds only: pass two hands the cursor full authority regardless.
+                let vertex_grabbed = was.len() == 1
+                    && was.iter().all(|(point, _)| {
+                        let ends = problem
+                            .segments
+                            .iter()
+                            .any(|segment| segment.from == *point || segment.to == *point)
+                            || problem
+                                .arc_centers
+                                .iter()
+                                .any(|arc| arc.from == *point || arc.to == *point);
+                        let centers = problem.arc_centers.iter().any(|arc| arc.center == *point)
+                            || problem.circles.iter().any(|circle| circle.center == *point);
+                        ends && !centers
+                    });
+                let stays: Vec<PointHold> = if vertex_grabbed {
+                    (0..problem.points.len())
+                        .filter(|slot| !held.contains(slot))
+                        .filter(|slot| !was.iter().any(|(point, _)| point.index == *slot))
+                        .map(|slot| PointHold {
+                            slot,
+                            at: shape(slot),
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
                 (
                     spans,
                     scalars,
-                    Vec::new(),
+                    stays,
                     (0..point_coordinates)
                         .filter(|index| !held.contains(&(index / 2)))
                         .collect::<Vec<_>>(),
@@ -3421,6 +3474,103 @@ impl Problem {
         self.drag_together(&[(held, at)], &[])
     }
 
+    /// How far off a quantity may be, as a share of how far the hand travelled, and still be
+    /// treated as one the author is holding rather than one they are setting.
+    ///
+    /// Read as an angle it is a cone about the direction that keeps the quantity: a hand moving
+    /// within about fifteen degrees of it is understood to be moving ALONG it.
+    const SNAP_CONE: f64 = 0.25;
+
+    /// How far a walked drag turns in one step, and the most steps it will ever walk.
+    const TURN_PER_FRAME: f64 = std::f64::consts::PI / 180.0;
+    const MOST_FRAMES: u32 = 16;
+
+    /// Pull a lone hand onto a quantity its own curve already had, when it is moving along one.
+    ///
+    /// Every curve names a distance — a segment its length, an arc its radius — and a preference
+    /// asks for that distance back. But a hand is an assertion and a preference is not, so when the
+    /// cursor sits off the circle that distance draws, the two cannot both be met and the hand
+    /// wins: the drawing translates under it instead of the curve sweeping around a center that
+    /// stays. No amount of preference fixes that, because translating satisfies every row exactly
+    /// and nothing outranks an answer at zero residual.
+    ///
+    /// So the disagreement is settled before the solve rather than inside it. Snapping the cursor
+    /// ONTO the circle makes the sweep an exact answer too, and a cheaper one, and the solve then
+    /// finds it on its own. This is why it is a snap and not a mode: the author feels the point
+    /// stick to a radius while they move around it, and feels it let go the moment they pull
+    /// across. A single frame of a drag is small, so a sweep re-snaps every frame and the quantity
+    /// survives the whole gesture, while a deliberate pull leaves the cone at once.
+    ///
+    /// The rule is the same for every curve, so a slot is nothing but its parts: at a rail's cap
+    /// the point belongs to both an arc and a segment, and the cone picks between them by which
+    /// one the hand is actually moving along.
+    fn snapped(
+        &self,
+        hands: &[(PointId, [f64; 2])],
+        was: &[(PointId, [f64; 2])],
+        positions: &[[f64; 2]],
+    ) -> Option<Snap> {
+        // Only a lone finger. Several hands are a carry, which already has its answer, and they
+        // would each want a different circle.
+        let &[(held, now)] = hands else { return None };
+        let stood_at = |point: PointId| {
+            was.iter()
+                .find(|(named, _)| *named == point)
+                .map(|(_, at)| *at)
+                .or_else(|| {
+                    (point.owner == self.owner)
+                        .then(|| positions.get(point.index).copied())
+                        .flatten()
+                })
+        };
+        let stood = stood_at(held)?;
+        let travel = (now[0] - stood[0]).hypot(now[1] - stood[1]);
+        if !travel.is_finite() || travel <= 0.0 {
+            return None;
+        }
+        // A curve ending at this point offers the circle it would keep: what it measures from, and
+        // how far the point stood from it.
+        let far = |from: PointId, to: PointId| (from == held).then_some(to);
+        let circles = self
+            .segments
+            .iter()
+            .filter_map(|segment| {
+                far(segment.from, segment.to).or_else(|| far(segment.to, segment.from))
+            })
+            .chain(
+                self.arc_centers
+                    .iter()
+                    .filter_map(|arc| (arc.from == held || arc.to == held).then_some(arc.center)),
+            );
+        let mut snap: Option<([f64; 2], f64, f64)> = None;
+        for pivot in circles {
+            let Some(about) = stood_at(pivot) else {
+                continue;
+            };
+            let quantity = (stood[0] - about[0]).hypot(stood[1] - about[1]);
+            let reach = (now[0] - about[0]).hypot(now[1] - about[1]);
+            if !quantity.is_finite() || !reach.is_finite() || quantity <= 0.0 || reach <= 0.0 {
+                continue;
+            }
+            let across = (reach - quantity).abs();
+            if across > Self::SNAP_CONE * travel {
+                continue;
+            }
+            if snap.is_none_or(|(_, _, nearest)| across < nearest) {
+                snap = Some((about, quantity / reach, across));
+            }
+        }
+        let (about, scale, _) = snap?;
+        let arm = |at: [f64; 2]| [at[0] - about[0], at[1] - about[1]];
+        let (from, to) = (arm(stood), arm(now));
+        Some(Snap {
+            hands: vec![(held, [about[0] + to[0] * scale, about[1] + to[1] * scale])],
+            turn: (from[0] * to[1] - from[1] * to[0])
+                .atan2(from[0] * to[0] + from[1] * to[1])
+                .abs(),
+        })
+    }
+
     /// Pull SEVERAL local points toward their targets at once, then release and settle.
     ///
     /// One hand asks the drawing to do whatever it likes as long as this point ends up here, and
@@ -3443,16 +3593,10 @@ impl Problem {
         hands: &[(PointId, [f64; 2])],
         was: &[(PointId, [f64; 2])],
     ) -> Result<DragOutcome, RequestError> {
-        let mut pulled = self.clone();
-        for (held, at) in hands.iter().copied() {
+        for (held, _) in hands.iter().copied() {
             if held.owner != self.owner || held.index >= self.points.len() {
                 return Err(RequestError::UnknownPoint);
             }
-            let pull = Relation::Fix { point: held, at };
-            pulled = pulled.with_candidate(
-                pull,
-                self.resolve(pull).map_err(RequestError::InvalidRelation)?,
-            );
         }
         // A hand on a curve's END is the author saying "change THIS curve", so that curve stops
         // asking to keep its span. Nothing else loosens: the rest of the drawing still prefers to
@@ -3469,6 +3613,17 @@ impl Problem {
         // chord, not its radius, which is what lets the end sweep around a center that stays put
         // rather than dragging the whole arc after it.
         let grabbed = |point: PointId| hands.iter().any(|(held, _)| *held == point);
+        // Concentric arcs are one rail family, and a preference prices an arc by its CHORD, which
+        // is not something a sweep leaves alone: swing one rail's end around and every sibling's
+        // chord shortens with it. A rigid sibling therefore outvotes the sweep by itself, and the
+        // drawing slides under the cursor instead — the same reasoning that already stops the
+        // family's radii being held when a hand has a whole rail, reaching the chords too.
+        let swept: Vec<PointId> = self
+            .arc_centers
+            .iter()
+            .filter(|arc| grabbed(arc.from) || grabbed(arc.to))
+            .map(|arc| arc.center)
+            .collect();
         let loosened: Vec<SketchCurve> = self
             .segments
             .iter()
@@ -3483,12 +3638,151 @@ impl Problem {
             .chain(
                 self.arc_centers
                     .iter()
-                    .filter(|arc| grabbed(arc.from) || grabbed(arc.to))
+                    .filter(|arc| {
+                        grabbed(arc.from) || grabbed(arc.to) || swept.contains(&arc.center)
+                    })
                     .map(|arc| SketchCurve::Arc(arc.key)),
             )
             .collect();
         let mut positions: Vec<_> = self.points.iter().map(|point| point.at).collect();
         let mut scalar_coordinates = self.scalar_coordinates();
+        let (origin, frames) = self.walk_of(hands, was, &positions);
+        let mut stood = origin.clone();
+        let mut report = None;
+        for frame in 1..=frames {
+            let share = f64::from(frame) / f64::from(frames);
+            let target: Vec<(PointId, [f64; 2])> = hands
+                .iter()
+                .zip(&origin)
+                .map(|((held, to), (_, from))| {
+                    (
+                        *held,
+                        [
+                            from[0] + (to[0] - from[0]) * share,
+                            from[1] + (to[1] - from[1]) * share,
+                        ],
+                    )
+                })
+                .collect();
+            // The drawing as the walk has left it. A frame reads its preference off what is in
+            // front of it, and a problem carries its own positions as that reference, so a walked
+            // frame has to be handed the drawing it walked to rather than the one the gesture
+            // started from — otherwise every frame re-asks for the original shape and the walk
+            // says nothing the first frame did not.
+            let standing = self.standing_at(&positions, &scalar_coordinates);
+            report = standing.drag_one_frame(
+                &target,
+                &stood,
+                &loosened,
+                &mut positions,
+                &mut scalar_coordinates,
+            )?;
+            stood = target
+                .iter()
+                .map(|(held, _)| {
+                    (
+                        *held,
+                        positions.get(held.index).copied().unwrap_or_default(),
+                    )
+                })
+                .collect();
+        }
+        let solution = self.solution(positions, &scalar_coordinates);
+        let diagnostics = diagnostics(self, &solution, report);
+        let settled = Settled {
+            solution,
+            diagnostics: diagnostics.clone(),
+        };
+        Ok(
+            if diagnostics.satisfied && diagnostics.tangent_contacts_valid {
+                DragOutcome::Accepted(settled)
+            } else {
+                DragOutcome::Rejected(settled)
+            },
+        )
+    }
+
+    /// Where each hand STARTED, and how many steps the drag should walk to get where it is going.
+    ///
+    /// A solve is LOCAL, and a snapped drag is a ROTATION — the one motion a linearization is
+    /// worst at. Arriving a frame at a time a sweep turns a fraction of a degree and this never
+    /// comes up; a fast hand, or a caller that jumps straight to the answer, hands over the whole
+    /// turn at once and the pass settles into a mixture of travel and distortion instead. Measured
+    /// on a curved slot swept 7.8 degrees, one frame collapsed the rails from 36/40/44 to
+    /// 33.5/38.3/43.2, while a degree at a time held them and left the far end inside a twentieth
+    /// of a voxel.
+    ///
+    /// Walking it is therefore what makes a drag's answer independent of how fast the frames
+    /// arrived, which is a thing that ought to be true rather than a number worth tuning. Only a
+    /// snapped drag pays for it, and only when it turns far enough to have to.
+    fn walk_of(
+        &self,
+        hands: &[(PointId, [f64; 2])],
+        was: &[(PointId, [f64; 2])],
+        positions: &[[f64; 2]],
+    ) -> (Vec<(PointId, [f64; 2])>, u32) {
+        let origin: Vec<(PointId, [f64; 2])> = hands
+            .iter()
+            .map(|(held, _)| {
+                let at = was
+                    .iter()
+                    .find(|(named, _)| named == held)
+                    .map(|(_, at)| *at)
+                    .or_else(|| positions.get(held.index).copied())
+                    .unwrap_or_default();
+                (*held, at)
+            })
+            .collect();
+        let frames = self
+            .snapped(hands, &origin, positions)
+            .map_or(1, |opening| {
+                (1..=Self::MOST_FRAMES)
+                    .find(|frames| opening.turn <= f64::from(*frames) * Self::TURN_PER_FRAME)
+                    .unwrap_or(Self::MOST_FRAMES)
+            });
+        (origin, frames)
+    }
+
+    /// The same problem standing where a walked drag has got to, which is what the document
+    /// itself hands down between one frame of a real drag and the next.
+    fn standing_at(&self, positions: &[[f64; 2]], scalars: &[f64]) -> Self {
+        let mut walked = self.clone();
+        for (point, at) in walked.points.iter_mut().zip(positions) {
+            point.at = *at;
+        }
+        for (parameter, value) in walked.parameters.iter_mut().zip(scalars) {
+            parameter.stored = *value;
+        }
+        walked
+    }
+
+    /// One frame of a drag: snap the hand, seed under the preference, then let the hand and then
+    /// the drawing have their say. See [`Problem::drag_together`] for why there are three.
+    fn drag_one_frame(
+        &self,
+        hands: &[(PointId, [f64; 2])],
+        was: &[(PointId, [f64; 2])],
+        loosened: &[SketchCurve],
+        positions: &mut Vec<[f64; 2]>,
+        scalar_coordinates: &mut Vec<f64>,
+    ) -> Result<Option<SolveReport>, RequestError> {
+        let snap = self.snapped(hands, was, positions);
+        let hands = snap.as_ref().map_or(hands, |snap| snap.hands.as_slice());
+        // The hand is written into the guess as well as asserted, so the pass starts from the
+        // drawing the author is looking at rather than from the one they left behind.
+        for (held, at) in hands.iter().copied() {
+            if let Some(slot) = positions.get_mut(held.index) {
+                *slot = at;
+            }
+        }
+        let mut pulled = self.clone();
+        for (held, at) in hands.iter().copied() {
+            let pull = Relation::Fix { point: held, at };
+            pulled = pulled.with_candidate(
+                pull,
+                self.resolve(pull).map_err(RequestError::InvalidRelation)?,
+            );
+        }
         // Two passes, and the split is the whole idea. A drawing that is not fully determined has a
         // family of answers under the hand, and picking the one nearest where every point already
         // stood is what makes a shape stretch when it could have travelled: moving a body of N
@@ -3512,39 +3806,16 @@ impl Problem {
         let held = self.points_the_author_fixed();
         run(
             &pulled,
-            &mut positions,
-            &mut scalar_coordinates,
+            positions,
+            scalar_coordinates,
             Rigidity::Preferred {
                 anchored: &held,
-                flexible_curves: &loosened,
+                flexible_curves: loosened,
                 was,
             },
         );
-        run(
-            &pulled,
-            &mut positions,
-            &mut scalar_coordinates,
-            Rigidity::Ignored,
-        );
-        let report = run(
-            self,
-            &mut positions,
-            &mut scalar_coordinates,
-            Rigidity::Ignored,
-        );
-        let solution = self.solution(positions, &scalar_coordinates);
-        let diagnostics = diagnostics(self, &solution, report);
-        let settled = Settled {
-            solution,
-            diagnostics: diagnostics.clone(),
-        };
-        Ok(
-            if diagnostics.satisfied && diagnostics.tangent_contacts_valid {
-                DragOutcome::Accepted(settled)
-            } else {
-                DragOutcome::Rejected(settled)
-            },
-        )
+        run(&pulled, positions, scalar_coordinates, Rigidity::Ignored);
+        Ok(run(self, positions, scalar_coordinates, Rigidity::Ignored))
     }
 
     /// The points pinned outright, which a shape-holding preference has to leave where they are.

@@ -1395,3 +1395,151 @@ fn a_curved_slot_widens_under_a_long_drag_rather_than_jumping_branch() {
         nearest_radius(&sketch, 36.0)
     );
 }
+
+/// A curved slot of rails 36, 40 and 44, all turning about the origin, with its near cap standing
+/// at [44, 0]. The gesture the tests below measure is that cap's corner being pulled sideways.
+fn curved_slot() -> Sketch {
+    source()
+        .with_center_arc_slot(
+            SketchPoint::new(0, 0),
+            SketchPoint::new(40, 0),
+            SketchPoint::new(0, 40),
+            ::parametric::sketch::ArcTurn::CounterClockwise,
+            SketchPoint::new(44, 0),
+            ctx(16),
+        )
+        .expect("a curved slot")
+        .sketch
+        .as_ref()
+        .clone()
+}
+
+fn rails(sketch: &Sketch) -> Vec<f64> {
+    let mut got: Vec<f64> = sketch
+        .arcs()
+        .iter()
+        .filter_map(|arc| sketch.arc_form(arc))
+        .map(|form| form.radius)
+        .collect();
+    got.sort_by(f64::total_cmp);
+    got
+}
+
+/// The drawn point standing nearest a place.
+fn corner_at(sketch: &Sketch, near: [f64; 2]) -> u32 {
+    sketch
+        .points()
+        .iter()
+        .min_by(|first, second| {
+            let reach = |at: [f64; 2]| (at[0] - near[0]).hypot(at[1] - near[1]);
+            reach(first.at.in_plane()).total_cmp(&reach(second.at.in_plane()))
+        })
+        .expect("a drawn point")
+        .id
+}
+
+fn stands_at(sketch: &Sketch, point: u32) -> [f64; 2] {
+    sketch
+        .points()
+        .iter()
+        .find(|drawn| drawn.id == point)
+        .expect("a drawn point")
+        .at
+        .in_plane()
+}
+
+/// Pulling a slot's corner ALONG its rail sweeps the near end round and leaves the far one alone.
+///
+/// Nothing here is dimensioned, so the hand could be met just as exactly by sliding the whole slot
+/// sideways — and before the snap that is what happened, the far end coming 3.6 voxels along for a
+/// six-voxel pull. What settles it is reading a hand that moves ALONG a quantity as one that is
+/// keeping it: the cursor goes onto the circle the radius draws, which makes the sweep an exact
+/// answer too, and a cheaper one than carrying the whole drawing.
+#[test]
+fn pulling_a_slots_corner_along_its_rail_sweeps_the_near_end_and_leaves_the_far_one() {
+    let mut sketch = curved_slot();
+    let corner = corner_at(&sketch, [44.0, 0.0]);
+    let hub = corner_at(&sketch, [0.0, 0.0]);
+    let far = corner_at(&sketch, [0.0, 44.0]);
+    let inner = corner_at(&sketch, [36.0, 0.0]);
+
+    assert!(sketch
+        .move_point(corner, SketchPoint::from_continuous(44.0, 6.0), ctx(16))
+        .expect("answered"));
+
+    let moved = |point: u32, from: [f64; 2]| {
+        let at = stands_at(&sketch, point);
+        (at[0] - from[0]).hypot(at[1] - from[1])
+    };
+    assert!(
+        moved(corner, [44.0, 0.0]) > 5.5,
+        "the hand was not followed"
+    );
+    assert!(
+        moved(inner, [36.0, 0.0]) > 4.0,
+        "the near cap did not sweep"
+    );
+    assert!(moved(far, [0.0, 44.0]) < 0.5, "the far end came along");
+    assert!(moved(hub, [0.0, 0.0]) < 0.5, "the hub came along");
+    let swept = rails(&sketch);
+    for (rail, want) in swept.iter().zip([4.0, 4.0, 36.0, 40.0, 44.0]) {
+        assert!((rail - want).abs() < 0.5, "the rails came out {swept:?}");
+    }
+}
+
+/// A drag's answer must not depend on how fast its frames arrived.
+///
+/// A snapped drag is a ROTATION, the motion a linearized solve is worst at, so a gesture handed
+/// over in one jump used to settle somewhere quite different from the same gesture delivered a
+/// frame at a time — the rails collapsing from 36/40/44 to 33.5/38.3/43.2 on the jump. A drag
+/// therefore walks its turn in small steps rather than trusting the frame it was given.
+#[test]
+fn a_drags_answer_does_not_depend_on_how_fast_its_frames_arrived() {
+    let walk = |frames: u32| {
+        let mut sketch = curved_slot();
+        let corner = corner_at(&sketch, [44.0, 0.0]);
+        for frame in 1..=frames {
+            let height = f64::from(frame) * 6.0 / f64::from(frames);
+            sketch
+                .move_point(corner, SketchPoint::from_continuous(44.0, height), ctx(16))
+                .expect("answered");
+        }
+        sketch
+    };
+
+    let jumped = rails(&walk(1));
+    for frames in [2_u32, 8, 24] {
+        let walked = rails(&walk(frames));
+        for (one, many) in jumped.iter().zip(&walked) {
+            assert!(
+                (one - many).abs() < 0.5,
+                "{frames} frames answered {walked:?} where one answered {jumped:?}"
+            );
+        }
+    }
+}
+
+/// Pulling a corner ACROSS its rail is the author setting the radius rather than keeping it, so
+/// the snap has to let go — otherwise a slot could never be widened by its own corner.
+#[test]
+fn pulling_a_slots_corner_across_its_rail_lets_the_snap_go() {
+    let mut sketch = curved_slot();
+    let corner = corner_at(&sketch, [44.0, 0.0]);
+    let before = rails(&sketch);
+
+    assert!(sketch
+        .move_point(corner, SketchPoint::from_continuous(50.0, 0.0), ctx(16))
+        .expect("answered"));
+
+    let at = stands_at(&sketch, corner);
+    assert!(
+        (at[0] - 50.0).abs() < 1.0e-6 && at[1].abs() < 1.0e-6,
+        "the hand was not met exactly: {at:?}"
+    );
+    let after = rails(&sketch);
+    let outer = |of: &[f64]| of.last().copied().expect("a rail");
+    assert!(
+        outer(&after) - outer(&before) > 2.0,
+        "the rail did not grow with the corner: {after:?}"
+    );
+}
