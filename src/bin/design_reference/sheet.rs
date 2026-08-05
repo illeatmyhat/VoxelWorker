@@ -564,18 +564,26 @@ impl Sheet {
             ui,
             "profile vertex handle",
             "The load-bearing manipulator: a draggable, snapped vertex, billboarded at the projected \
-             point. Idle · hover · selected · snapped.",
+             point. Idle · hover · selected · snapped — and idle with no curve drawn through it, \
+             which steps the border back a value because it is scaffolding, not shape.",
             |p, s| {
                 let y = s.center().y - 4.0;
-                let xs = [s.left() + 40.0, s.left() + 80.0, s.left() + 118.0, s.left() + 156.0];
-                let states = [
-                    (HandleState::Idle, "IDLE"),
-                    (HandleState::Hover, "HOVER"),
-                    (HandleState::Selected, "SEL"),
-                    (HandleState::Snapped, "SNAP"),
+                let xs = [
+                    s.left() + 34.0,
+                    s.left() + 70.0,
+                    s.left() + 106.0,
+                    s.left() + 142.0,
+                    s.left() + 190.0,
                 ];
-                for (x, (state, tag)) in xs.iter().zip(states) {
-                    gizmos::vertex_handle(p, Pos2::new(*x, y), 3.5, state);
+                let states = [
+                    (HandleState::Idle, true, "IDLE"),
+                    (HandleState::Hover, true, "HOVER"),
+                    (HandleState::Selected, true, "SEL"),
+                    (HandleState::Snapped, true, "SNAP"),
+                    (HandleState::Idle, false, "OFF-INK"),
+                ];
+                for (x, (state, on_ink, tag)) in xs.iter().zip(states) {
+                    gizmos::vertex_handle(p, Pos2::new(*x, y), 3.5, state, on_ink);
                     p.text(
                         Pos2::new(*x, s.bottom() - 16.0),
                         egui::Align2::CENTER_TOP,
@@ -598,8 +606,8 @@ impl Sheet {
                 let cur = Pos2::new(s.right() - 44.0, s.center().y);
                 gizmos::segment(p, v1, v2);
                 gizmos::open_segment(p, v2, cur, 4.0);
-                gizmos::vertex_handle(p, v1, 3.5, HandleState::Idle);
-                gizmos::vertex_handle(p, v2, 3.5, HandleState::Idle);
+                gizmos::vertex_handle(p, v1, 3.5, HandleState::Idle, true);
+                gizmos::vertex_handle(p, v2, 3.5, HandleState::Idle, true);
             },
         );
         // close-loop affordance.
@@ -618,9 +626,9 @@ impl Sheet {
                 gizmos::segment(p, p2, cur);
                 gizmos::dashed_segment(p, cur, start);
                 gizmos::close_loop_ring(p, start, 8.5);
-                gizmos::vertex_handle(p, p1, 3.5, HandleState::Idle);
-                gizmos::vertex_handle(p, p2, 3.5, HandleState::Idle);
-                gizmos::vertex_handle(p, start, 3.5, HandleState::Selected);
+                gizmos::vertex_handle(p, p1, 3.5, HandleState::Idle, true);
+                gizmos::vertex_handle(p, p2, 3.5, HandleState::Idle, true);
+                gizmos::vertex_handle(p, start, 3.5, HandleState::Selected, true);
                 gizmos::diamond(p, cur, 4.0);
             },
         );
@@ -633,7 +641,7 @@ impl Sheet {
             |p, s| {
                 let c = Pos2::new(s.center().x - 24.0, s.center().y);
                 gizmos::crosshair(p, c, 16.0, color_palette::ACCENT, true);
-                gizmos::vertex_handle(p, c, 3.5, HandleState::Selected);
+                gizmos::vertex_handle(p, c, 3.5, HandleState::Selected, true);
                 gizmos::label_chip(p, Pos2::new(c.x + 11.0, c.y - 24.0), "voxel", color_palette::ACCENT);
             },
         );
@@ -646,7 +654,7 @@ impl Sheet {
             |p, s| {
                 let c = Pos2::new(s.center().x - 20.0, s.center().y);
                 gizmos::diamond(p, c, 6.5);
-                gizmos::vertex_handle(p, c, 3.5, HandleState::Selected);
+                gizmos::vertex_handle(p, c, 3.5, HandleState::Selected, true);
                 gizmos::label_chip(p, Pos2::new(c.x + 13.0, c.y - 24.0), "vertex n2", color_palette::ACCENT);
             },
         );
@@ -664,7 +672,7 @@ impl Sheet {
                     Pos2::new(s.right() - 16.0, c.y),
                     Axis::X,
                 );
-                gizmos::vertex_handle(p, c, 3.5, HandleState::Selected);
+                gizmos::vertex_handle(p, c, 3.5, HandleState::Selected, true);
                 gizmos::label_chip(
                     p,
                     Pos2::new(c.x + 11.0, c.y - 24.0),
@@ -706,7 +714,7 @@ impl Sheet {
                 let c = s.center();
                 gizmos::segment(p, Pos2::new(s.left() + 30.0, s.bottom() - 24.0), c);
                 gizmos::segment(p, c, Pos2::new(s.right() - 40.0, s.top() + 26.0));
-                gizmos::vertex_handle(p, c, 4.0, HandleState::Hover);
+                gizmos::vertex_handle(p, c, 4.0, HandleState::Hover, true);
                 p.text(
                     Pos2::new(c.x + 12.0, c.y + 10.0),
                     Align2_LEFT_TOP,
@@ -732,7 +740,7 @@ impl Sheet {
                 gizmos::segment(p, p2, cur);
                 gizmos::dashed_segment(p, cur, start);
                 gizmos::close_loop_ring(p, start, 9.0);
-                gizmos::vertex_handle(p, start, 3.5, HandleState::Selected);
+                gizmos::vertex_handle(p, start, 3.5, HandleState::Selected, true);
                 gizmos::diamond(p, cur, 4.0);
             },
         );
@@ -746,7 +754,7 @@ impl Sheet {
                 let c = Pos2::new(s.center().x - 12.0, s.center().y);
                 gizmos::axis_guide(p, Pos2::new(s.left() + 16.0, c.y), Pos2::new(s.right() - 16.0, c.y), Axis::Y);
                 gizmos::crosshair(p, c, 14.0, color_palette::ACCENT, true);
-                gizmos::vertex_handle(p, c, 3.5, HandleState::Selected);
+                gizmos::vertex_handle(p, c, 3.5, HandleState::Selected, true);
                 gizmos::label_chip(p, Pos2::new(c.x + 11.0, c.y - 25.0), "y-axis + voxel", color_palette::ACCENT);
             },
         );

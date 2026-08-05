@@ -318,14 +318,29 @@ pub enum SketchCurveInk {
     TangentLever,
 }
 
+/// What a sketch DOT is, which is what decides its ink at rest.
+///
+/// Three answers rather than two flags, because the three are mutually exclusive and a pair of
+/// booleans would admit a fourth combination that means nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SketchVertexInk {
+    /// A curve's drawn path runs through it. The dot is part of the drawing, so it takes the
+    /// drawing's ink.
+    OnInk,
+    /// Nothing is drawn through it — a center, a control point, a free point. It is a handle FOR
+    /// the drawing rather than the drawing, and steps back a value to say so.
+    OffInk,
+    /// One of a tangent lever's two arms — green, its own family, and never at rest in the sense
+    /// the other two are.
+    TangentArm,
+}
+
 /// One sketch point ready to paint.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SketchVertexHandle {
     pub at: Pos2,
     pub state: gizmos::HandleState,
-    /// Whether this point is one of a tangent lever's two arms, which draw green rather than in
-    /// the profile's accent.
-    pub tangent_arm: bool,
+    pub ink: SketchVertexInk,
 }
 
 /// Draw the committed segment lines between their projected endpoints. Idle edges first, then the
@@ -405,10 +420,17 @@ pub fn sketch_vertex_handles(
     ));
     let grab = SKETCH_HANDLE_HALF + SKETCH_HANDLE_GRAB_PAD;
     for handle in handles {
-        if handle.tangent_arm {
-            gizmos::tangent_arm_handle(&painter, handle.at, SKETCH_HANDLE_HALF, handle.state);
-        } else {
-            gizmos::vertex_handle(&painter, handle.at, SKETCH_HANDLE_HALF, handle.state);
+        match handle.ink {
+            SketchVertexInk::TangentArm => {
+                gizmos::tangent_arm_handle(&painter, handle.at, SKETCH_HANDLE_HALF, handle.state);
+            }
+            ink => gizmos::vertex_handle(
+                &painter,
+                handle.at,
+                SKETCH_HANDLE_HALF,
+                handle.state,
+                ink == SketchVertexInk::OnInk,
+            ),
         }
         chrome_rects.push(Rect::from_center_size(handle.at, Vec2::splat(grab * 2.0)));
     }

@@ -1421,6 +1421,27 @@ impl WindowedState {
             .collect()
     }
 
+    /// Every point some curve is drawn THROUGH, gathered once for the frame rather than asked per
+    /// dot — the predicate walks every curve store, and the overlay asks it of every vertex.
+    fn points_standing_on_ink(
+        &self,
+        target: document::scene::NodeId,
+    ) -> std::collections::BTreeSet<document::sketch::EntityId> {
+        let Some(node) = self.panel_state.scene.node_by_id(target) else {
+            return std::collections::BTreeSet::new();
+        };
+        let document::scene::NodeContent::SketchTool { producer, .. } = &node.content else {
+            return std::collections::BTreeSet::new();
+        };
+        producer
+            .sketch
+            .points()
+            .iter()
+            .filter(|point| producer.sketch.point_stands_on_ink(point.id))
+            .map(|point| point.id)
+            .collect()
+    }
+
     /// Every point that is one end of a tangent lever, for the frame that has to paint them green.
     fn tangent_arm_points(
         &self,
@@ -4613,6 +4634,7 @@ impl WindowedState {
         }
         let [vx, vy, vw, vh] = viewport_px.map(|component| component as f32);
         let tangent_arms = self.tangent_arm_points(target);
+        let on_ink = self.points_standing_on_ink(target);
         let dragging_point = self.sketch_drag.as_ref().and_then(|drag| drag.held.point());
         // AT REST means Select with no gesture running. Every other tool is reaching for geometry
         // and must be able to see all of it; a quiet point the author cannot click is a worse
@@ -4680,7 +4702,16 @@ impl WindowedState {
                 ui::chrome::SketchVertexHandle {
                     at: center_pt,
                     state,
-                    tangent_arm: point_id.is_some_and(|id| tangent_arms.contains(&id)),
+                    ink: match point_id {
+                        Some(id) if tangent_arms.contains(&id) => {
+                            ui::chrome::SketchVertexInk::TangentArm
+                        }
+                        Some(id) if on_ink.contains(&id) => ui::chrome::SketchVertexInk::OnInk,
+                        // A vertex with no id is a PREVIEW dot the tool is placing: it belongs to
+                        // the mark being drawn, so it reads as drawing.
+                        None => ui::chrome::SketchVertexInk::OnInk,
+                        Some(_) => ui::chrome::SketchVertexInk::OffInk,
+                    },
                 },
             ));
             self.sketch_vertex_px.push(Some(center_px));

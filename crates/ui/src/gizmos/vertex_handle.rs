@@ -25,10 +25,6 @@ pub enum HandleState {
     Marked,
 }
 
-/// Draw a **profile vertex handle**. A square thumb of half-extent `half` (points) centered at
-/// `center`: dark fill + accent border idle, bright fill on hover, accent fill when selected,
-/// and the snap tick-cross around it when snapped. Distinct from the 3D position axis-handles
-/// (those move a whole node; this moves one profile vertex).
 /// The grabbable end of a tangent handle's lever.
 ///
 /// Green, where the lever is teal: the thing you can take hold of has to be separable at a glance
@@ -51,8 +47,19 @@ pub fn tangent_arm_handle(painter: &Painter, center: Pos2, half: f32, state: Han
     );
 }
 
-pub fn vertex_handle(painter: &Painter, center: Pos2, half: f32, state: HandleState) {
+/// Draw a **profile vertex handle**. A square thumb of half-extent `half` (points) centered at
+/// `center`: dark fill + accent border idle, bright fill on hover, accent fill when selected,
+/// and the snap tick-cross around it when snapped. Distinct from the 3D position axis-handles
+/// (those move a whole node; this moves one profile vertex).
+///
+/// `on_ink` says whether a curve is drawn THROUGH this point. Only the idle border reads it, and
+/// only downward: a point with no ink through it is scaffolding — a center, a control point — and
+/// steps back to [`color_palette::SKETCH_POINT_OFF_INK`] so the shape stays primary over the things
+/// that shape it. Hover, selection and the delete-mark are pointer states and answer identically
+/// for every point, because the pointer does not care what the dot is for.
+pub fn vertex_handle(painter: &Painter, center: Pos2, half: f32, state: HandleState, on_ink: bool) {
     let (fill, border) = match state {
+        HandleState::Idle if !on_ink => (HANDLE_FILL, color_palette::SKETCH_POINT_OFF_INK),
         HandleState::Idle => (HANDLE_FILL, HANDLE_ACCENT),
         // Hover FILLS with the bright hover color, and Selected fills accent — the same two
         // colors the hovered / selected lines use, so a point and an edge answer alike. Idle
@@ -87,5 +94,61 @@ pub fn vertex_handle(painter: &Painter, center: Pos2, half: f32, state: HandleSt
             [center + Vec2::new(arm, -arm), center + Vec2::new(-arm, arm)],
             cross,
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{vertex_handle, HandleState};
+    use egui::{pos2, Color32, Context, RawInput, Rect, Shape, Vec2};
+
+    /// Every stroke color the handle paints, in paint order.
+    fn borders(state: HandleState, on_ink: bool) -> Vec<Color32> {
+        Context::default()
+            .run_ui(
+                RawInput {
+                    screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, Vec2::splat(32.0))),
+                    ..Default::default()
+                },
+                |ui| vertex_handle(ui.painter(), pos2(16.0, 16.0), 3.5, state, on_ink),
+            )
+            .shapes
+            .into_iter()
+            .filter_map(|clipped| match clipped.shape {
+                Shape::Rect(rect) if rect.stroke.width > 0.0 => Some(rect.stroke.color),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The whole claim: at rest, a point with no curve through it recedes.
+    #[test]
+    fn an_idle_dot_off_the_ink_draws_quieter_than_one_on_it() {
+        let on = borders(HandleState::Idle, true);
+        let off = borders(HandleState::Idle, false);
+        assert_eq!(on.len(), 1, "one bordered thumb");
+        assert_ne!(on, off, "the off-ink border is a step back from the accent");
+        assert!(
+            off[0].r() < on[0].r() && off[0].g() < on[0].g() && off[0].b() < on[0].b(),
+            "quieter is DARKER on every channel — a value step, not a second hue"
+        );
+    }
+
+    /// A pointer state answers the same for every dot: hover means draggable, and what the dot is
+    /// for has nothing to do with whether the pointer is on it.
+    #[test]
+    fn the_pointer_states_do_not_read_the_ink() {
+        for state in [
+            HandleState::Hover,
+            HandleState::Selected,
+            HandleState::Snapped,
+            HandleState::Marked,
+        ] {
+            assert_eq!(
+                borders(state, true),
+                borders(state, false),
+                "{state:?} is about the pointer, not about the drawing"
+            );
+        }
     }
 }

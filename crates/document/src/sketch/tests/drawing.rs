@@ -1336,3 +1336,100 @@ fn a_fit_point_draws_because_the_curve_through_it_does_not_reveal_it() {
         );
     }
 }
+
+/// The dot takes the value of what it belongs to: ink through it means it IS the drawing.
+#[test]
+fn a_line_end_stands_on_ink_and_a_circles_center_does_not() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let left = sketch.add_free_point(SketchPoint::new(0, 0));
+    let right = sketch.add_free_point(SketchPoint::new(4, 0));
+    sketch.connect(left, right).expect("a line");
+    sketch
+        .add_circle(SketchPoint::new(10, 0), SketchLength::new(3))
+        .expect("a circle");
+    let center = sketch.circles()[0].center;
+
+    assert!(
+        sketch.point_stands_on_ink(left) && sketch.point_stands_on_ink(right),
+        "the line is drawn through both of its ends"
+    );
+    assert!(
+        !sketch.point_stands_on_ink(center),
+        "nothing is drawn at a center — it is the handle the circle hangs from"
+    );
+}
+
+/// The two spline kinds differ by exactly this: a fit point is ON the run, a control point steers
+/// it from beside it. Both ENDS are on it either way, because the frame is clamped.
+#[test]
+fn a_fit_point_stands_on_its_curve_and_an_interior_control_point_stands_beside_it() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let fit = sketch
+        .add_fit_point_spline(
+            &[
+                SketchPoint::new(0, 0),
+                SketchPoint::new(4, 4),
+                SketchPoint::new(8, 0),
+            ],
+            false,
+        )
+        .expect("a fit-point spline");
+    let control = sketch
+        .add_control_point_spline(&[
+            SketchPoint::new(20, 0),
+            SketchPoint::new(24, 8),
+            SketchPoint::new(28, 8),
+            SketchPoint::new(32, 0),
+        ])
+        .expect("a control-point spline");
+    let points_of = |sketch: &Sketch, id| {
+        sketch
+            .splines()
+            .iter()
+            .find(|spline| spline.id == id)
+            .expect("the spline stands")
+            .points
+            .clone()
+    };
+
+    for point in points_of(&sketch, fit) {
+        assert!(
+            sketch.point_stands_on_ink(point),
+            "every fit point is a point the curve runs through"
+        );
+    }
+    let frame = points_of(&sketch, control);
+    assert!(
+        sketch.point_stands_on_ink(frame[0]) && sketch.point_stands_on_ink(frame[3]),
+        "a clamped frame starts and ends on its own two outer controls"
+    );
+    assert!(
+        !sketch.point_stands_on_ink(frame[1]) && !sketch.point_stands_on_ink(frame[2]),
+        "the interior controls pull the curve without ever being on it"
+    );
+}
+
+/// A conic's control is scaffolding and its shoulder is the curve — two points, one gesture apart,
+/// and the ink is the only thing that tells them apart at rest.
+#[test]
+fn a_conics_control_stands_off_the_ink_its_shoulder_stands_on() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    sketch
+        .add_conic(
+            SketchPoint::new(0, 0),
+            SketchPoint::new(8, 0),
+            SketchPoint::new(4, 6),
+            0.5,
+        )
+        .expect("a conic");
+    let conic = sketch.conics()[0];
+
+    assert!(
+        !sketch.point_stands_on_ink(conic.control),
+        "the control is the point the two end tangents meet at, and no curve reaches it"
+    );
+    assert!(
+        sketch.point_stands_on_ink(conic.shoulder),
+        "the shoulder is the curve at t = 0.5"
+    );
+}

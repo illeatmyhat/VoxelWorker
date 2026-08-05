@@ -4737,6 +4737,60 @@ impl Sketch {
         self.curve_ends_meeting(id) < 2
     }
 
+    /// Whether some curve's DRAWN PATH runs through `id`.
+    ///
+    /// The dot takes the value of what it belongs to. Ink through it means the point is part of the
+    /// drawing and draws in the drawing's ink; no ink through it means the point is a handle FOR the
+    /// drawing — a center, a control point, a conic's off-curve control, a free point — and it draws
+    /// recessive, so the shape stays primary over the scaffolding that shapes it. Fusion says the
+    /// same thing on a white page by drawing the free one white and the connected one black.
+    ///
+    /// This is not [`curve_ends_meeting`](Self::curve_ends_meeting), which asks where ink STOPS. A
+    /// spline's interior fit point stops nothing and still has ink through it; an arc's center is an
+    /// end of nothing and has none. And it is not a lifetime or an ownership question either — see
+    /// [`PointLifetime`] for how the three axes divide.
+    pub fn point_stands_on_ink(&self, id: EntityId) -> bool {
+        let segments = self
+            .segments
+            .iter()
+            .flat_map(|segment| [segment.from, segment.to]);
+        let arcs = self.arcs.iter().flat_map(|arc| [arc.from, arc.to]);
+        let conics = self
+            .conics
+            .iter()
+            .flat_map(|conic| [conic.from, conic.to, conic.shoulder]);
+        let ellipses = self
+            .ellipses
+            .iter()
+            .flat_map(|ellipse| [ellipse.major_endpoint, ellipse.width_point]);
+        // Bézier pieces carry their two ends on the curve and their two controls off it, in
+        // parameter order — the same on/off split every other curve here draws.
+        let beziers = self
+            .beziers
+            .iter()
+            .flat_map(|bezier| [bezier.controls[0], bezier.controls[3]]);
+        // A FIT point sits on the run. A CONTROL point steers it from off the curve — except the
+        // first and last, which a clamped frame interpolates, so a control-point spline starts and
+        // ends on two of its own controls and passes beside all the rest.
+        let splines = self.splines.iter().flat_map(|spline| match spline.kind {
+            SplineKind::FitPoint => spline.points.clone(),
+            SplineKind::ControlPoint => spline
+                .points
+                .first()
+                .into_iter()
+                .chain(spline.points.last())
+                .copied()
+                .collect(),
+        });
+        segments
+            .chain(arcs)
+            .chain(conics)
+            .chain(ellipses)
+            .chain(beziers)
+            .chain(splines)
+            .any(|on_curve| on_curve == id)
+    }
+
     /// Every point some authored relation reaches — named outright, or standing on a curve the
     /// relation names.
     ///

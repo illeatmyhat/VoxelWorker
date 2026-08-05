@@ -112,7 +112,7 @@ pub use sketch_overlay::{
     sketch_arc_curves, sketch_constraint_badges, sketch_draw_preview, sketch_exit_control,
     sketch_insert_marker, sketch_marquee_band, sketch_segment_lines, sketch_vertex_handles,
     ConstraintBadge, SketchCurveInk, SketchCurveLine, SketchEdgeLine, SketchPreviewLine,
-    SketchPreviewMark, SketchVertexHandle, SKETCH_CONSTRAINT_BADGE, SKETCH_CONSTRAINT_BADGE_OFFSET,
-    SKETCH_HANDLE_GRAB_PAD, SKETCH_HANDLE_HALF, SKETCH_INSERT_MARKER_HALF,
-    SKETCH_PREVIEW_POINT_HALF, SKETCH_SEGMENT_GRAB_PAD,
+    SketchPreviewMark, SketchVertexHandle, SketchVertexInk, SKETCH_CONSTRAINT_BADGE,
+    SKETCH_CONSTRAINT_BADGE_OFFSET, SKETCH_HANDLE_GRAB_PAD, SKETCH_HANDLE_HALF,
+    SKETCH_INSERT_MARKER_HALF, SKETCH_PREVIEW_POINT_HALF, SKETCH_SEGMENT_GRAB_PAD,
 };
