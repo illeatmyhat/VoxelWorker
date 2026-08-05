@@ -516,14 +516,14 @@ mod tests {
         }
     }
 
-    /// The overlay has to be able to tell a handle from the point it stands on.
+    /// The overlay reports one dot per point, flagged with whether the drawing derives it.
     ///
-    /// A slot pins an authored center onto the center its rails turn about, so the two project to
-    /// the same pixel and a hit-test that knows only distance picks between them by accident. What
-    /// this pins is that the flags are aligned with the ids AND that the stacking is real — if a
-    /// later change stopped stacking them the tie-break would go quietly untested.
+    /// A slot used to pin an authored handle onto the center its rails turn about, so the two
+    /// projected to the same pixel and a hit-test that knew only distance picked between them by
+    /// accident. The handle is gone — no point in a slot stands on another — so what this pins is
+    /// that the flags stay aligned with the ids and that nothing stacks.
     #[test]
-    fn stacked_slot_handles_report_which_point_the_drawing_derives() {
+    fn slot_handles_report_which_point_the_drawing_derives_and_stack_none() {
         let made = SketchSolid::extrude(Sketch::empty(PlaneAxis::Z), 4)
             .with_center_arc_slot(
                 SketchPoint::new(0, 0),
@@ -542,11 +542,13 @@ mod tests {
             assert_eq!(handles.derived[index], made.sketch.is_arc_center(*point));
         }
         let stacked = handles.vertices.iter().enumerate().any(|(index, vertex)| {
-            handles.vertices.iter().enumerate().any(|(other, twin)| {
-                other != index && twin == vertex && handles.derived[other] != handles.derived[index]
-            })
+            handles
+                .vertices
+                .iter()
+                .enumerate()
+                .any(|(other, twin)| other != index && twin == vertex)
         });
-        assert!(stacked, "a slot stands an authored center on a derived one");
+        assert!(!stacked, "a slot stands one point on another");
     }
 
     #[test]

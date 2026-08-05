@@ -2089,6 +2089,8 @@ mod tests {
                 anchored: &[lower_center, upper_center],
                 flexible_curves: &[SketchCurve::Segment(first), SketchCurve::Segment(second)],
                 was: &[],
+                opening: &[],
+                reshaping: false,
             },
         )
         .unwrap();
@@ -2390,8 +2392,36 @@ enum Rigidity<'a> {
         /// away they are, and the average of the two is a radius NEITHER end has — an invented
         /// target the solve then rebuilds the whole arc around.
         ///
-        /// Only the hands need naming. Every other point is where it always was.
+        /// Only the hands need naming. Every other point is in `opening`.
         was: &'a [(PointId, [f64; 2])],
+        /// Where the whole drawing stood when the GESTURE started, which is what every preference
+        /// row is written against. Empty means the drawing in front of the pass is that reference.
+        ///
+        /// A walked drag hands each step the drawing the last step reached, because a relation has
+        /// to be linearized about the configuration in front of it. A PREFERENCE must not follow:
+        /// re-aimed at each step's answer it can only ever say "stay where the last step left
+        /// you", so whatever that step got slightly wrong becomes the thing being preserved. The
+        /// error ratchets, and it drains into whichever quantity nothing else is pricing — on a
+        /// slot, its width, which grew 20% over a nine-step sweep and grew FURTHER when the steps
+        /// were made finer, which is the signature of a per-step bias rather than of curvature.
+        opening: &'a [[f64; 2]],
+        /// Whether the gesture is reshaping a curve rather than moving the drawing.
+        ///
+        /// ONE finger on a point that ENDS a curve is a vertex being reshaped, and the rest of the
+        /// drawing then prefers to STAY, not merely to keep its shape. A hand on a point that only
+        /// CENTERS curves — a circle's middle, a slot's hub — is the drawing being moved, and so
+        /// are the several hands of a carry; travel has to stay free for those or a carry would
+        /// deform instead of travelling.
+        ///
+        /// Spans cannot tell the two apart, because a span is translation-invariant: sliding the
+        /// whole drawing under the cursor keeps every one of them exactly, so the preference is
+        /// indifferent and the arithmetic settles it by spreading the correction over every
+        /// coordinate it touches. This is the one bit that says which gesture it is.
+        ///
+        /// It is asked of the points STANDING WITH the hand, not of the hand alone — see
+        /// [`Problem::standing_together`] — because the dot the author grabs is often a handle
+        /// rather than the vertex the curves were drawn through.
+        reshaping: bool,
     },
 }
 
@@ -2757,14 +2787,17 @@ impl<'a> Residuals<'a> {
                 anchored,
                 flexible_curves,
                 was,
+                opening,
+                reshaping,
             } => {
                 let at = |slot: usize| [base[slot * 2], base[slot * 2 + 1]];
-                // The drawing as it stood before the hand — see [`Rigidity::Preferred::was`].
-                let shape = |slot: usize| {
-                    was.iter()
-                        .find(|(point, _)| point.index == slot)
-                        .map_or_else(|| at(slot), |(_, stood)| *stood)
-                };
+                // The drawing as it stood before the gesture — see
+                // [`Rigidity::Preferred::opening`]. Measured for the spans as well as the stays:
+                // aiming only the stays at the opening and leaving the spans to follow the walk
+                // was tried, and it was worse at both things at once — the hub drifted further AND
+                // the slot fattened more — because a span that follows the walk is a span that
+                // ratifies whatever the last step did to the shape.
+                let shape = |slot: usize| opening.get(slot).copied().unwrap_or_else(|| at(slot));
                 let flexible_segment = |index| {
                     flexible_curves.iter().any(
                         |curve| matches!(curve, SketchCurve::Segment(segment) if segment.index == index),
@@ -2873,40 +2906,27 @@ impl<'a> Residuals<'a> {
                 // An anchored point is removed from the free set outright, so nothing has to hold
                 // it with a row, and the holds below skip it for that reason.
                 //
-                // ONE finger on a curve's END is a corner being reshaped, and the rest of the
-                // drawing then prefers to STAY, not merely to keep its shape. Every other gesture
-                // — a hand on a center, the several hands of a carry — is the drawing being
-                // MOVED, and travel has to stay free or a carry would deform instead.
+                // The rest of the drawing stays where it is while a vertex is reshaped.
+                // Measured on a curved slot, a corner pulled six voxels took the far end 3.6 along
+                // with it; holding the points the hand does not have makes travel cost what it is
+                // worth, and the cheapest answer left is to sweep the corner around a drawing that
+                // stays.
                 //
-                // Spans alone cannot tell those apart, because a span is translation-invariant:
-                // sliding the whole drawing under the cursor keeps every one of them exactly, so
-                // the preference is indifferent and the arithmetic settles it by spreading the
-                // correction over every coordinate it touches. Measured on a curved slot, an
-                // outer-rail corner pulled six voxels took the far end 3.6 with it. Holding the
-                // points the hand does not have makes travel cost what it is worth, and the
-                // cheapest answer left is to sweep the corner around a drawing that stays.
+                // This is the objective a commercial parametric drag solves — every point weighted
+                // toward where it stood, the cursor weighted above them — with the span rows added
+                // on top. It seeds only: pass two hands the cursor full authority regardless.
                 //
-                // This is the objective a commercial drag solves — every point weighted toward
-                // where it stood, the cursor weighted above them — with the span rows added on
-                // top, and it seeds only: pass two hands the cursor full authority regardless.
-                let vertex_grabbed = was.len() == 1
-                    && was.iter().all(|(point, _)| {
-                        let ends = problem
-                            .segments
-                            .iter()
-                            .any(|segment| segment.from == *point || segment.to == *point)
-                            || problem
-                                .arc_centers
-                                .iter()
-                                .any(|arc| arc.from == *point || arc.to == *point);
-                        let centers = problem.arc_centers.iter().any(|arc| arc.center == *point)
-                            || problem.circles.iter().any(|circle| circle.center == *point);
-                        ends && !centers
-                    });
-                let stays: Vec<PointHold> = if vertex_grabbed {
+                // A hand's own twins go unheld with it. A handle and the vertex it stands on are
+                // one place, so holding one of them still while the other follows the cursor is
+                // asking the coincidence to break.
+                let hand_and_twins: Vec<PointId> = was
+                    .iter()
+                    .flat_map(|(held, _)| problem.standing_together(*held))
+                    .collect();
+                let stays: Vec<PointHold> = if reshaping {
                     (0..problem.points.len())
                         .filter(|slot| !held.contains(slot))
-                        .filter(|slot| !was.iter().any(|(point, _)| point.index == *slot))
+                        .filter(|slot| !hand_and_twins.iter().any(|point| point.index == *slot))
                         .map(|slot| PointHold {
                             slot,
                             at: shape(slot),
@@ -3354,6 +3374,8 @@ impl Problem {
                 anchored: &[],
                 flexible_curves: &[],
                 was: &[],
+                opening: &[],
+                reshaping: false,
             },
         );
         let report = run(
@@ -3480,12 +3502,111 @@ impl Problem {
     /// Read as an angle it is a cone about the direction that keeps the quantity: a hand moving
     /// within about fifteen degrees of it is understood to be moving ALONG it.
     const SNAP_CONE: f64 = 0.25;
+    /// How still a hand has to be, as a fraction of the busiest hand's travel, to count as a pin
+    /// rather than a mover.
+    ///
+    /// A pin is asked for the place it already stands, so in exact arithmetic it does not move at
+    /// all. A settle answers to a tolerance instead, and a walked drag hands each step the drawing
+    /// the last one actually reached — so by the second step the pin is a few ulps off its target
+    /// and a test for "travelled at all" reads it as a second mover. That is what switched the snap
+    /// off after one frame of a nine-frame sweep, leaving the walk to deliver the raw cursor.
+    const STILL: f64 = 1.0e-3;
 
     /// How far a walked drag turns in one step, and the most steps it will ever walk.
     const TURN_PER_FRAME: f64 = std::f64::consts::PI / 180.0;
     const MOST_FRAMES: u32 = 16;
 
-    /// Pull a lone hand onto a quantity its own curve already had, when it is moving along one.
+    /// Every point standing in the same place as this one, itself included.
+    ///
+    /// The dot the author can grab is often not the vertex the curves were drawn through. A slot
+    /// keeps a HANDLE on its spine — its own point, held onto the geometry by a coincidence —
+    /// precisely so that dragging it can mean something different from dragging the derived center
+    /// underneath. But a quantity measured to one of two points standing in one place is measured
+    /// to the other, so when a drag asks what it has hold of, they answer together. Without this a
+    /// slot's end handle belongs to no curve at all and every rule below passes it by, which is
+    /// exactly what it did.
+    fn standing_together(&self, point: PointId) -> Vec<PointId> {
+        let mut together = vec![point];
+        let mut grew = true;
+        while grew {
+            grew = false;
+            for constraint in &self.constraints {
+                let Relation::Coincident { first, second } = constraint.relation else {
+                    continue;
+                };
+                for (near, far) in [(first, second), (second, first)] {
+                    if together.contains(&near) && !together.contains(&far) {
+                        together.push(far);
+                        grew = true;
+                    }
+                }
+            }
+        }
+        together
+    }
+
+    /// Where a point stood before the hand, which for anything but a hand is where it stands.
+    fn stood_of(
+        &self,
+        point: PointId,
+        was: &[(PointId, [f64; 2])],
+        positions: &[[f64; 2]],
+    ) -> Option<[f64; 2]> {
+        was.iter()
+            .find(|(named, _)| *named == point)
+            .map(|(_, at)| *at)
+            .or_else(|| {
+                (point.owner == self.owner)
+                    .then(|| positions.get(point.index).copied())
+                    .flatten()
+            })
+    }
+
+    /// The one hand that is actually MOVING, and where it came from, where there is exactly one.
+    ///
+    /// A gesture arrives with more hands than the author has fingers. A reshape names the place it
+    /// turns about as a hand of its own, standing exactly where it already stood, so that the
+    /// drawing is held there rather than sliding out from under the cursor. Those pins are the
+    /// drawing being kept still — the opposite of a carry — so every rule that asks "is this one
+    /// vertex being reshaped" has to count the hand that MOVED, not the hands that were named.
+    /// Counting names instead is what switched the snap and the stays off for a slot's end handle,
+    /// which is a two-hand gesture and always was.
+    fn moving_hand(
+        &self,
+        hands: &[(PointId, [f64; 2])],
+        was: &[(PointId, [f64; 2])],
+        positions: &[[f64; 2]],
+    ) -> Option<(usize, PointId, [f64; 2], [f64; 2])> {
+        let mut travels = Vec::with_capacity(hands.len());
+        for (held, now) in hands {
+            let stood = self.stood_of(*held, was, positions)?;
+            let travel = (now[0] - stood[0]).hypot(now[1] - stood[1]);
+            if !travel.is_finite() {
+                return None;
+            }
+            travels.push((stood, travel));
+        }
+        let largest = travels
+            .iter()
+            .map(|(_, travel)| *travel)
+            .fold(0.0_f64, f64::max);
+        if largest <= 0.0 {
+            return None;
+        }
+        let mut moving = None;
+        for (index, ((held, now), (stood, travel))) in hands.iter().zip(&travels).enumerate() {
+            if *travel <= largest * Self::STILL {
+                continue;
+            }
+            if moving.is_some() {
+                return None;
+            }
+            moving = Some((index, *held, *stood, *now));
+        }
+        moving
+    }
+
+    /// Pull the moving hand onto a quantity its own curve already had, when it moves along one.
     ///
     /// Every curve names a distance — a segment its length, an arc its radius — and a preference
     /// asks for that distance back. But a hand is an assertion and a preference is not, so when the
@@ -3510,38 +3631,25 @@ impl Problem {
         was: &[(PointId, [f64; 2])],
         positions: &[[f64; 2]],
     ) -> Option<Snap> {
-        // Only a lone finger. Several hands are a carry, which already has its answer, and they
-        // would each want a different circle.
-        let &[(held, now)] = hands else { return None };
-        let stood_at = |point: PointId| {
-            was.iter()
-                .find(|(named, _)| *named == point)
-                .map(|(_, at)| *at)
-                .or_else(|| {
-                    (point.owner == self.owner)
-                        .then(|| positions.get(point.index).copied())
-                        .flatten()
-                })
-        };
-        let stood = stood_at(held)?;
+        // Only a lone finger. Several MOVING hands are a carry, which already has its answer,
+        // and they would each want a different circle.
+        let (index, held, stood, now) = self.moving_hand(hands, was, positions)?;
+        let stood_at = |point: PointId| self.stood_of(point, was, positions);
         let travel = (now[0] - stood[0]).hypot(now[1] - stood[1]);
-        if !travel.is_finite() || travel <= 0.0 {
-            return None;
-        }
-        // A curve ending at this point offers the circle it would keep: what it measures from, and
-        // how far the point stood from it.
-        let far = |from: PointId, to: PointId| (from == held).then_some(to);
+        // A curve ending where this point stands offers the circle it would keep: what it
+        // measures from, and how far the point stood from it.
+        let together = self.standing_together(held);
+        let ends_here = |point: PointId| together.contains(&point);
+        let far = |from: PointId, to: PointId| ends_here(from).then_some(to);
         let circles = self
             .segments
             .iter()
             .filter_map(|segment| {
                 far(segment.from, segment.to).or_else(|| far(segment.to, segment.from))
             })
-            .chain(
-                self.arc_centers
-                    .iter()
-                    .filter_map(|arc| (arc.from == held || arc.to == held).then_some(arc.center)),
-            );
+            .chain(self.arc_centers.iter().filter_map(|arc| {
+                (ends_here(arc.from) || ends_here(arc.to)).then_some(arc.center)
+            }));
         let mut snap: Option<([f64; 2], f64, f64)> = None;
         for pivot in circles {
             let Some(about) = stood_at(pivot) else {
@@ -3563,8 +3671,14 @@ impl Problem {
         let (about, scale, _) = snap?;
         let arm = |at: [f64; 2]| [at[0] - about[0], at[1] - about[1]];
         let (from, to) = (arm(stood), arm(now));
+        // The moving hand is replaced; the pins are handed back untouched, because they are what
+        // holds the drawing still and dropping them would give the gesture away.
+        let mut snapped = hands.to_vec();
+        if let Some(hand) = snapped.get_mut(index) {
+            *hand = (held, [about[0] + to[0] * scale, about[1] + to[1] * scale]);
+        }
         Some(Snap {
-            hands: vec![(held, [about[0] + to[0] * scale, about[1] + to[1] * scale])],
+            hands: snapped,
             turn: (from[0] * to[1] - from[1] * to[0])
                 .atan2(from[0] * to[0] + from[1] * to[1])
                 .abs(),
@@ -3612,7 +3726,12 @@ impl Problem {
         // A curve's SHAPE parameter is untouched by this: an arc grabbed by an end gives up its
         // chord, not its radius, which is what lets the end sweep around a center that stays put
         // rather than dragging the whole arc after it.
-        let grabbed = |point: PointId| hands.iter().any(|(held, _)| *held == point);
+        // A hand on a handle is a hand on the vertex it stands on — see [`Problem::standing_together`].
+        let in_hand: Vec<PointId> = hands
+            .iter()
+            .flat_map(|(held, _)| self.standing_together(*held))
+            .collect();
+        let grabbed = |point: PointId| in_hand.contains(&point);
         // Concentric arcs are one rail family, and a preference prices an arc by its CHORD, which
         // is not something a sweep leaves alone: swing one rail's end around and every sibling's
         // chord shortens with it. A rigid sibling therefore outvotes the sweep by itself, and the
@@ -3645,9 +3764,19 @@ impl Problem {
             )
             .collect();
         let mut positions: Vec<_> = self.points.iter().map(|point| point.at).collect();
+        // The drawing as the gesture FOUND it, kept aside so the walk cannot re-aim the preference
+        // at its own intermediate answers — see [`Rigidity::Preferred::opening`]. The problem's own
+        // points are not that drawing: the caller writes the hands into the sketch and prepares the
+        // problem afterwards, so what arrives here is already bent. `was` is the only record of
+        // where the hands stood, which is why every drag sends it.
+        let mut opening = positions.clone();
+        for (held, stood) in was {
+            if let Some(slot) = opening.get_mut(held.index) {
+                *slot = *stood;
+            }
+        }
         let mut scalar_coordinates = self.scalar_coordinates();
         let (origin, frames) = self.walk_of(hands, was, &positions);
-        let mut stood = origin.clone();
         let mut report = None;
         for frame in 1..=frames {
             let share = f64::from(frame) / f64::from(frames);
@@ -3670,22 +3799,26 @@ impl Problem {
             // started from — otherwise every frame re-asks for the original shape and the walk
             // says nothing the first frame did not.
             let standing = self.standing_at(&positions, &scalar_coordinates);
+            // Every step measures from where the GESTURE started, not from where the last step
+            // landed. The walk hands out a straight chord while a snapped drag sweeps an arc, so
+            // the two part company by the sagitta — a fixed amount of geometry — while a step's own
+            // travel shrinks as the walk gets finer. Measured against the previous step, the cone
+            // is a fraction of that shrinking travel and loses to the gap partway through: on a
+            // nine-step sweep the snap dropped out at step six and again at step nine, and step
+            // nine is the one that delivers the answer, so the whole walk was spent to hand over
+            // the raw cursor anyway. Against the origin the cone grows with the drag  it keeps.
+            //
+            // It also stops the answer creeping. A step that measures from the last one snaps to
+            // whatever that step settled at, so the quantity it is meant to be keeping drifts a
+            // little each time; measured from the origin it is the quantity the author had.
             report = standing.drag_one_frame(
                 &target,
-                &stood,
+                &origin,
+                &opening,
                 &loosened,
                 &mut positions,
                 &mut scalar_coordinates,
             )?;
-            stood = target
-                .iter()
-                .map(|(held, _)| {
-                    (
-                        *held,
-                        positions.get(held.index).copied().unwrap_or_default(),
-                    )
-                })
-                .collect();
         }
         let solution = self.solution(positions, &scalar_coordinates);
         let diagnostics = diagnostics(self, &solution, report);
@@ -3762,10 +3895,28 @@ impl Problem {
         &self,
         hands: &[(PointId, [f64; 2])],
         was: &[(PointId, [f64; 2])],
+        opening: &[[f64; 2]],
         loosened: &[SketchCurve],
         positions: &mut Vec<[f64; 2]>,
         scalar_coordinates: &mut Vec<f64>,
     ) -> Result<Option<SolveReport>, RequestError> {
+        // Whose gesture this is, asked before the snap and independently of it: a vertex pulled
+        // ACROSS its quantity is still a vertex being reshaped, and the drawing still has to hold
+        // still around it — otherwise the whole slot slides over to meet the cursor and nothing
+        // gets wider.
+        let reshaping = self
+            .moving_hand(hands, was, positions)
+            .is_some_and(|(_, held, _, _)| {
+                let together = self.standing_together(held);
+                let ends_here = |point: PointId| together.contains(&point);
+                self.segments
+                    .iter()
+                    .any(|segment| ends_here(segment.from) || ends_here(segment.to))
+                    || self
+                        .arc_centers
+                        .iter()
+                        .any(|arc| ends_here(arc.from) || ends_here(arc.to))
+            });
         let snap = self.snapped(hands, was, positions);
         let hands = snap.as_ref().map_or(hands, |snap| snap.hands.as_slice());
         // The hand is written into the guess as well as asserted, so the pass starts from the
@@ -3812,6 +3963,8 @@ impl Problem {
                 anchored: &held,
                 flexible_curves: loosened,
                 was,
+                opening,
+                reshaping,
             },
         );
         run(&pulled, positions, scalar_coordinates, Rigidity::Ignored);
@@ -3840,6 +3993,8 @@ impl Problem {
                 anchored,
                 flexible_curves,
                 was: &[],
+                opening: &[],
+                reshaping: false,
             },
         );
         let preferred_report = preferred_trace

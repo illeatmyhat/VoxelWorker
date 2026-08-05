@@ -3228,7 +3228,7 @@ impl Sketch {
         }
     }
 
-    /// The spine handles a curve drag has to hold still, each pinned where it already stands.
+    /// The spine points a curve drag has to hold still, each pinned where it already stands.
     ///
     /// # Why a widening needs a second hand at all
     ///
@@ -3243,20 +3243,20 @@ impl Sketch {
     ///
     /// So the spine is pinned, and that single hand is the whole of the symmetric rule. Nothing
     /// asserts that the rails are equidistant, and nothing needs to: a cap is a circle, its center
-    /// is equidistant from its own two ends BY CONSTRUCTION, and that center is coincident with a
-    /// spine handle. Hold the spine and the mirror follows from the tangency web that is already
+    /// is equidistant from its own two ends BY CONSTRUCTION, and that center IS a point of the
+    /// spine. Hold the spine and the mirror follows from the tangency web that is already
     /// there. It costs no new relation, and it reads the same for a straight slot and a turning
     /// one — where a `Symmetry` relation could not, since it wants a segment axis and an arc
     /// slot's spine is an arc.
     ///
-    /// # What counts as a spine handle
+    /// # What counts as a spine point
     ///
-    /// An authored point standing coincident with a DERIVED center, found by walking out from what
-    /// the drag already holds. That is a slot's cap centers and its turning center, and it is not
-    /// a corner, an endpoint, or anything in the rest of the drawing. Points the drag is already
-    /// moving are left alone: a hand that both moves and holds is not a hand.
+    /// A center a round curve turns about, found by walking out from what the drag already holds.
+    /// That is a slot's cap centers and its turning center, and it is not a corner, an endpoint,
+    /// or anything in the rest of the drawing. Points the drag is already moving are left alone: a
+    /// hand that both moves and holds is not a hand.
     ///
-    /// # A handle standing on the dragged curve is one of those
+    /// # A spine point standing on the dragged curve is one of those
     ///
     /// The pin says "hold the spine while a RAIL widens", and it only means anything because the
     /// rail and the spine are different curves. Drag the spine itself and the same walk finds the
@@ -3265,12 +3265,12 @@ impl Sketch {
     /// what it is asked: it splits the difference. Measured on an Overall Slot, a 5.0 pull on the
     /// centerline arrived as 2.25, stretched the slot by 0.8 and grew its half-width by half again.
     ///
-    /// A handle is only free to be pinned if the drag does not already carry it. Standing at one of
+    /// A spine point is only free to be pinned if the drag does not already carry it. Standing at one of
     /// the dragged curve's own ends is one way to be carried and is caught by `held`; standing
     /// ANYWHERE on it under [`PointOnCurve`](ConstraintKind::PointOnCurve) is the other, and is why
     /// this needs to know which curve the hands came from. An Overall Slot is authored by its far
     /// ends, so its centerline runs out past both cap centers and holds them on it that way — the
-    /// ends of the curve are not the handles, and identity alone never sees them.
+    /// ends of the curve are not the spine points, and identity alone never sees them.
     fn handles_a_widening_must_hold(
         &self,
         curve: SketchCurve,
@@ -3290,8 +3290,7 @@ impl Sketch {
         self.what_a_drag_of_these_can_reach(&held)
             .iter()
             .filter(|point| !carried(**point))
-            .filter(|point| !self.is_arc_center(**point))
-            .filter(|point| self.center_this_handle_stands_on(**point).is_some())
+            .filter(|point| self.is_arc_center(**point))
             .filter_map(|point| Some((*point, self.point_in_plane(*point)?)))
             .collect()
     }
@@ -3316,11 +3315,8 @@ impl Sketch {
     /// refused, which is the honest outcome — translating a slot is not permission to drag
     /// whatever it was attached to.
     fn rest_of_the_shape_held_by(&self, held: EntityId) -> Vec<EntityId> {
-        let Some(center) = self.center_this_handle_stands_on(held) else {
-            return Vec::new();
-        };
-        let seeds = self.curves_centered_on(center);
-        if !self.names_a_whole_shape(&seeds) {
+        let seeds = self.curves_centered_on(held);
+        if seeds.is_empty() || !self.names_a_whole_shape(&seeds) {
             return Vec::new();
         }
         let mut carried: Vec<EntityId> = Vec::new();
@@ -3341,38 +3337,50 @@ impl Sketch {
         carried
     }
 
-    /// The handle a drag of `held` should turn about, or nothing if the drag is not a reshape.
+    /// The point a drag of `held` should turn about, or nothing if the drag is not a reshape.
     ///
     /// The mirror image of the translate policy, and it asks the same two questions in the other
-    /// order: `held` must stand on a center that names ONE curve — an end cap, the reshaping kind
-    /// of handle — belonging to a shape that does have a center of its own. That shared center is
-    /// the pivot, named by the handle pinned to it, because a hand is a thing an author can hold
-    /// and a derived point is not.
+    /// order: what `held` belongs to must be ONE end of a shape — not the whole of it — and that
+    /// shape must have a center of its own. That center is the pivot.
+    ///
+    /// A point belongs to a shape two ways, and both count. It can be the center ONE curve turns
+    /// about, which is an end cap. Or it can be a corner the curves merely END at, which is the
+    /// same gesture arriving on the boundary instead of the spine — a slot's outer corner pulled
+    /// round its rail is a reshape by every reading, and without the second way it named no pivot,
+    /// so the hub it was supposed to turn about drifted along behind the cursor.
     fn pivot_a_reshape_turns_about(&self, held: EntityId) -> Option<EntityId> {
-        let center = self.center_this_handle_stands_on(held)?;
-        let seeds = self.curves_centered_on(center);
-        if seeds.is_empty() || self.names_a_whole_shape(&seeds) {
+        let centered = self.curves_centered_on(held);
+        if self.names_a_whole_shape(&centered) {
+            return None;
+        }
+        let seeds = if centered.is_empty() {
+            self.curves_ending_at(held)
+        } else {
+            centered
+        };
+        if seeds.is_empty() {
             return None;
         }
         self.shape_holding(seeds)
             .into_iter()
             .flat_map(|curve| self.points_of(curve))
-            .filter(|point| self.is_arc_center(*point))
-            .filter(|point| self.names_a_whole_shape(&self.curves_centered_on(*point)))
-            // Where two rails share a center by relation rather than by identity, only ONE of the
-            // pair carries the handle — so keep looking rather than settling for the first.
-            .find_map(|shared| {
-                self.coincident_partners(shared)
-                    .into_iter()
-                    .find(|partner| !self.is_arc_center(*partner))
-            })
+            .filter(|point| self.is_arc_center(*point) && *point != held)
+            .find(|point| self.names_a_whole_shape(&self.curves_centered_on(*point)))
     }
 
-    /// The derived center an authored handle is pinned to, where it is that kind of handle.
-    fn center_this_handle_stands_on(&self, held: EntityId) -> Option<EntityId> {
-        self.coincident_partners(held)
-            .into_iter()
-            .find(|partner| self.is_arc_center(*partner))
+    /// Every curve this point is an END of, its center excluded.
+    fn curves_ending_at(&self, point: EntityId) -> Vec<SketchCurve> {
+        self.arcs
+            .iter()
+            .filter(|arc| arc.from == point || arc.to == point)
+            .map(|arc| SketchCurve::Arc(arc.id))
+            .chain(
+                self.segments
+                    .iter()
+                    .filter(|segment| segment.from == point || segment.to == point)
+                    .map(|segment| SketchCurve::Segment(segment.id)),
+            )
+            .collect()
     }
 
     /// Whether curves turning about one center name a whole shape rather than one end of it.
@@ -5309,29 +5317,11 @@ impl Sketch {
         })
     }
 
-    /// Whether `id` is the center a round thing turns about, or a handle tied to one.
-    ///
-    /// The tie matters because a derived center cannot be dragged — a slot reifies a REAL point on
-    /// each cap center and holds it there with Coincident precisely so the author has something to
-    /// take hold of, and that handle is the center as far as the drawing is concerned.
+    /// Whether `id` is the center a round thing turns about.
     fn point_is_a_center(&self, id: EntityId) -> bool {
-        let is_own_center = |candidate: EntityId| {
-            self.circles.iter().any(|circle| circle.center == candidate)
-                || self.arcs.iter().any(|arc| arc.center == candidate)
-                || self
-                    .ellipses
-                    .iter()
-                    .any(|ellipse| ellipse.center == candidate)
-        };
-        is_own_center(id)
-            || self.constraints.iter().any(|constraint| {
-                matches!(
-                    constraint.kind,
-                    ConstraintKind::Coincident { first, second }
-                        if (first == id && is_own_center(second))
-                            || (second == id && is_own_center(first))
-                )
-            })
+        self.circles.iter().any(|circle| circle.center == id)
+            || self.arcs.iter().any(|arc| arc.center == id)
+            || self.ellipses.iter().any(|ellipse| ellipse.center == id)
     }
 
     /// Whether some curve's DRAWN PATH runs through `id`.

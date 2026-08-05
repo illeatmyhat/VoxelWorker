@@ -61,7 +61,7 @@ pub struct SlotCandidate {
     pub spine: SlotSpine,
     /// The two points the author clicked, when the grammar asked for the slot's OVERALL extent.
     ///
-    /// Every other grammar's picks already ARE spine handles, and this is `None` for them. Overall
+    /// Every other grammar's picks already ARE spine points, and this is `None` for them. Overall
     /// is the one that asks for something else — the far ends of the finished shape — and those
     /// picks would otherwise be spent computing the spine and thrown away, leaving the author with
     /// no handle on the quantity they actually named.
@@ -149,7 +149,7 @@ pub fn linear_slot_candidate(
     };
     let mut candidate = linear_boundary(start_center, end_center, normal, half_width);
     // Only Overall spent its picks on something other than the spine, so only Overall has a reach
-    // to report. The other two grammars' picks survive as the spine handles themselves.
+    // to report. The other two grammars' picks survive as the spine points themselves.
     if kind == LinearSlotKind::Overall {
         candidate.reach = Some([first, second]);
     }

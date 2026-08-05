@@ -1087,17 +1087,7 @@ impl SketchSolid {
             // A straight-spined slot whose rails came back as anything but segments is not a slot.
             (None, _, _) => return Err(SlotRefusal::Unrepresentable),
         };
-        let handles = slot_spine_handles(
-            &mut next.sketch,
-            placement,
-            [start_cap, end_cap, first_rail],
-        )?;
-        let coincidences = handles
-            .iter()
-            .map(|&(handle, derived)| ConstraintKind::Coincident {
-                first: handle.min(derived),
-                second: handle.max(derived),
-            });
+        let spine = slot_spine_points(&next.sketch, placement, [start_cap, end_cap, first_rail])?;
         // A slot gets ONE line down its middle. Where the author gave extremes, the line out to
         // them already runs through both cap centers, so drawing the shorter cap-to-cap curve as
         // well puts a second construction mark on top of the first and says nothing new.
@@ -1107,7 +1097,7 @@ impl SketchSolid {
         // the middle they turn about, so sharing the center is what DEFINES it — its sweep is then
         // derived from that center rather than solved, and there is no freedom to pin back.
         let spine_curve = if placement.reach.is_none() {
-            slot_spine_curve(&mut next.sketch, placement, &handles)?
+            slot_spine_curve(&mut next.sketch, placement, &spine)?
         } else {
             None
         };
@@ -1116,17 +1106,13 @@ impl SketchSolid {
                 .tie_arc_centers(&[first_rail, second_rail, spine]);
         }
         let spine_line =
-            slot_spine_line(&mut next.sketch, placement, &handles, [start_cap, end_cap])?;
+            slot_spine_line(&mut next.sketch, placement, &spine, [start_cap, end_cap])?;
         let tangencies = placement
             .junctions
             .into_iter()
             .zip(corners)
             .map(|(branch, (first, second))| ConstraintKind::tangent(first, second, branch));
-        for kind in tangencies
-            .chain(std::iter::once(rails))
-            .chain(coincidences)
-            .chain(spine_line)
-        {
+        for kind in tangencies.chain(std::iter::once(rails)).chain(spine_line) {
             match next.sketch.add_constraint(kind, context) {
                 Ok(_) | Err(ConstraintRefusal::AlreadyAsserted { .. }) => {}
                 Err(refusal) => return Err(SlotRefusal::Constraint(refusal)),
@@ -1971,51 +1957,31 @@ enum RectangleFrame {
     Oriented,
 }
 
-/// The slot's spine handles, each paired with the derived center it is to be tied to.
+/// The points a slot's spine is drawn between: the caps' centers, and the one its rails turn
+/// about where it turns (`curves` names the start cap, the end cap, and a rail, in that order).
 ///
-/// Each handle is pinned to a center the boundary already derives: the caps' centers are the
-/// spine's two ends, and a turning spine's center is the one both rails share (`curves` names the
-/// start cap, the end cap, and a rail, in that order). The handle is a REAL point tied by
-/// Coincident rather than the derived center itself — dragging a derived center authors the
-/// quantity behind it and does not settle, which would make the slot's own center a dead handle.
-fn slot_spine_handles(
-    sketch: &mut Sketch,
+/// These are the boundary's OWN centers, not dots minted on top of them. A slot used to reify a
+/// real point on each and hold it there with a coincidence, because a derived center could not be
+/// dragged — dragging one authored the quantity behind it and did not settle, which would have
+/// made the slot's own middle a dead handle. [ADR 0038](../../../../docs/adr/0038-a-point-is-placed-never-computed.md)
+/// ended that: no point's coordinates are anybody else's arithmetic any more, and every point
+/// moves the same way, an arc's center included. The handle had nothing left to do but stand in
+/// the way — a second point in one place that no rule could see past.
+fn slot_spine_points(
+    sketch: &Sketch,
     placement: &SlotPlacement,
     curves: [SketchCurve; 3],
-) -> Result<Vec<(EntityId, EntityId)>, SlotRefusal> {
+) -> Result<Vec<EntityId>, SlotRefusal> {
     let [start_cap, end_cap, rail] = curves;
-    [
-        (placement.spine.start, start_cap),
-        (placement.spine.end, end_cap),
-    ]
-    .into_iter()
-    .chain(placement.spine.center.map(|center| (center, rail)))
-    .map(|(at, curve)| {
-        let derived = sketch
-            .center_point_of(curve)
-            .ok_or(SlotRefusal::Unrepresentable)?;
-        // A handle has to be a point that can be DRAGGED, and the ordinary "reuse whatever is
-        // standing here" lookup cannot give one: this spot is already occupied by the very center
-        // being tied to, and — where two rails share a center — by its twin as well. Tying to
-        // either would assert a coincidence the drawing already keeps and leave the author no
-        // handle at all.
-        let standing = sketch
-            .points()
-            .iter()
-            .find(|point| !sketch.is_arc_center(point.id) && point.at.coincides(&at))
-            .map(|point| point.id);
-        // A handle the slot MINTED outlives only the slot: nothing but its coincidence names it,
-        // so once the boundary goes the dot has no job and should not be left behind. A handle
-        // that reuses a point the author already placed keeps that point's own lifetime — the
-        // slot borrowed it, it does not own it.
-        let handle = standing.unwrap_or_else(|| {
-            let minted = sketch.add_free_point(at);
-            sketch.set_point_lifetime(minted, PointLifetime::CurveAnchored);
-            minted
-        });
-        Ok((handle, derived))
-    })
-    .collect()
+    [start_cap, end_cap]
+        .into_iter()
+        .chain(placement.spine.center.map(|_| rail))
+        .map(|curve| {
+            sketch
+                .center_point_of(curve)
+                .ok_or(SlotRefusal::Unrepresentable)
+        })
+        .collect()
 }
 
 /// Draw the slot's own centerline, cap center to cap center, as construction.
@@ -2039,12 +2005,11 @@ fn slot_spine_handles(
 fn slot_spine_curve(
     sketch: &mut Sketch,
     placement: &SlotPlacement,
-    handles: &[(EntityId, EntityId)],
+    spine: &[EntityId],
 ) -> Result<Option<SketchCurve>, SlotRefusal> {
-    let [(start, _), (end, _), ..] = handles else {
+    let [start, end, ..] = *spine else {
         return Err(SlotRefusal::Unrepresentable);
     };
-    let (start, end) = (*start, *end);
     let turning = placement.spine.center.is_some();
     let curve = match placement.spine.center {
         None => sketch
@@ -2084,7 +2049,7 @@ fn slot_spine_curve(
 fn slot_spine_line(
     sketch: &mut Sketch,
     placement: &SlotPlacement,
-    handles: &[(EntityId, EntityId)],
+    spine: &[EntityId],
     caps: [SketchCurve; 2],
 ) -> Result<Vec<ConstraintKind>, SlotRefusal> {
     let Some(reach) = placement.reach else {
@@ -2106,14 +2071,13 @@ fn slot_spine_line(
         .or_else(|| sketch.segment_between(first_end, second_end))
         .ok_or(SlotRefusal::Unrepresentable)?;
     sketch.set_construction(line);
-    let centers_on_the_line =
-        handles
-            .iter()
-            .take(2)
-            .map(|&(handle, _)| ConstraintKind::PointOnCurve {
-                point: handle,
-                curve: SketchCurve::Segment(line),
-            });
+    let centers_on_the_line = spine
+        .iter()
+        .take(2)
+        .map(|&center| ConstraintKind::PointOnCurve {
+            point: center,
+            curve: SketchCurve::Segment(line),
+        });
     let ends_on_their_caps = ends
         .into_iter()
         .zip(caps)

@@ -18,10 +18,10 @@ fn holds_a_corner_near(made: &SketchSolid, want: SketchPoint) -> bool {
     })
 }
 
-/// A slot's spine handles are the slot's, not the drawing's: deleting the boundary takes them
+/// A slot's spine points are the slot's, not the drawing's: deleting the boundary takes them
 /// with it instead of leaving loose dots where the slot used to be.
 #[test]
-fn deleting_a_slots_boundary_takes_its_spine_handles_with_it() {
+fn deleting_a_slots_boundary_takes_its_spine_with_it() {
     let made = source()
         .with_linear_slot(
             ::parametric::sketch::LinearSlotKind::CenterToCenter,
@@ -32,9 +32,9 @@ fn deleting_a_slots_boundary_takes_its_spine_handles_with_it() {
         )
         .unwrap();
     let mut sketch = made.sketch;
-    // The two cap centers are derived, the two handles sit on top of them, and the four boundary
-    // corners are shared by a rail and a cap.
-    assert_eq!(sketch.points().len(), 8);
+    // The spine runs between the two cap centers, and the four boundary corners are each shared
+    // by a rail and a cap.
+    assert_eq!(sketch.points().len(), 6);
 
     for arc in sketch.arcs().iter().map(|arc| arc.id).collect::<Vec<_>>() {
         sketch.delete_arc(arc);
@@ -161,9 +161,10 @@ fn native_arcs(made: &SketchSolid) -> usize {
 }
 
 /// A slot is not four curves that happen to touch — it is four curves held together, around a
-/// spine the drawing remembers. Every grammar commits a tangency at each corner, the one relation
-/// that keeps the rails rails, and one coincidence per spine handle. The WIDTH is the freedom
-/// deliberately left over.
+/// spine the drawing remembers. Every grammar commits a tangency at each corner and the one
+/// relation that keeps the rails rails. It commits NO coincidence: the spine is drawn between the
+/// boundary's own centers, so there is no second dot anywhere to be held onto a first. The WIDTH
+/// is the freedom deliberately left over.
 #[test]
 fn every_slot_grammar_commits_its_tangencies_rail_relation_and_spine() {
     let source = source();
@@ -187,8 +188,7 @@ fn every_slot_grammar_commits_its_tangencies_rail_relation_and_spine() {
         )
         .unwrap();
 
-    // A straight spine has two handles; a turning one also has the center it turns about.
-    for (made, handles) in [(&straight, 2), (&curved, 3)] {
+    for made in [&straight, &curved] {
         let kinds = |wanted: fn(&ConstraintKind) -> bool| {
             made.sketch
                 .constraints()
@@ -202,9 +202,9 @@ fn every_slot_grammar_commits_its_tangencies_rail_relation_and_spine() {
         );
         assert_eq!(
             kinds(|kind| matches!(kind, ConstraintKind::Coincident { .. })),
-            handles
+            0
         );
-        assert_eq!(made.sketch.constraints().len(), 5 + handles);
+        assert_eq!(made.sketch.constraints().len(), 5);
         // The relations must be true of the geometry the tool just drew — a slot that has to be
         // solved into shape the moment it lands is a slot the tool got wrong.
         assert!(made.sketch.standing_constraints_hold(ctx(16)).unwrap());
@@ -298,15 +298,19 @@ fn every_slot_grammar_draws_its_centerline_as_construction() {
     );
 }
 
-/// The handle an author drags to move the slot, found the way the UI finds it: the point standing
-/// at that spot that is not one the drawing derives.
-fn handle_at(made: &SketchSolid, at: SketchPoint) -> EntityId {
+/// The point an author drags to move the slot, found the way the UI finds it: whatever is
+/// standing at that spot. There is exactly one — a slot no longer stacks a handle on its spine.
+fn spine_point_at(made: &SketchSolid, at: SketchPoint) -> EntityId {
+    let want = at.in_plane();
     made.sketch
         .points()
         .iter()
-        .find(|point| !made.sketch.is_arc_center(point.id) && point.at.coincides(&at))
+        .find(|point| {
+            let here = point.at.in_plane();
+            (here[0] - want[0]).hypot(here[1] - want[1]) < 1.0e-6
+        })
         .map(|point| point.id)
-        .expect("the slot reifies its spine as draggable handles")
+        .expect("the slot draws its spine between points that stand there")
 }
 
 fn arc_slot() -> SketchSolid {
@@ -330,7 +334,7 @@ fn arc_slot() -> SketchSolid {
 #[test]
 fn dragging_the_center_translates_the_whole_arc_slot() {
     let mut made = arc_slot();
-    let center = handle_at(&made, SketchPoint::new(0, 0));
+    let center = spine_point_at(&made, SketchPoint::new(0, 0));
     let before: Vec<[f64; 2]> = made
         .sketch
         .points()
@@ -353,14 +357,14 @@ fn dragging_the_center_translates_the_whole_arc_slot() {
     }
 }
 
-/// The other two handles reshape the arc rather than carrying the slot, which is the whole reason
-/// the policy asks whether the held point is the shape's CENTER instead of translating on any
-/// spine handle it finds.
+/// The other two spine points reshape the arc rather than carrying the slot, which is the whole
+/// reason the policy asks whether the held point centers the shape ENTIRE instead of translating
+/// on any spine point it finds.
 #[test]
 fn dragging_a_spine_end_reshapes_the_slot_instead_of_moving_it() {
     let mut made = arc_slot();
-    let end = handle_at(&made, SketchPoint::new(0, 8));
-    let center = handle_at(&made, SketchPoint::new(0, 0));
+    let end = spine_point_at(&made, SketchPoint::new(0, 8));
+    let center = spine_point_at(&made, SketchPoint::new(0, 0));
 
     assert!(made
         .sketch
@@ -461,7 +465,7 @@ fn an_overall_slot_keeps_its_extremes_on_a_construction_line() {
 #[test]
 fn dragging_a_rail_widens_the_slot_without_moving_its_spine() {
     let mut made = arc_slot();
-    let center = handle_at(&made, SketchPoint::new(0, 0));
+    let center = spine_point_at(&made, SketchPoint::new(0, 0));
     // The outer rail of a quarter-turn slot of half-width two, drawn about the origin at radius 8.
     let outer = made
         .sketch
@@ -625,7 +629,7 @@ fn a_drag_reaches_its_own_slot_and_no_further() {
         )
         .expect("a second slot, well clear of the first");
 
-    let center = handle_at(&made, SketchPoint::new(0, 0));
+    let center = spine_point_at(&made, SketchPoint::new(0, 0));
     let reach = made.sketch.what_a_drag_of_these_can_reach(&[center]);
     assert!(
         reach.iter().all(|point| mine.contains(point)),
@@ -709,12 +713,11 @@ fn an_overall_slots_extremes_go_quiet_and_its_cap_centers_do_not() {
             let [x, y] = point.at.in_plane();
             y.abs() < 1.0e-6 && ((x - 4.0).abs() < 1.0e-6 || (x - 16.0).abs() < 1.0e-6)
         })
-        .filter(|point| !sketch.is_arc_center(point.id))
         .map(|point| point.id)
         .collect();
 
     assert_eq!(extremes.len(), 2, "two authored extremes: {extremes:?}");
-    assert_eq!(handles.len(), 2, "two draggable cap-center handles");
+    assert_eq!(handles.len(), 2, "two draggable cap centers");
     for extreme in extremes {
         assert!(
             !sketch.point_draws_at_rest(extreme),
@@ -950,20 +953,20 @@ fn dragging_an_overall_slots_centerline_does_not_fight_its_own_hands() {
     }
 }
 
-/// An arc slot's middle holds exactly two points, and draws one.
+/// An arc slot's middle holds exactly ONE point, and it is the center its rails turn about.
 ///
 /// Its three arcs — both rails and the construction centerline — turn about one place, so they
-/// SHARE one center rather than each echoing its own; three of the four dots this used to stack
-/// were the same answer written again, and they are gone rather than hidden. The two that remain
-/// cannot be collapsed: the shared center is derived, and a handle has to be draggable, so the
-/// author is owed the handle and only the handle. Dragging a derived center authors the quantity
-/// behind it instead of moving the slot, which would leave the dot most likely to be under the
-/// cursor the one least able to answer for the gesture.
+/// SHARE one center rather than each echoing its own; the dots this used to stack were the same
+/// answer written again, and they are gone rather than hidden. The last of them to go was a
+/// draggable handle standing on the derived center, kept because a derived center could not be
+/// dragged. [ADR 0038](../../../../../docs/adr/0038-a-point-is-placed-never-computed.md) made
+/// every point authored, so the center answers for the gesture itself and the handle was only a
+/// second dot in one place for the rules to trip over.
 ///
 /// Both arc grammars are checked because the three-point one is sugar for the center-point one and
 /// commits the same drawing; a difference between them would mean it had stopped being sugar.
 #[test]
-fn an_arc_slot_draws_one_dot_at_its_middle_and_it_is_the_draggable_one() {
+fn an_arc_slot_draws_one_dot_at_its_middle_and_it_is_the_center() {
     let three_point = source()
         .with_three_point_arc_slot(
             SketchPoint::new(8, 0),
@@ -992,8 +995,8 @@ fn an_arc_slot_draws_one_dot_at_its_middle_and_it_is_the_draggable_one() {
         );
         for point in drawn {
             assert!(
-                !made.sketch.is_arc_center(point.id),
-                "{grammar} kept the dot the author cannot drag"
+                made.sketch.is_arc_center(point.id),
+                "{grammar} drew a dot at its middle that is not the center itself"
             );
         }
 
@@ -1007,7 +1010,7 @@ fn an_arc_slot_draws_one_dot_at_its_middle_and_it_is_the_draggable_one() {
             .collect();
         assert_eq!(
             standing.len(),
-            2,
+            1,
             "{grammar} stacks {} points at its middle",
             standing.len()
         );
@@ -1479,8 +1482,10 @@ fn pulling_a_slots_corner_along_its_rail_sweeps_the_near_end_and_leaves_the_far_
         moved(inner, [36.0, 0.0]) > 4.0,
         "the near cap did not sweep"
     );
-    assert!(moved(far, [0.0, 44.0]) < 0.5, "the far end came along");
-    assert!(moved(hub, [0.0, 0.0]) < 0.5, "the hub came along");
+    // Not "hardly moved" — did not move. A corner names the hub it turns about as a hand that
+    // stays put, the same way a spine end does, so the sweep has a pivot rather than a preference.
+    assert!(moved(far, [0.0, 44.0]) < 1.0e-3, "the far end came along");
+    assert!(moved(hub, [0.0, 0.0]) < 1.0e-3, "the hub came along");
     let swept = rails(&sketch);
     for (rail, want) in swept.iter().zip([4.0, 4.0, 36.0, 40.0, 44.0]) {
         assert!((rail - want).abs() < 0.5, "the rails came out {swept:?}");
@@ -1542,4 +1547,99 @@ fn pulling_a_slots_corner_across_its_rail_lets_the_snap_go() {
         outer(&after) - outer(&before) > 2.0,
         "the rail did not grow with the corner: {after:?}"
     );
+}
+
+/// Both arc-slot grammars answer an author's three gestures the same way, and answer them the way
+/// the author described: the middle carries the slot, an end sweeps and nothing else does, and the
+/// end it sweeps keeps the radius it had.
+///
+/// The three used to be one gesture with three bad answers. An end handle was a two-hand gesture —
+/// the point plus the pivot it turns about — and every rule that asked "is one vertex being
+/// reshaped" counted the hands it was NAMED rather than the hand that MOVED, so the snap and the
+/// stays both switched themselves off and the far end wandered five voxels for a six-voxel pull.
+/// The three-point grammar is sugar for the center-point one, so a difference between the two
+/// columns below would mean it had stopped being sugar.
+#[test]
+fn both_arc_slot_grammars_carry_by_the_middle_and_sweep_by_an_end() {
+    let three = source()
+        .with_three_point_arc_slot(
+            SketchPoint::new(40, 0),
+            SketchPoint::new(0, 40),
+            SketchPoint::from_continuous(40.0 / 2.0_f64.sqrt(), 40.0 / 2.0_f64.sqrt()),
+            SketchPoint::new(44, 0),
+            ctx(16),
+        )
+        .expect("a three-point arc slot")
+        .sketch
+        .as_ref()
+        .clone();
+    for (grammar, base) in [("center-arc", curved_slot()), ("three-point", three)] {
+        // Carrying it by the middle: every point takes the SAME step, and nothing about the slot
+        // changes shape.
+        let mut carried = base.clone();
+        let hub = spine_dot_near(&carried, [0.0, 0.0]);
+        let step = [7.0, 5.0];
+        assert!(carried
+            .move_point(hub, SketchPoint::from_continuous(step[0], step[1]), ctx(16))
+            .expect("answered"));
+        for point in base.points() {
+            let was = point.at.in_plane();
+            let is = stands_at(&carried, point.id);
+            let slip = (is[0] - was[0] - step[0]).hypot(is[1] - was[1] - step[1]);
+            assert!(
+                slip < 1.0e-6,
+                "{grammar} left p{} behind by {slip}",
+                point.id
+            );
+        }
+
+        // Sweeping it by an end: that end keeps its radius exactly, and the far end does not move.
+        for (label, near, far) in [
+            ("near", [40.0, 0.0], [0.0, 40.0]),
+            ("far", [0.0, 40.0], [40.0, 0.0]),
+        ] {
+            let mut swept = base.clone();
+            let end = spine_dot_near(&swept, near);
+            let stays = [
+                spine_dot_near(&swept, far),
+                spine_dot_near(&swept, [0.0, 0.0]),
+            ];
+            // Six voxels straight out, which is ACROSS the radius by a fifteenth — well inside the
+            // cone, so the hand is pulled back onto the circle it was already standing on.
+            let to = [
+                near[0] + 6.0 * near[1] / 40.0,
+                near[1] + 6.0 * near[0] / 40.0,
+            ];
+            assert!(swept
+                .move_point(end, SketchPoint::from_continuous(to[0], to[1]), ctx(16))
+                .expect("answered"));
+            let at = stands_at(&swept, end);
+            let radius = at[0].hypot(at[1]);
+            assert!(
+                (radius - 40.0).abs() < 1.0e-5,
+                "{grammar} {label} end left its radius at {radius}"
+            );
+            // A ten-thousandth of a voxel is the settle's own tolerance, not a motion.
+            for held in stays {
+                let stood = stands_at(&base, held);
+                let now = stands_at(&swept, held);
+                let moved = (now[0] - stood[0]).hypot(now[1] - stood[1]);
+                assert!(moved < 1.0e-4, "{grammar} {label}: p{held} moved {moved}");
+            }
+        }
+    }
+}
+
+/// The dot nearest a place, among the ones a slot draws — its spine, in other words.
+fn spine_dot_near(sketch: &Sketch, at: [f64; 2]) -> EntityId {
+    sketch
+        .points()
+        .iter()
+        .filter(|point| sketch.point_draws_at_rest(point.id))
+        .min_by(|first, second| {
+            let reach = |stood: [f64; 2]| (stood[0] - at[0]).hypot(stood[1] - at[1]);
+            reach(first.at.in_plane()).total_cmp(&reach(second.at.in_plane()))
+        })
+        .map(|point| point.id)
+        .expect("a slot draws its spine")
 }
