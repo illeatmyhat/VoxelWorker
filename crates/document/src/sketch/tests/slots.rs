@@ -675,3 +675,65 @@ fn invalid_and_duplicate_slots_refuse_atomically() {
         )
         .is_err());
 }
+
+/// An Overall Slot's two authored EXTREMES are not handles. Each is the end of the middle
+/// construction line AND the place that line crosses a cap, so the drawing already says where it
+/// is — while the cap centers, which the drawing says nothing about, keep their dots.
+#[test]
+fn an_overall_slots_extremes_go_quiet_and_its_cap_centers_do_not() {
+    let made = source()
+        .with_linear_slot(
+            ::parametric::sketch::LinearSlotKind::Overall,
+            SketchPoint::new(0, 0),
+            SketchPoint::new(20, 0),
+            SketchPoint::new(0, 4),
+            ctx(16),
+        )
+        .expect("a valid overall slot");
+    let sketch = &made.sketch;
+    let at = |id: EntityId| {
+        sketch
+            .points()
+            .iter()
+            .find(|point| point.id == id)
+            .map(|point| point.at.in_plane())
+            .expect("a named point exists")
+    };
+    // The extremes are the two picks; the cap centers are inset from them by half the width.
+    let extremes: Vec<EntityId> = sketch
+        .points()
+        .iter()
+        .filter(|point| {
+            let [x, y] = point.at.in_plane();
+            y.abs() < 1.0e-6 && (x.abs() < 1.0e-6 || (x - 20.0).abs() < 1.0e-6)
+        })
+        .map(|point| point.id)
+        .collect();
+    let handles: Vec<EntityId> = sketch
+        .points()
+        .iter()
+        .filter(|point| {
+            let [x, y] = point.at.in_plane();
+            y.abs() < 1.0e-6 && ((x - 4.0).abs() < 1.0e-6 || (x - 16.0).abs() < 1.0e-6)
+        })
+        .filter(|point| !sketch.is_derived_point(point.id))
+        .map(|point| point.id)
+        .collect();
+
+    assert_eq!(extremes.len(), 2, "two authored extremes: {extremes:?}");
+    assert_eq!(handles.len(), 2, "two draggable cap-center handles");
+    for extreme in extremes {
+        assert!(
+            !sketch.point_draws_at_rest(extreme),
+            "the extreme at {:?} is doubly marked and needs no dot",
+            at(extreme)
+        );
+    }
+    for handle in handles {
+        assert!(
+            sketch.point_draws_at_rest(handle),
+            "the cap center at {:?} is the grip the slot is held by",
+            at(handle)
+        );
+    }
+}

@@ -644,6 +644,14 @@ struct SketchVertexDrag {
     /// The profile's in-plane bbox-minimum at grab time — the fixed reference the per-frame
     /// compensation measures the bbox-min shift against.
     original_min: [i64; 2],
+    /// Whether the cursor has left the press by [`VIEW_CUBE_DRAG_THRESHOLD_PIXELS`], which is what
+    /// turns a press into a DRAG. A click is not a tiny drag: until this latches, the gesture
+    /// touches no geometry at all, so clicking a point to select it cannot re-author its position.
+    ///
+    /// Latched rather than re-asked each frame, because a drag that wanders back near its own
+    /// press is still a drag — re-asking would strand the geometry wherever the last live frame
+    /// left it while the cursor kept moving.
+    began: bool,
 }
 
 #[derive(Default)]

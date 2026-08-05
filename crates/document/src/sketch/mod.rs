@@ -3601,6 +3601,21 @@ impl Sketch {
         })
     }
 
+    /// The FIT POINT whose tangent lever `point` is an arm of, or `None` if it is not an arm.
+    ///
+    /// An arm has no standing of its own — it is one end of the stick that steers a fit point — so
+    /// every question about it (does it draw? may a tool seam onto it?) is really a question about
+    /// the point it belongs to, and this is how a caller gets from one to the other.
+    pub fn tangent_arm_owner(&self, point: EntityId) -> Option<EntityId> {
+        self.splines.iter().find_map(|spline| {
+            spline
+                .tangents
+                .iter()
+                .find(|(_, handle)| handle.arms().contains(&point))
+                .map(|(fit, _)| *fit)
+        })
+    }
+
     /// Whether every entity `kind` names is live in the store, and its own terms are meetable.
     /// This preflight belongs to the document because the local solver sees only validated handles;
     /// it gives missing geometry and self-contradictory requests distinct author-facing refusals.
@@ -4710,31 +4725,70 @@ impl Sketch {
     /// that matters. So the question is not what KIND of point this is; it is whether the drawing
     /// already shows what the point would show.
     ///
-    /// Two or more ends meeting is the one case where it does. A corner where two lines join looks
-    /// exactly like a corner, and a dot on it adds nothing — the same is true of a break, a trim or
-    /// a fillet junction, which is why none of those needs a case here. Everything else earns its
-    /// mark:
+    /// Two marks on a spot is the case where it does. A corner where two lines join looks exactly
+    /// like a corner, and a dot on it adds nothing — the same is true of a break, a trim or a
+    /// fillet junction, which is why none of those needs a case here. So does a point a relation
+    /// pins onto a curve that something else already ends on: an Overall Slot's extreme is where
+    /// its middle line stops AND where that line crosses a cap, and both facts are drawn.
     ///
-    /// - **No end at all** — a center, a shoulder, a free point the author dropped. There is no ink
-    ///   on it, so the dot is the only evidence it exists.
-    /// - **One end** — a loose end. "This line stops here" and "this line joins something here" are
-    ///   the same picture, and the difference is exactly what decides whether the profile closes
-    ///   into a region. Two ends that merely COINCIDE draw two dots; genuinely joined, they draw
-    ///   none, and the author can see the seam without trying to fill it.
+    /// - **No mark at all** — a shoulder, a free point the author dropped. There is no ink on it, so
+    ///   the dot is the only evidence it exists.
+    /// - **One mark** — a loose end, or a point held on a curve with nothing ending there. "This
+    ///   line stops here" and "this line joins something here" are the same picture, and the
+    ///   difference is exactly what decides whether the profile closes into a region. Two ends that
+    ///   merely COINCIDE draw two dots; genuinely joined, they draw none, and the author can see the
+    ///   seam without trying to fill it.
     /// - **A fit or control point** — a spline's ink shows its shape and says nothing about its
     ///   parameterization, so a run through five points and a run through seven are one picture.
-    ///
-    /// Tangent arms are not answered here. An arm belongs to its lever and is shown or hidden with
-    /// it, which is a question about the manipulator rather than about the drawing.
+    /// - **A center** — always, however many marks land on it. A center is the handle a round thing
+    ///   is held by, and losing it costs the author the only grip the shape has.
+    /// - **A tangent arm** — never. An arm belongs to its lever, and a lever is a manipulator the
+    ///   author asks for by selecting the point it steers rather than furniture that is always out.
     pub fn point_draws_at_rest(&self, id: EntityId) -> bool {
+        if self.tangent_arm_owner(id).is_some() {
+            return false;
+        }
         if self
             .splines
             .iter()
             .any(|spline| spline.points.contains(&id))
+            || self.point_is_a_center(id)
         {
             return true;
         }
-        self.curve_ends_meeting(id) < 2
+        let held_on_curves = self
+            .constraints
+            .iter()
+            .filter(|constraint| {
+                matches!(constraint.kind, ConstraintKind::PointOnCurve { point, .. } if point == id)
+            })
+            .count();
+        self.curve_ends_meeting(id).saturating_add(held_on_curves) < 2
+    }
+
+    /// Whether `id` is the center a round thing turns about, or a handle tied to one.
+    ///
+    /// The tie matters because a derived center cannot be dragged — a slot reifies a REAL point on
+    /// each cap center and holds it there with Coincident precisely so the author has something to
+    /// take hold of, and that handle is the center as far as the drawing is concerned.
+    fn point_is_a_center(&self, id: EntityId) -> bool {
+        let is_own_center = |candidate: EntityId| {
+            self.circles.iter().any(|circle| circle.center == candidate)
+                || self.arcs.iter().any(|arc| arc.center == candidate)
+                || self
+                    .ellipses
+                    .iter()
+                    .any(|ellipse| ellipse.center == candidate)
+        };
+        is_own_center(id)
+            || self.constraints.iter().any(|constraint| {
+                matches!(
+                    constraint.kind,
+                    ConstraintKind::Coincident { first, second }
+                        if (first == id && is_own_center(second))
+                            || (second == id && is_own_center(first))
+                )
+            })
     }
 
     /// Whether some curve's DRAWN PATH runs through `id`.

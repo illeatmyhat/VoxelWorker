@@ -1112,73 +1112,85 @@ impl WindowedState {
             self.sketch_drag = None;
             return IntentEffect::none();
         };
+        // A CLICK IS NOT A TINY DRAG. Every arm below is gated on the gesture having begun, and a
+        // press that has not left its own start by the drag threshold has not: it is on its way to
+        // being a click, and a click makes things active without making them move.
+        let began = drag.began || self.pointer_left_the_press();
         let moved = match held {
-            SketchGrab::Point(id) => preview.sketch.move_point(id, snapped, context),
+            SketchGrab::Point(id) if began => preview.sketch.move_point(id, snapped, context),
             // A curve goes where the cursor is, not where a sum of frames left it, so the SNAPPED
             // cursor is the whole input — the same absolute reading the point path uses.
-            SketchGrab::Curve(curve) => {
+            SketchGrab::Curve(curve) if began => {
                 preview
                     .sketch
                     .move_curve(curve, snapped.in_plane(), context)
             }
-            // The press could not read a profile coordinate, so the first frame that can records
-            // where the gesture started and moves nothing. Every frame after measures from it,
-            // and since the preview is rebuilt from the pre-drag producer each time, the sum
-            // never compounds.
             // Measured from the press, and the preview is rebuilt from the pre-drag producer each
             // frame, so the displacement is applied to where the point STOOD rather than summed
-            // frame over frame. A click never reaches the `Some` arm at all.
-            SketchGrab::TranslateLever { fit, from } => match from {
-                Some(from) => {
-                    let (from, now) = (from.in_plane(), snapped.in_plane());
-                    let stood = preview
-                        .sketch
-                        .points()
-                        .iter()
-                        .find(|point| point.id == fit)
-                        .map(|point| point.at.in_plane());
-                    match stood {
-                        Some(stood) => preview.sketch.move_point(
-                            fit,
-                            document::sketch::SketchPoint::from_continuous(
-                                stood[0] + now[0] - from[0],
-                                stood[1] + now[1] - from[1],
-                            ),
-                            context,
+            // frame over frame — and it is measured from the PRESS rather than from where the
+            // threshold was crossed, so the geometry sits under the cursor instead of trailing it
+            // by the threshold.
+            SketchGrab::TranslateLever {
+                fit,
+                from: Some(from),
+            } if began => {
+                let (from, now) = (from.in_plane(), snapped.in_plane());
+                let stood = preview
+                    .sketch
+                    .points()
+                    .iter()
+                    .find(|point| point.id == fit)
+                    .map(|point| point.at.in_plane());
+                match stood {
+                    Some(stood) => preview.sketch.move_point(
+                        fit,
+                        document::sketch::SketchPoint::from_continuous(
+                            stood[0] + now[0] - from[0],
+                            stood[1] + now[1] - from[1],
                         ),
-                        None => Ok(false),
-                    }
-                }
-                None => {
-                    if let Some(drag) = self.sketch_drag.as_mut() {
-                        drag.held = SketchGrab::TranslateLever {
-                            fit,
-                            from: Some(snapped),
-                        };
-                    }
-                    return IntentEffect::none();
-                }
-            },
-            SketchGrab::Translate { curve, from } => match from {
-                Some(from) => {
-                    let (from, now) = (from.in_plane(), snapped.in_plane());
-                    preview.sketch.translate_curve(
-                        curve,
-                        [now[0] - from[0], now[1] - from[1]],
                         context,
-                    )
+                    ),
+                    None => Ok(false),
                 }
-                None => {
-                    if let Some(drag) = self.sketch_drag.as_mut() {
-                        drag.held = SketchGrab::Translate {
-                            curve,
-                            from: Some(snapped),
-                        };
-                    }
-                    return IntentEffect::none();
+            }
+            SketchGrab::Translate {
+                curve,
+                from: Some(from),
+            } if began => {
+                let (from, now) = (from.in_plane(), snapped.in_plane());
+                preview
+                    .sketch
+                    .translate_curve(curve, [now[0] - from[0], now[1] - from[1]], context)
+            }
+            // The press could not read a profile coordinate, so the first frame that can records
+            // where the gesture started and moves nothing.
+            SketchGrab::TranslateLever { fit, from: None } => {
+                if let Some(drag) = self.sketch_drag.as_mut() {
+                    drag.began = began;
+                    drag.held = SketchGrab::TranslateLever {
+                        fit,
+                        from: Some(snapped),
+                    };
                 }
-            },
+                return IntentEffect::none();
+            }
+            SketchGrab::Translate { curve, from: None } => {
+                if let Some(drag) = self.sketch_drag.as_mut() {
+                    drag.began = began;
+                    drag.held = SketchGrab::Translate {
+                        curve,
+                        from: Some(snapped),
+                    };
+                }
+                return IntentEffect::none();
+            }
+            // Still a click so far. Nothing is touched, and nothing is torn down either: the very
+            // next frame past the threshold picks the gesture up where the press left it.
+            _ => return IntentEffect::none(),
         };
+        if let Some(drag) = self.sketch_drag.as_mut() {
+            drag.began = true;
+        }
         let Ok(moved) = moved else {
             self.sketch_drag = None;
             return IntentEffect::none();
@@ -1203,6 +1215,12 @@ impl WindowedState {
         }
         self.set_sketch_node(target, preview, new_offset);
         IntentEffect::scene()
+    }
+
+    /// Whether the cursor has left the press by the general drag threshold — the one question that
+    /// separates a click from a drag, asked the same way the view cube and the marquee ask it.
+    fn pointer_left_the_press(&self) -> bool {
+        pointer_left_the_press(self.press_position, self.last_cursor_position)
     }
 
     /// Commit an in-progress vertex drag — called SYNCHRONOUSLY from the `events` release handler
@@ -1317,6 +1335,10 @@ impl WindowedState {
     /// The spline is dropped on the way through. A control frame's leg has no meaning but the
     /// spline it steers; a lever's does. It belongs to ONE fit point, and answering as that point
     /// is what keeps a hover from lighting every lever on the curve.
+    ///
+    /// Only the levers the author has ASKED FOR are here, and that is the one seam the rule needs:
+    /// hover, the grab hit-test and the paint all read this cache, so a lever that is not in it is
+    /// invisible and ungrabbable at once, with no second rule to keep in step.
     fn tangent_levers(
         &self,
         target: document::scene::NodeId,
@@ -1327,11 +1349,62 @@ impl WindowedState {
         let document::scene::NodeContent::SketchTool { producer, .. } = &node.content else {
             return Vec::new();
         };
+        let asked_for = self.levers_the_author_asked_for(target);
         producer
             .sketch
             .tangent_handle_legs()
             .into_iter()
             .map(|(_, lever)| (lever[1], lever.to_vec()))
+            .filter(|(fit, _)| asked_for.contains(fit))
+            .collect()
+    }
+
+    /// The fit points whose tangent lever should be out.
+    ///
+    /// A lever is a manipulator, not part of the drawing, so it is not furniture that is always on
+    /// display: the author asks for it by SELECTING the point it steers or the spline that point
+    /// belongs to (owner, 2026-08-04). A lever mid-drag counts as asked for whatever the selection
+    /// says, so a gesture never pulls its own handle out from under itself.
+    fn levers_the_author_asked_for(
+        &self,
+        target: document::scene::NodeId,
+    ) -> std::collections::BTreeSet<document::sketch::EntityId> {
+        let Some(node) = self.panel_state.scene.node_by_id(target) else {
+            return std::collections::BTreeSet::new();
+        };
+        let document::scene::NodeContent::SketchTool { producer, .. } = &node.content else {
+            return std::collections::BTreeSet::new();
+        };
+        let sketch = &producer.sketch;
+        // An arm answers for the point it steers, so grabbing or picking one keeps the stick out.
+        let as_fit = |id| sketch.tangent_arm_owner(id).unwrap_or(id);
+        let held = match self.sketch_drag.as_ref().map(|drag| drag.held) {
+            Some(SketchGrab::Point(id)) => Some(as_fit(id)),
+            Some(SketchGrab::TranslateLever { fit, .. }) => Some(fit),
+            _ => None,
+        };
+        sketch
+            .splines()
+            .iter()
+            .flat_map(|spline| {
+                let curve = document::sketch::SketchCurve::Spline(spline.id);
+                let whole = self.panel_state.selection.contains(
+                    ui::panel::SelectionTarget::SketchHigherCurve {
+                        sketch: target,
+                        curve,
+                    },
+                );
+                spline.tangents.keys().copied().filter(move |fit| {
+                    whole
+                        || held == Some(*fit)
+                        || self.panel_state.selection.contains(
+                            ui::panel::SelectionTarget::SketchPoint {
+                                sketch: target,
+                                entity: *fit,
+                            },
+                        )
+                })
+            })
             .collect()
     }
 
@@ -1439,6 +1512,27 @@ impl WindowedState {
             .iter()
             .filter(|point| producer.sketch.point_stands_on_ink(point.id))
             .map(|point| point.id)
+            .collect()
+    }
+
+    /// The two arms of the lever standing at `fit`, or nothing if it has no handle.
+    fn tangent_arms_of(
+        &self,
+        target: document::scene::NodeId,
+        fit: document::sketch::EntityId,
+    ) -> Vec<document::sketch::EntityId> {
+        let Some(node) = self.panel_state.scene.node_by_id(target) else {
+            return Vec::new();
+        };
+        let document::scene::NodeContent::SketchTool { producer, .. } = &node.content else {
+            return Vec::new();
+        };
+        producer
+            .sketch
+            .splines()
+            .iter()
+            .filter_map(|spline| spline.tangents.get(&fit))
+            .flat_map(|handle| handle.arms())
             .collect()
     }
 
@@ -1586,13 +1680,42 @@ impl WindowedState {
         (!self.tangent_arm_points(target).contains(&point)).then_some(point)
     }
 
+    /// The lever arms that are not out this frame.
+    ///
+    /// A hidden point stays hit-testable everywhere else — that is how hovering brings a quiet
+    /// corner back — but an arm is the exception, because its lever is what makes it legible and
+    /// the lever is not there. Reaching into empty space and finding a tangent by accident is not
+    /// a reveal, it is a trap.
+    fn hidden_tangent_arms(&self) -> std::collections::BTreeSet<document::sketch::EntityId> {
+        let Some(target) = self.panel_state.sketch_mode else {
+            return std::collections::BTreeSet::new();
+        };
+        let out: std::collections::BTreeSet<_> = self
+            .sketch_tangent_levers
+            .iter()
+            .flat_map(|(fit, _)| self.tangent_arms_of(target, *fit))
+            .collect();
+        self.tangent_arm_points(target)
+            .difference(&out)
+            .copied()
+            .collect()
+    }
+
     fn sketch_vertex_at(&self, cursor_x: f64, cursor_y: f64) -> Option<usize> {
         let scale = self.window.scale_factor() as f32;
         let grab_px = (ui::chrome::SKETCH_HANDLE_HALF + ui::chrome::SKETCH_HANDLE_GRAB_PAD) * scale;
         let stacked_px = SKETCH_STACKED_HANDLE_BIAS * scale;
+        let hidden_arms = self.hidden_tangent_arms();
         let mut nearest: Option<(usize, f32)> = None;
         for (index, center) in self.sketch_vertex_px.iter().enumerate() {
             let Some(center) = center else { continue };
+            if self
+                .sketch_point_ids
+                .get(index)
+                .is_some_and(|id| hidden_arms.contains(id))
+            {
+                continue;
+            }
             let distance = (cursor_x as f32 - center.x).hypot(cursor_y as f32 - center.y);
             if distance > grab_px {
                 continue;
@@ -4425,6 +4548,7 @@ impl WindowedState {
             original: producer.clone(),
             original_offset: node.transform.offset_voxels,
             original_min: self.profile_bbox_min(producer)?,
+            began: false,
         })
     }
 
@@ -4978,6 +5102,16 @@ impl WindowedState {
         if let Some((hit, _)) = hovered_edge {
             revealed.extend(self.points_of_edge_hit(target, hit));
         }
+        // An arm shows with its LEVER and never on its own, in every tool: a green dot with no
+        // stick under it is a manipulator the author cannot read. `sketch_tangent_levers` already
+        // holds exactly the levers that are out, so the two cannot disagree.
+        let arms_out: std::collections::BTreeSet<document::sketch::EntityId> = self
+            .sketch_tangent_levers
+            .iter()
+            .flat_map(|(fit, _)| self.tangent_arms_of(target, *fit))
+            .collect();
+        revealed.retain(|id| !tangent_arms.contains(id) || arms_out.contains(id));
+        revealed.extend(arms_out);
         for (point_id, handle) in pending_points {
             if point_id.is_none_or(|id| revealed.contains(&id)) {
                 self.sketch_overlay_points.push(handle);
@@ -6697,6 +6831,19 @@ fn aggregate_marquee_picks(
         .collect()
 }
 
+/// Whether the cursor has left the press far enough that the gesture is a DRAG and not a click.
+///
+/// Free of the renderer so the rule can be tested without a window. Answered on either axis rather
+/// than by distance, the way the view cube and the marquee answer it, so every gesture in the app
+/// gives up being a click at the same reach.
+fn pointer_left_the_press(press: Option<(f64, f64)>, now: Option<(f64, f64)>) -> bool {
+    let (Some((down_x, down_y)), Some((now_x, now_y))) = (press, now) else {
+        return false;
+    };
+    (now_x - down_x).abs() >= super::VIEW_CUBE_DRAG_THRESHOLD_PIXELS
+        || (now_y - down_y).abs() >= super::VIEW_CUBE_DRAG_THRESHOLD_PIXELS
+}
+
 /// The fit point of the nearest tangent lever within `pad_px` of `cursor`, if any.
 ///
 /// Free of the renderer so the rule can be tested without a window: the pad and the projected runs
@@ -7148,7 +7295,7 @@ mod tests {
         complete_circle_center_diameter, concentric_badge_anchor,
         nearest_sketch_edge_for_requirement, nearest_sketch_edge_from_candidates,
         nearest_tangent_lever, point_in_screen_polygon, point_to_segment_distance,
-        polygon_double_area, reset_failed_sketch_constraint_completion,
+        pointer_left_the_press, polygon_double_area, reset_failed_sketch_constraint_completion,
         reset_refused_sketch_constraint_completion, segment_touches_rect, segments_intersect,
         select_sketch_constraint_refusal_culprits, sketch_constraint_badge_at,
         sketch_entity_from_curve_hit, sketch_profile_edit_transaction, symmetry_badge_anchor,
@@ -7476,6 +7623,29 @@ mod tests {
             nearest_tangent_lever(&levers, egui::pos2(100.0, 0.0), 6.0),
             None,
             "between the two handles there is no handle"
+        );
+    }
+
+    /// A click is not a tiny drag. Nothing downstream of this runs until it says so, which is what
+    /// stops a press on a point from re-authoring the point's position to the snapped cursor.
+    #[test]
+    fn a_press_that_has_not_travelled_is_still_a_click() {
+        let press = Some((100.0, 100.0));
+        assert!(
+            !pointer_left_the_press(press, press),
+            "a press and a release in the same place moved nothing"
+        );
+        assert!(
+            !pointer_left_the_press(press, Some((103.0, 104.0))),
+            "a hand that shakes a few pixels is still clicking"
+        );
+        assert!(
+            pointer_left_the_press(press, Some((100.0, 105.0))),
+            "one axis reaching the threshold is a drag, the way the view cube reads it"
+        );
+        assert!(
+            !pointer_left_the_press(None, Some((999.0, 999.0))),
+            "no press to measure from is no drag"
         );
     }
 
