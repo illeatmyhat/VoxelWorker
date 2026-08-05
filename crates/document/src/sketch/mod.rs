@@ -1649,6 +1649,13 @@ pub struct Sketch {
     region_memo: region_memo::RegionMemo,
 }
 
+/// How close two dots have to be before they are one dot, in voxels.
+///
+/// A thousandth of a voxel is nowhere near drawable and nowhere near authorable — it exists to
+/// absorb the residual a solved coincidence leaves behind, not to forgive a near miss. See
+/// [`Sketch::point_draws_at_rest`].
+const STACKED_DOT_VOXELS: f64 = 1.0e-3;
+
 impl Sketch {
     fn incoming_tangent_at(
         &self,
@@ -4848,8 +4855,21 @@ impl Sketch {
     ///   is held by, and losing it costs the author the only grip the shape has.
     /// - **A tangent arm** — never. An arm belongs to its lever, and a lever is a manipulator the
     ///   author asks for by selecting the point it steers rather than furniture that is always out.
+    ///
+    /// # One place, one dot, and it is the one that can be dragged
+    ///
+    /// Two points at the same spot draw one mark between them, and a DERIVED point loses to a real
+    /// one. Every rule above asks what the drawing already shows, and a second dot on an occupied
+    /// pixel shows nothing: it is not a fainter version of the answer, it is the same answer twice.
+    ///
+    /// Which one goes is not a coin toss. A derived center is a function of its curve's ends and
+    /// exists so the shape has somewhere to be measured from; the real handle standing on it is
+    /// what an author can actually take hold of, and dragging a derived point authors the quantity
+    /// behind it instead of moving anything. An arc slot stacks four of these at its middle — the
+    /// two rails' centers, the centerline's, and the handle tied to them — so the dot most likely
+    /// to be under the cursor was the one least able to answer for the gesture (owner, 2026-08-05).
     pub fn point_draws_at_rest(&self, id: EntityId) -> bool {
-        if self.tangent_arm_owner(id).is_some() {
+        if self.tangent_arm_owner(id).is_some() || self.a_better_dot_stands_here(id) {
             return false;
         }
         if self
@@ -4868,6 +4888,43 @@ impl Sketch {
             })
             .count();
         self.curve_ends_meeting(id).saturating_add(held_on_curves) < 2
+    }
+
+    /// Whether `id` is a DERIVED point some other dot already stands on.
+    ///
+    /// Ranked so exactly one of a derived stack survives: a real point beats a derived one, and
+    /// among derived twins the earliest wins. An arc slot stacks four dots at its middle — the two
+    /// rails' centers, the centerline's, and the handle tied to them — and three of those are the
+    /// same answer written again.
+    ///
+    /// **Only ever hides a derived point.** Two REAL points at one spot are the seam case, and
+    /// there both dots are the message: "these ends coincide" and "these ends are joined" are the
+    /// difference between a profile that closes into a region and one that does not, and the author
+    /// can only see it because the drawing declines to merge them.
+    ///
+    /// Position is compared within [`STACKED_DOT_VOXELS`] rather than exactly, because these stacks
+    /// are SOLVED rather than authored: a handle is tied to a center by a relation, and a relation
+    /// holds to the solver's residual, not to the bit. A three-point arc slot's three centers land
+    /// within 3e-11 of each other and are one dot by any reading an author could have of them.
+    /// The bound stays far under anything drawable so it can never merge two marks the author meant
+    /// to tell apart, and the seam case is out of reach of it regardless — that one is two REAL
+    /// points, and this only ever hides a derived one.
+    fn a_better_dot_stands_here(&self, id: EntityId) -> bool {
+        if !self.is_derived_point(id) {
+            return false;
+        }
+        let Some(mine) = self.point_in_plane(id) else {
+            return false;
+        };
+        let rank = |point: EntityId| self.points.iter().position(|stood| stood.id == point);
+        self.points.iter().any(|other| {
+            let Some(stood) = self.point_in_plane(other.id) else {
+                return false;
+            };
+            other.id != id
+                && (stood[0] - mine[0]).hypot(stood[1] - mine[1]) < STACKED_DOT_VOXELS
+                && (!self.is_derived_point(other.id) || rank(other.id) < rank(id))
+        })
     }
 
     /// Whether `id` is the center a round thing turns about, or a handle tied to one.

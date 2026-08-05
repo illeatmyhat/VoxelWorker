@@ -1414,12 +1414,14 @@ impl WindowedState {
     /// gathers it, and joins the points of every SELECTED curve — selecting a line is a way of
     /// saying "this one", and the corners it runs between are part of the answer.
     ///
-    /// When the author is not at rest the set is everything: a tool reaching for a point must be
-    /// able to see the point it is reaching for.
+    /// The rule holds under EVERY tool. Arming one used to show every point in the drawing, on the
+    /// reasoning that a tool reaching for a point must be able to see it — but the rest-rule is
+    /// already about which dots the drawing owes the author, and a tool does not change that
+    /// answer (owner, 2026-08-04). Hovering still reveals, which is what a tool actually reaches
+    /// through.
     fn points_the_drawing_shows_by_itself(
         &self,
         target: document::scene::NodeId,
-        at_rest: bool,
     ) -> std::collections::BTreeSet<document::sketch::EntityId> {
         let Some(node) = self.panel_state.scene.node_by_id(target) else {
             return std::collections::BTreeSet::new();
@@ -1431,12 +1433,9 @@ impl WindowedState {
         let mut shown: std::collections::BTreeSet<document::sketch::EntityId> = sketch
             .points()
             .iter()
-            .filter(|point| !at_rest || sketch.point_draws_at_rest(point.id))
+            .filter(|point| sketch.point_draws_at_rest(point.id))
             .map(|point| point.id)
             .collect();
-        if !at_rest {
-            return shown;
-        }
         for curve in self.selected_sketch_curves(target) {
             shown.extend(sketch.points_of(curve));
         }
@@ -4777,13 +4776,7 @@ impl WindowedState {
         let tangent_arms = self.tangent_arm_points(target);
         let on_ink = self.points_standing_on_ink(target);
         let dragging_point = self.sketch_drag.as_ref().and_then(|drag| drag.held.point());
-        // AT REST means Select with no gesture running. Every other tool is reaching for geometry
-        // and must be able to see all of it; a quiet point the author cannot click is a worse
-        // failure than a noisy one.
-        let at_rest = tool == ui::panel::SketchTool::Select
-            && self.panel_state.armed_constraint.is_none()
-            && self.sketch_drag.is_none();
-        let mut revealed = self.points_the_drawing_shows_by_itself(target, at_rest);
+        let mut revealed = self.points_the_drawing_shows_by_itself(target);
         // A forgiving grab radius (physical px) so a hover reads as "draggable" near the thumb.
         let hover_radius_px = (ui::chrome::SKETCH_HANDLE_HALF + ui::chrome::SKETCH_HANDLE_GRAB_PAD)
             * pixels_per_point;

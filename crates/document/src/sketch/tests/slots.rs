@@ -944,3 +944,47 @@ fn dragging_an_overall_slots_centerline_does_not_fight_its_own_hands() {
         );
     }
 }
+
+/// An arc slot stacks four points at its middle: the two rails' derived centers, the centerline's,
+/// and the real handle tied to them. The author is owed ONE dot there, and it has to be the handle
+/// — dragging a derived center authors the quantity behind it instead of moving the slot, so the
+/// dot most likely to be under the cursor was the one least able to answer for the gesture.
+///
+/// Both arc grammars are checked because the three-point one is sugar for the center-point one and
+/// commits the same drawing; a difference between them would mean it had stopped being sugar.
+#[test]
+fn an_arc_slot_draws_one_dot_at_its_middle_and_it_is_the_draggable_one() {
+    let three_point = source()
+        .with_three_point_arc_slot(
+            SketchPoint::new(8, 0),
+            SketchPoint::new(0, 8),
+            SketchPoint::from_continuous(8.0 / 2.0_f64.sqrt(), 8.0 / 2.0_f64.sqrt()),
+            SketchPoint::new(10, 0),
+            ctx(16),
+        )
+        .expect("a three-point arc slot");
+    for (grammar, made) in [("three-point", &three_point), ("center-point", &arc_slot())] {
+        let drawn: Vec<&Point> = made
+            .sketch
+            .points()
+            .iter()
+            .filter(|point| made.sketch.point_draws_at_rest(point.id))
+            .filter(|point| {
+                let at = point.at.in_plane();
+                at[0].hypot(at[1]) < 1.0e-6
+            })
+            .collect();
+        assert_eq!(
+            drawn.len(),
+            1,
+            "{grammar} draws {} dots at its middle",
+            drawn.len()
+        );
+        for point in drawn {
+            assert!(
+                !made.sketch.is_derived_point(point.id),
+                "{grammar} kept the dot the author cannot drag"
+            );
+        }
+    }
+}

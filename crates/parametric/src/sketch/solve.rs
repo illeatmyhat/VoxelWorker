@@ -2485,9 +2485,9 @@ pub enum ShapeUnderTheHands {
     /// deliberate freedom gets spent. Least motion alone, and the cheaper of the two.
     FreeToChange,
     /// A MOVE. Every edge span is asked to come out as it went in, so a pure translation of a
-    /// connected group is free and any stretch, rotation, or shear is paid for — see
-    /// [`Rigidity`]. Use it when the gesture is "take this with you" rather than "make this
-    /// different": without it, a translation is exactly the motion least travel refuses to pick.
+    /// connected group is free and any stretch, rotation, or shear is paid for. Use it when the
+    /// gesture is "take this with you" rather than "make this different": without it, a
+    /// translation is exactly the motion least travel refuses to pick.
     ///
     /// It is not free: the regularizer adds two rows per edge, and the Jacobian is taken by finite
     /// differences over every one of them. Measured on an arc slot, a drag frame went from 0.15ms
