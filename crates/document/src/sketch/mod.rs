@@ -73,7 +73,7 @@ pub use modify::{
     TrimPlacement, TrimRefusal,
 };
 pub use parametric::sketch::{SolveOutcome, SolveReport};
-pub use parametric::{ArcSweep, CircleRadius, CurveParameter, ResolvedLength};
+pub use parametric::{CircleRadius, CurveParameter, ResolvedLength};
 pub use pattern::{
     DerivedPatternCurve, SketchPattern, SketchPatternKind, SketchPatternRefusal, SketchVector,
 };
@@ -81,7 +81,7 @@ pub use solid::SketchSolid;
 pub use substrate::geom2d::LoopRole;
 pub use transform::{SketchTransformEntity, SketchTransformRefusal};
 
-use parametric::units::{AngleMeasurement, ExactRational, Measurement};
+use parametric::units::{AngleMeasurement, Measurement};
 use std::num::NonZeroU32;
 
 /// An operation reached a fixed measurement source without the document evaluation context that
@@ -415,44 +415,6 @@ fn validate_prepared_satisfaction(
         });
     }
     Ok(())
-}
-
-fn deserialize_arc_sweep<'de, D>(deserializer: D) -> Result<ArcSweep, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    #[derive(serde::Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct Stored {
-        #[serde(default)]
-        free: Option<AngleMeasurement>,
-        #[serde(default)]
-        fixed: Option<AngleMeasurement>,
-        #[serde(default)]
-        degrees_numerator: Option<i128>,
-        #[serde(default)]
-        degrees_denominator: Option<i128>,
-    }
-
-    let stored = <Stored as serde::Deserialize>::deserialize(deserializer)?;
-    match (
-        stored.free,
-        stored.fixed,
-        stored.degrees_numerator,
-        stored.degrees_denominator,
-    ) {
-        (Some(value), None, None, None) => Ok(ArcSweep::free(value)),
-        (None, Some(value), None, None) => Ok(ArcSweep::fixed(value)),
-        (None, None, Some(numerator), Some(denominator)) => {
-            ExactRational::new(numerator, denominator)
-                .map(AngleMeasurement::new)
-                .map(ArcSweep::free)
-                .ok_or_else(|| serde::de::Error::custom("legacy angle has a zero denominator"))
-        }
-        _ => Err(serde::de::Error::custom(
-            "arc sweep must contain exactly one complete authority",
-        )),
-    }
 }
 
 fn deserialize_circle_radius<'de, D>(deserializer: D) -> Result<CircleRadius, D::Error>
@@ -952,7 +914,7 @@ impl EntityRole {
 /// question no curve has to answer: when the last thing referring to it goes away, is it still
 /// there?
 ///
-/// It is also not the same question as [`is_derived_point`](Sketch::is_derived_point), which asks
+/// It is also not the same question as [`is_arc_center`](Sketch::is_arc_center), which asks
 /// who OWNS a position. An ellipse's width handle is anchored and authored at once: the author
 /// placed it, nothing re-derives it, and it still has no business surviving its ellipse.
 ///
@@ -1070,6 +1032,27 @@ pub struct ProfileArc {
     pub start_radians: f64,
     /// The signed angle traveled tail → head; positive counter-clockwise.
     pub sweep_radians: f64,
+}
+
+/// One [`Arc`]'s three placed points, read as the circle they draw.
+///
+/// The stored form is three positions and nothing else (ADR 0038). Everything a consumer used to
+/// take off the arc — where its center is, how big it is, how far it turns — is this reading, made
+/// once by [`Sketch::arc_form`] so that no two places derive it differently.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ArcForm {
+    /// Where the arc starts.
+    pub from: [f64; 2],
+    /// Where it ends, having turned counter-clockwise to get there.
+    pub to: [f64; 2],
+    /// The authored center PROJECTED onto the chord's perpendicular bisector, so the circle
+    /// named here passes through both ends exactly. See [`arc_center_on_bisector`].
+    pub center: [f64; 2],
+    /// The distance from `center` out to either end — they are the same by construction, the
+    /// projection having removed the only way they could differ.
+    pub radius: f64,
+    /// The counter-clockwise turn `from → to`, strictly inside `(0, 360)`.
+    pub sweep_degrees: f64,
 }
 
 impl ProfileEdge {
@@ -1329,20 +1312,16 @@ pub struct Arc {
     pub from: EntityId,
     /// Endpoint point id (head).
     pub to: EntityId,
-    /// The signed included angle: the arc sweeps from [`from`](Self::from) to
-    /// [`to`](Self::to) **counter-clockwise in the plane's in-plane basis for a positive
-    /// angle**, clockwise for a negative one. Magnitude strictly inside `(0, 360)` — zero
-    /// and full-turn bulges are degenerate and erased by [`Sketch::repair`].
-    #[serde(deserialize_with = "deserialize_arc_sweep")]
-    pub bulge: ArcSweep,
-    /// The [`Point`] entity standing at the arc's center — a REIFIED derived value. Its
-    /// coordinates are recomputed from the endpoints and the bulge by
-    /// [`Sketch::sync_derived_points`] and are never authored directly, but it is a real point
-    /// entity with a stable id so it selects, snaps and drags exactly like every other
-    /// sketch point. Always [`EntityRole::Construction`]: a center never bounds a region.
-    /// `serde(default)` yields [`ABSENT_DERIVED_POINT`] for a document that names no center, which
-    /// [`Sketch::repair`] materializes on load.
-    #[serde(default = "absent_derived_point")]
+    /// The [`Point`] entity the arc turns about — AUTHORED, exactly as a [`Circle`]'s center is
+    /// (ADR 0038). Nothing recomputes it: it is where the author put it, and two arcs are
+    /// concentric by naming one id rather than by standing at the same coordinates.
+    ///
+    /// Always [`EntityRole::Construction`]: a center never bounds a region.
+    ///
+    /// The arc runs **counter-clockwise from [`from`](Self::from) to [`to`](Self::to)** about it.
+    /// There is no stored sweep and no stored direction — the endpoint order IS the direction, and
+    /// an arc bent the other way is the same three points with the ends swapped. The swept angle
+    /// and the radius are read off the three positions by [`Sketch::arc_form`].
     pub center: EntityId,
     /// Lineage id for region identity across edits, like [`Segment::origin`].
     pub origin: EntityId,
@@ -1426,15 +1405,13 @@ pub struct Conic {
     /// the point they reach for afterwards: moving it drags the curve the way a Bezier handle
     /// does, while the shoulder is a consequence of it and [`rho`](Self::rho).
     pub control: EntityId,
-    /// The on-curve point at `t = 0.5`, DERIVED from the other three and
-    /// [`rho`](Self::rho) — see [`Sketch::sync_derived_points`].
+    /// How far out toward [`control`](Self::control) the curve bends, dimensionless in `(0, 1)`.
     ///
-    /// Reified so that rho, the one authored freedom with no other handle, stays editable after
-    /// the conic is placed. Dragging it re-solves rho exactly the way dragging an arc's center
-    /// re-solves that arc's sweep. `serde(default)` yields [`ABSENT_DERIVED_POINT`] for a document
-    /// written before the shoulder was reified, which the next sync materializes.
-    #[serde(default = "absent_derived_point")]
-    pub shoulder: EntityId,
+    /// The one authored freedom here with no point of its own. It used to be given one — an
+    /// on-curve "shoulder" dot at `t = 0.5`, recomputed from the other three every sync — and
+    /// ADR 0038 took it away: a point is placed, never computed, and that one was a value wearing
+    /// a point's clothes. Rho is re-authored by dragging the conic's BODY, which is where the
+    /// author was already aiming.
     pub rho: parametric::ResolvedScalar,
     pub origin: EntityId,
     #[serde(default)]
@@ -1519,24 +1496,6 @@ impl TangentHandle {
     }
 }
 
-impl Arc {
-    pub(crate) fn sweep_degrees(self) -> f64 {
-        self.bulge
-            .free_value()
-            .or_else(|| self.bulge.fixed_source())
-            .expect("a curve parameter always has one authority")
-            .to_degrees_f64()
-    }
-
-    fn replace_free_sweep(&mut self, sweep: AngleMeasurement) -> bool {
-        if self.bulge.free_value().is_none() {
-            return false;
-        }
-        self.bulge = ArcSweep::free(sweep);
-        true
-    }
-}
-
 impl Circle {
     pub(crate) fn free_radius_value(&self) -> Option<f64> {
         self.radius.free_value().map(|value| value.value())
@@ -1562,15 +1521,6 @@ impl Circle {
         };
         self.radius = CircleRadius::free(value);
     }
-}
-
-/// A derived point a curve has not been given yet — an arc's center or a conic's shoulder in a
-/// document that names none, or a curve mid-construction. Ids are handed out monotonically from
-/// zero and never reused, so the top of the range can never collide with a live entity.
-pub const ABSENT_DERIVED_POINT: EntityId = EntityId::MAX;
-
-fn absent_derived_point() -> EntityId {
-    ABSENT_DERIVED_POINT
 }
 
 /// Mutate a compact boxed store without making every [`Sketch`] carry a `Vec`'s spare-capacity
@@ -1698,10 +1648,12 @@ impl Sketch {
                     .iter()
                     .find(|arc| arc.id == id)
                     .ok_or(TangentArcRefusal::UnknownIncoming)?;
+                // An arc runs counter-clockwise from its `from` to its `to` (ADR 0038), so
+                // which end the joint is at IS the direction of travel through it.
                 let orientation = if arc.to == seam {
-                    arc.sweep_degrees().signum()
+                    1.0
                 } else if arc.from == seam {
-                    -arc.sweep_degrees().signum()
+                    -1.0
                 } else {
                     return Err(TangentArcRefusal::NonIncidentIncoming);
                 };
@@ -1774,22 +1726,45 @@ impl Sketch {
             | SketchCurve::Conic(_)
             | SketchCurve::Spline(_) => None,
             SketchCurve::Arc(id) => {
-                let arc = self.arcs.iter().find(|arc| arc.id == id)?;
-                let from = point(arc.from)?;
-                let to = point(arc.to)?;
-                let sweep = arc.sweep_degrees();
-                let (center, radius) = arc_center_radius(from, to, sweep)?;
+                let form = self.arc_form_of(id)?;
                 Some(CurveGeometry::Circular(CircularCurve {
-                    center,
-                    radius,
+                    center: form.center,
+                    radius: form.radius,
                     arc: Some(ArcDomain {
-                        from,
-                        to,
-                        sweep_radians: sweep.to_radians(),
+                        from: form.from,
+                        to: form.to,
+                        sweep_radians: form.sweep_degrees.to_radians(),
                     }),
                 }))
             }
         }
+    }
+
+    /// Read one arc's three placed points as the circle they draw, or nothing when they draw no
+    /// circle — a point missing from the store, the two ends stacked, an end sitting on the center.
+    ///
+    /// This is THE reading. An arc stores no sweep, no radius and no direction, so every consumer
+    /// that wants one comes through here and they all agree by construction.
+    #[must_use]
+    pub fn arc_form(&self, arc: &Arc) -> Option<ArcForm> {
+        let (from, to) = (self.point_in_plane(arc.from)?, self.point_in_plane(arc.to)?);
+        let center = arc_center_on_bisector(from, to, self.point_in_plane(arc.center)?)?;
+        let sweep_degrees = counter_clockwise_sweep_degrees(center, from, to)?;
+        let radius = (from[0] - center[0]).hypot(from[1] - center[1]);
+        radius.is_finite().then_some(ArcForm {
+            from,
+            to,
+            center,
+            radius,
+            sweep_degrees,
+        })
+    }
+
+    /// [`arc_form`](Self::arc_form) by arc id, for a caller holding a [`SketchCurve`] rather than
+    /// the entity.
+    #[must_use]
+    pub fn arc_form_of(&self, id: EntityId) -> Option<ArcForm> {
+        self.arc_form(self.arcs.iter().find(|arc| arc.id == id)?)
     }
 
     /// The current center of one authored circular curve. Radius sources are irrelevant to this
@@ -1802,12 +1777,7 @@ impl Sketch {
                 .map(|point| point.at.in_plane())
         };
         match curve {
-            SketchCurve::Arc(id) => {
-                let arc = self.arcs.iter().find(|arc| arc.id == id)?;
-                let (center, _) =
-                    arc_center_radius(point(arc.from)?, point(arc.to)?, arc.sweep_degrees())?;
-                Some(center)
-            }
+            SketchCurve::Arc(id) => Some(self.arc_form_of(id)?.center),
             SketchCurve::Circle(id) => {
                 let circle = self.circles.iter().find(|circle| circle.id == id)?;
                 point(circle.center)
@@ -2457,14 +2427,12 @@ impl Sketch {
     /// Move the point `id` to `at` and settle the drawing around it — the drag write path.
     /// Reports whether the point exists.
     ///
-    /// A DERIVED point drags the quantity behind it, not itself. An arc's center resweeps the arc,
-    /// holding its endpoints still while the radius follows the cursor
-    /// ([`resweep_arc_to_center`](Self::resweep_arc_to_center)); a conic's shoulder re-solves that
-    /// conic's rho, which is the same edit in a different currency
-    /// ([`reshape_conic_to_shoulder`](Self::reshape_conic_to_shoulder)). Neither can be pinned
-    /// where the cursor left it, so neither settles: the authored quantity is the whole edit.
+    /// One path, for every point (ADR 0038). There is no arm that reads the cursor as a quantity
+    /// instead of a position: an arc's center is a placed point like any other, and a conic's rho
+    /// is authored by dragging the conic's own body
+    /// ([`drag_curve_through`](Self::drag_curve_through)).
     ///
-    /// Every other point simply takes `at`, and then the standing constraints are re-solved with it
+    /// The point takes `at`, and then the standing constraints are re-solved with it
     /// pinned there — see [`settle_under_the_hands`](Self::settle_under_the_hands). A constraint
     /// that only held at the moment it was asserted is not a constraint; it has to survive the
     /// next drag, which is the first thing the author does to test it.
@@ -2571,6 +2539,20 @@ impl Sketch {
         // solver can say, not a decision about what the gesture means, so the meaning is kept and
         // the drawing carries the curve bodily instead — the answer the grip would have produced
         // for a shape with nothing else holding it.
+        // A conic's body drag is the one aggregate drag that RESHAPES rather than travels. Rho
+        // is the conic's one authored freedom and ADR 0038 took away the on-curve dot that used
+        // to carry it, so the body is the handle: pulling it toward the control point sharpens the
+        // curve, pushing it back toward the chord flattens it. Translating a conic is what its
+        // three placed points are for.
+        if let SketchCurve::Conic(id) = curve {
+            let Some(index) = self.conics.iter().position(|conic| conic.id == id) else {
+                return Ok(false);
+            };
+            return self.drag_or_leave_it_alone(|sketch| {
+                sketch.reshape_conic_toward(index, to);
+                sketch.standing_constraints_hold(context)
+            });
+        }
         if !curve.carries_relation_geometry() {
             return self.translate_curve(curve, [to[0] - grabbed[0], to[1] - grabbed[1]], context);
         }
@@ -2665,12 +2647,12 @@ impl Sketch {
         by: [f64; 2],
         context: parametric::EvaluationContext,
     ) -> Result<bool, SketchEvaluationError> {
-        // A derived point is a function of the ones being carried and follows on its own; naming it
-        // as a hand would assert a position the sync is about to overwrite.
+        // Every point the curve stands on gets a hand, its center included: a center is placed
+        // like any other point (ADR 0038), so a translation that left it behind would not be a
+        // translation.
         let hands: Vec<_> = self
             .points_a_translation_carries(curve)
             .into_iter()
-            .filter(|point| !self.is_derived_point(*point))
             .filter_map(|point| {
                 let stood = self.point_in_plane(point)?;
                 Some((point, [stood[0] + by[0], stood[1] + by[1]]))
@@ -2719,7 +2701,7 @@ impl Sketch {
                 .conics
                 .iter()
                 .find(|conic| conic.id == id)
-                .map(|conic| vec![conic.from, conic.to, conic.shoulder])
+                .map(|conic| vec![conic.from, conic.to, conic.control])
                 .unwrap_or_default(),
             SketchCurve::Spline(id) => self
                 .splines
@@ -2774,45 +2756,29 @@ impl Sketch {
         at: SketchPoint,
         context: parametric::EvaluationContext,
     ) -> Result<bool, SketchEvaluationError> {
-        let held_arc = self.arcs.iter().position(|arc| arc.center == id);
-        let held_conic = self.conics.iter().position(|conic| conic.shoulder == id);
-        match (held_arc, held_conic) {
-            (Some(arc_index), _) => {
-                self.resweep_arc_to_center(arc_index, at.in_plane());
-                self.sync_derived_points();
-                // Dragging a derived point owns only the quantity behind it: settling here could
-                // "heal" an invalid result by moving the curve's own endpoints, breaking that
-                // contract. Accept only the authored configuration it produced.
-                self.standing_constraints_hold(context)
-            }
-            (None, Some(conic_index)) => {
-                self.reshape_conic_to_shoulder(conic_index, at.in_plane());
-                self.sync_derived_points();
-                self.standing_constraints_hold(context)
-            }
-            (None, None) => {
-                // Read the hand set BEFORE anything moves: everything carried states its own
-                // displacement, and that is measured from where the drawing currently stands. Then
-                // put the whole set where it is going, so a carried shape starts the settle already
-                // standing rather than distorted around the one point that led.
-                let before = self.points.clone();
-                let hands = self.hands_moving_with(id, at);
-                for (point, to) in &hands {
-                    if let Some(index) = self.point_index(*point) {
-                        self.points[index].at = SketchPoint::from_continuous(to[0], to[1]);
-                    }
-                }
-                // The DRAG's own displacement carries the handles, not just the settle's. A solve
-                // carries them too, but it measures from here — after the hands have landed — so
-                // on a drawing with no standing relation there is no solve at all and the handle
-                // would simply be left behind, its offset re-aimed by a gesture that never
-                // mentioned it. That is the same re-aiming the solve path guards against, arriving
-                // one step earlier.
-                self.carry_authored_handles(&before);
-                self.sync_derived_points();
-                self.settle_under_the_hands(&hands, context)
+        // Every point moves the same way now, an arc's center included: ADR 0038 left the
+        // drawing with no point whose coordinates are somebody else's arithmetic, so there is no
+        // longer a second kind of drag that authors a quantity instead of a position.
+        //
+        // Read the hand set BEFORE anything moves: everything carried states its own displacement,
+        // and that is measured from where the drawing currently stands. Then put the whole set
+        // where it is going, so a carried shape starts the settle already standing rather than
+        // distorted around the one point that led.
+        let before = self.points.clone();
+        let hands = self.hands_moving_with(id, at);
+        for (point, to) in &hands {
+            if let Some(index) = self.point_index(*point) {
+                self.points[index].at = SketchPoint::from_continuous(to[0], to[1]);
             }
         }
+        // The DRAG's own displacement carries the handles, not just the settle's. A solve carries
+        // them too, but it measures from here — after the hands have landed — so on a drawing with
+        // no standing relation there is no solve at all and the handle would simply be left behind,
+        // its offset re-aimed by a gesture that never mentioned it. That is the same re-aiming the
+        // solve path guards against, arriving one step earlier.
+        self.carry_authored_handles(&before);
+        self.sync_derived_points();
+        self.settle_under_the_hands(&hands, context)
     }
 
     /// Whether the standing constraint system is met by the drawing exactly as it stands, with
@@ -2870,11 +2836,6 @@ impl Sketch {
             }
         }
         for carried in self.rest_of_the_shape_held_by(id) {
-            // A derived point is not a freedom and needs no hand: it follows whatever its curve
-            // does, and the curve is carried by the points that DO get one.
-            if self.is_derived_point(carried) {
-                continue;
-            }
             let Some(index) = self.point_index(carried) else {
                 continue;
             };
@@ -3015,7 +2976,7 @@ impl Sketch {
         self.what_a_drag_of_these_can_reach(&held)
             .iter()
             .filter(|point| !carried(**point))
-            .filter(|point| !self.is_derived_point(**point))
+            .filter(|point| !self.is_arc_center(**point))
             .filter(|point| self.center_this_handle_stands_on(**point).is_some())
             .filter_map(|point| Some((*point, self.point_in_plane(*point)?)))
             .collect()
@@ -3082,14 +3043,14 @@ impl Sketch {
         self.shape_holding(seeds)
             .into_iter()
             .flat_map(|curve| self.points_of(curve))
-            .filter(|point| self.is_derived_point(*point))
+            .filter(|point| self.is_arc_center(*point))
             .filter(|point| self.names_a_whole_shape(&self.curves_centered_on(*point)))
             // Where two rails share a center by relation rather than by identity, only ONE of the
             // pair carries the handle — so keep looking rather than settling for the first.
             .find_map(|shared| {
                 self.coincident_partners(shared)
                     .into_iter()
-                    .find(|partner| !self.is_derived_point(*partner))
+                    .find(|partner| !self.is_arc_center(*partner))
             })
     }
 
@@ -3097,7 +3058,7 @@ impl Sketch {
     fn center_this_handle_stands_on(&self, held: EntityId) -> Option<EntityId> {
         self.coincident_partners(held)
             .into_iter()
-            .find(|partner| self.is_derived_point(*partner))
+            .find(|partner| self.is_arc_center(*partner))
     }
 
     /// Whether curves turning about one center name a whole shape rather than one end of it.
@@ -3403,7 +3364,7 @@ impl Sketch {
             return Ok(false);
         }
         let plan = prepared
-            .plan_apply(&self.points, &self.arcs, &self.circles, &settled.solution)
+            .plan_apply(&self.points, &self.circles, &settled.solution)
             .map_err(|_| SketchEvaluationError::ScalarWritebackFailed)?;
         let before = self.points.clone();
         plan.apply(self);
@@ -3412,59 +3373,17 @@ impl Sketch {
         Ok(true)
     }
 
-    /// Re-solve the arc at `arc_index` so its center sits as close to `target` as the canonical
-    /// form allows, its endpoints unmoved.
+    /// Re-solve a conic's rho from a body drag — the post-commit half of the authoring gesture's
+    /// last step, and the only way rho is re-authored now that ADR 0038 has taken the shoulder
+    /// point away.
     ///
-    /// For a fixed chord a center has ONE degree of freedom, not two: it lives on the chord's
-    /// perpendicular bisector, and where it sits along that line IS the sweep — far out for a
-    /// shallow arc, on the chord for a half turn, across to the other side for the major one.
-    /// So the drag projects onto the bisector and inverts `arc_center_radius`: the signed
-    /// apothem `a` and the half-chord `h` give `sweep / 2 = atan2(h, a)`, which covers every
-    /// positive sweep in `(0°, 360°)` as `a` runs over the reals. The existing sweep's SIGN is
-    /// preserved — it says which way round the arc goes, and a drag of the center is not a
-    /// request to reverse it. A degenerate chord or a sweep that quantizes to nothing leaves
-    /// the arc alone rather than erasing it.
-    fn resweep_arc_to_center(&mut self, arc_index: usize, target: [f64; 2]) {
-        let arc = self.arcs[arc_index];
-        let (Some(tail), Some(head)) = (self.point_index(arc.from), self.point_index(arc.to))
-        else {
-            return;
-        };
-        let (from, to) = (
-            self.points[tail].at.in_plane(),
-            self.points[head].at.in_plane(),
-        );
-        let chord = [to[0] - from[0], to[1] - from[1]];
-        let chord_length = (chord[0] * chord[0] + chord[1] * chord[1]).sqrt();
-        if chord_length <= f64::EPSILON {
-            return;
-        }
-        let mid = [(from[0] + to[0]) / 2.0, (from[1] + to[1]) / 2.0];
-        let left = [-chord[1] / chord_length, chord[0] / chord_length];
-        let apothem = (target[0] - mid[0]) * left[0] + (target[1] - mid[1]) * left[1];
-        let half_sweep = (chord_length / 2.0).atan2(apothem);
-        let mut degrees = 2.0 * half_sweep.to_degrees();
-        if arc.sweep_degrees() < 0.0 {
-            degrees -= 360.0;
-        }
-        let Ok(bulge) = AngleMeasurement::try_from_degrees_f64(degrees) else {
-            return;
-        };
-        if arc_sweep_is_valid(bulge.to_degrees_f64()) {
-            self.arcs[arc_index].replace_free_sweep(bulge);
-        }
-    }
-
-    /// Re-solve a conic's rho from a dragged shoulder — the post-commit half of the authoring
-    /// gesture's last step.
-    ///
-    /// The shoulder is captive to the track from the chord midpoint out to the control point, and
-    /// where it sits along that track IS rho: back at the chord the conic flattens toward its own
+    /// The curve is captive to the track from the chord midpoint out to the control point, and
+    /// where it crosses that track IS rho: back at the chord the conic flattens toward its own
     /// straight line, out at the control point it sharpens toward a corner. So the drag projects
     /// onto the track and reads rho off it, the same one definition
     /// ([`parametric::sketch::conic_rho_from_shoulder`]) the gesture uses, clamped short of both
     /// degenerate ends. A conic whose defining points have gone missing is left alone.
-    fn reshape_conic_to_shoulder(&mut self, conic_index: usize, target: [f64; 2]) {
+    fn reshape_conic_toward(&mut self, conic_index: usize, target: [f64; 2]) {
         let conic = self.conics[conic_index];
         let position = |id| {
             self.points
@@ -3510,7 +3429,7 @@ impl Sketch {
             ellipse.center != id && ellipse.major_endpoint != id && ellipse.width_point != id
         });
         boxed_retain(&mut self.conics, |conic| {
-            conic.from != id && conic.to != id && conic.control != id && conic.shoulder != id
+            conic.from != id && conic.to != id && conic.control != id
         });
         self.heal_splines_without(id);
         self.points.retain(|point| point.id != id);
@@ -3607,7 +3526,7 @@ impl Sketch {
             || self
                 .conics
                 .iter()
-                .any(|conic| [conic.from, conic.to, conic.control, conic.shoulder].contains(&id))
+                .any(|conic| [conic.from, conic.to, conic.control].contains(&id))
             || self
                 .splines
                 .iter()
@@ -3733,9 +3652,7 @@ impl Sketch {
                 error: failure.error,
             });
         }
-        let Ok(plan) =
-            prepared.plan_apply(&self.points, &self.arcs, &self.circles, &settled.solution)
-        else {
+        let Ok(plan) = prepared.plan_apply(&self.points, &self.circles, &settled.solution) else {
             return Err(ConstraintRefusal::Impossible);
         };
         let id = self.alloc_id();
@@ -4073,7 +3990,7 @@ impl Sketch {
         validate_prepared_satisfaction(&prepared, &settled.diagnostics)?;
         validate_prepared_tangent_contacts(&prepared, &settled.solution)?;
         let plan = prepared
-            .plan_apply(&self.points, &self.arcs, &self.circles, &settled.solution)
+            .plan_apply(&self.points, &self.circles, &settled.solution)
             .map_err(|_| SketchEvaluationError::ScalarWritebackFailed)?;
         let before = self.points.clone();
         plan.apply(self);
@@ -4248,6 +4165,12 @@ impl Sketch {
     /// A pair already joined by a segment, or by an arc bulging differently, is legal: a
     /// chord plus its arc is a D, and two arcs over one pair are a lens. Both are ordinary
     /// bounded faces to the derivation.
+    ///
+    /// The bulge is the CALLER's convenience, not the stored form. An [`Arc`] is three placed
+    /// points running counter-clockwise (ADR 0038), so the sweep is inverted once here: it decides
+    /// where the center goes, and its SIGN decides which end is `from` — a clockwise bulge is the
+    /// same drawn curve with its ends the other way round. Nothing downstream ever sees a negative
+    /// sweep again.
     pub fn connect_arc(
         &mut self,
         from: EntityId,
@@ -4263,17 +4186,22 @@ impl Sketch {
         {
             return None;
         }
+        let (tail, head) = (self.point_in_plane(from)?, self.point_in_plane(to)?);
+        let (center, _radius) = arc_center_radius(tail, head, sweep)?;
+        let (from, to) = if sweep < 0.0 { (to, from) } else { (from, to) };
+        // The arc's own id comes first so it precedes the center it arrives with, which is the
+        // order every other curve-and-its-anchors gesture writes.
         let id = self.alloc_id();
+        let center =
+            self.add_construction_point(SketchPoint::from_continuous(center[0], center[1]));
         self.arcs.push(Arc {
             id,
             from,
             to,
-            bulge: ArcSweep::free(bulge),
-            center: ABSENT_DERIVED_POINT,
+            center,
             origin: id,
             role: EntityRole::Real,
         });
-        self.sync_derived_points();
         Some(id)
     }
 
@@ -4511,7 +4439,6 @@ impl Sketch {
                 from,
                 to,
                 control,
-                shoulder: ABSENT_DERIVED_POINT,
                 rho,
                 origin: id,
                 role: EntityRole::Real,
@@ -4608,7 +4535,7 @@ impl Sketch {
             .conics
             .iter()
             .find(|conic| conic.id == id)
-            .map(|conic| [conic.from, conic.to, conic.control, conic.shoulder]);
+            .map(|conic| [conic.from, conic.to, conic.control]);
         boxed_retain(&mut self.conics, |conic| conic.id != id);
         if let Some(points) = points {
             self.drop_undrawn_points(points);
@@ -4884,17 +4811,18 @@ impl Sketch {
         self.prune_orphan_centers();
     }
 
-    /// Whether the drawing OWNS this point's coordinates — an arc's center, or a conic's on-curve
-    /// shoulder, both of which [`sync_derived_points`](Self::sync_derived_points) re-derives from
-    /// the curve they belong to. A derived point is selectable, draggable, snappable and
-    /// **constrainable** like any other; what it is not is a freedom, which is why
-    /// [`degrees_of_freedom`](Self::degrees_of_freedom) does not count it.
+    /// Whether some arc turns about this point.
     ///
-    /// A constraint naming one is met by moving the CURVE — see `constraint::position_of`, where
-    /// the residual system reads it as the function it is.
-    pub fn is_derived_point(&self, id: EntityId) -> bool {
+    /// A STRUCTURAL question, not a provenance one. The center is placed and moves like any other
+    /// point (ADR 0038); what this asks is whether it is the thing a round shape is arranged
+    /// around, which is what tells a slot's grabbable handle apart from the center it is pinned
+    /// to and what decides which of two stacked dots is worth drawing.
+    ///
+    /// A circle's center is deliberately out. It is the author's handle for the circle already —
+    /// there is no second point coincident with it to tell apart — so counting it here would only
+    /// hide the one dot a circle has.
+    pub fn is_arc_center(&self, id: EntityId) -> bool {
         self.arcs.iter().any(|arc| arc.center == id)
-            || self.conics.iter().any(|conic| conic.shoulder == id)
     }
 
     /// How many curve ENDS meet at `id`: where ink stops, not where a curve merely names the point.
@@ -4924,8 +4852,8 @@ impl Sketch {
     /// pins onto a curve that something else already ends on: an Overall Slot's extreme is where
     /// its middle line stops AND where that line crosses a cap, and both facts are drawn.
     ///
-    /// - **No mark at all** — a shoulder, a free point the author dropped. There is no ink on it, so
-    ///   the dot is the only evidence it exists.
+    /// - **No mark at all** — a free point the author dropped. There is no ink on it, so the dot is
+    ///   the only evidence it exists.
     /// - **One mark** — a loose end, or a point held on a curve with nothing ending there. "This
     ///   line stops here" and "this line joins something here" are the same picture, and the
     ///   difference is exactly what decides whether the profile closes into a region. Two ends that
@@ -4940,16 +4868,17 @@ impl Sketch {
     ///
     /// # One place, one dot, and it is the one that can be dragged
     ///
-    /// Two points at the same spot draw one mark between them, and a DERIVED point loses to a real
-    /// one. Every rule above asks what the drawing already shows, and a second dot on an occupied
-    /// pixel shows nothing: it is not a fainter version of the answer, it is the same answer twice.
+    /// Two points at the same spot draw one mark between them, and an ARC CENTER loses to a point
+    /// that is nothing else. Every rule above asks what the drawing already shows, and a second dot
+    /// on an occupied pixel shows nothing: it is not a fainter version of the answer, it is the same
+    /// answer twice.
     ///
-    /// Which one goes is not a coin toss. A derived center is a function of its curve's ends and
-    /// exists so the shape has somewhere to be measured from; the real handle standing on it is
-    /// what an author can actually take hold of, and dragging a derived point authors the quantity
-    /// behind it instead of moving anything. An arc slot stacks four of these at its middle — the
-    /// two rails' centers, the centerline's, and the handle tied to them — so the dot most likely
-    /// to be under the cursor was the one least able to answer for the gesture (owner, 2026-08-05).
+    /// Which one goes is not a coin toss. Both are placed points now (ADR 0038), so the tie-break is
+    /// about REACH, not provenance: a center is bound to one arc, while the free handle standing on
+    /// it is what the author's relations name and what a drag moves the whole shape by. An arc slot
+    /// stacks four of these at its middle — the two rails' centers, the centerline's, and the handle
+    /// tied to them — so the dot most likely to be under the cursor was the one least able to answer
+    /// for the gesture (owner, 2026-08-05).
     pub fn point_draws_at_rest(&self, id: EntityId) -> bool {
         if self.tangent_arm_owner(id).is_some() || self.a_better_dot_stands_here(id) {
             return false;
@@ -5004,7 +4933,7 @@ impl Sketch {
     /// to tell apart, and the seam case is out of reach of it regardless — that one is two REAL
     /// points, and this only ever hides a derived one.
     pub fn a_better_dot_stands_here(&self, id: EntityId) -> bool {
-        if !self.is_derived_point(id) {
+        if !self.is_arc_center(id) {
             return false;
         }
         let Some(mine) = self.point_in_plane(id) else {
@@ -5017,7 +4946,7 @@ impl Sketch {
             };
             other.id != id
                 && (stood[0] - mine[0]).hypot(stood[1] - mine[1]) < STACKED_DOT_VOXELS
-                && (!self.is_derived_point(other.id) || rank(other.id) < rank(id))
+                && (!self.is_arc_center(other.id) || rank(other.id) < rank(id))
         })
     }
 
@@ -5064,10 +4993,7 @@ impl Sketch {
             .iter()
             .flat_map(|segment| [segment.from, segment.to]);
         let arcs = self.arcs.iter().flat_map(|arc| [arc.from, arc.to]);
-        let conics = self
-            .conics
-            .iter()
-            .flat_map(|conic| [conic.from, conic.to, conic.shoulder]);
+        let conics = self.conics.iter().flat_map(|conic| [conic.from, conic.to]);
         let ellipses = self
             .ellipses
             .iter()
@@ -5127,7 +5053,7 @@ impl Sketch {
 
     /// Every authored point that STANDS OFF another, as `(anchor, follower)`.
     ///
-    /// Both are authored — neither is [`is_derived_point`](Self::is_derived_point) — but the
+    /// Both are authored — neither is [`is_arc_center`](Self::is_arc_center) — but the
     /// follower's meaning is its OFFSET from the anchor rather than its position: a spline's
     /// tangent is the vector to its handle, and an ellipse's axes are the vectors to its
     /// endpoints. That is the pairing [`carry_authored_handles`](Self::carry_authored_handles)
@@ -5203,113 +5129,61 @@ impl Sketch {
         }
     }
 
-    /// Re-derive every point whose coordinates the drawing owns, minting one for any curve that has
-    /// none yet. A derived point is a real [`Point`] so it can be selected, snapped to and dragged
-    /// like any other, but its position is OWNED here — every edit that can move the curve behind
-    /// it ends by calling this, so it can never drift out of agreement. Solver write-back follows
-    /// the same function rather than trusting the stored slot.
+    /// Put every point the drawing owns a COMPONENT of back where the geometry needs it.
     ///
-    /// An arc's center comes from its endpoints and bulge; a conic's shoulder from its endpoints,
-    /// its control point and rho. A curve whose defining points are missing or degenerate is left
-    /// alone; [`repair`](Self::repair) erases it.
-    /// The signed sweep that carries `ends[0]` to `ends[1]` about `seat`, keeping the turn `like`
-    /// was going. `None` where the ends sit on the seat and no turn is defined.
-    ///
-    /// The sign has to be carried in because two ends and a center describe two arcs — the short
-    /// way round and the long way — and only the curve itself knows which one it is.
-    fn sweep_about(seat: [f64; 2], ends: [[f64; 2]; 2], like: f64) -> Option<f64> {
-        let angle = |at: [f64; 2]| {
-            let (run, rise) = (at[0] - seat[0], at[1] - seat[1]);
-            (run.hypot(rise) > f64::EPSILON).then(|| rise.atan2(run).to_degrees())
-        };
-        let (from, to) = (angle(ends[0])?, angle(ends[1])?);
-        let mut sweep = (to - from).rem_euclid(360.0);
-        if like < 0.0 {
-            sweep -= 360.0;
-        }
-        arc_sweep_is_valid(sweep).then_some(sweep)
-    }
-
+    /// Two things left after ADR 0038, and neither is a derived point. A spline's tangent arms are
+    /// one lever with two ends, so the back arm is the mirror of the front. An arc's center has one
+    /// freedom and the plane has two, so the leftover direction is seated
+    /// ([`seat_arc_centers`](Self::seat_arc_centers)). A conic's shoulder used to be here as well
+    /// and is simply gone: rho is a value, and it is authored as one.
     pub fn sync_derived_points(&mut self) {
-        // Arcs turning about ONE place share ONE dot, and which arcs those are is decided when
-        // they are drawn ([`tie_arc_centers`](Self::tie_arc_centers)) rather than guessed here from
-        // where they happen to stand. Coincidence is the wrong test both ways: two unrelated arcs
-        // that pass through a concentric arrangement would bind forever, and two arcs that ARE held
-        // concentric disagree mid-solve, so a tolerance would split them on a transient and never
-        // put them back.
-        //
-        // The FIRST arc to reach a shared center places it; the rest leave it alone. The dot can
-        // only be in one place, so letting the last one win would move it by nothing more than arc
-        // order. It is an echo either way — every relation measures an arc from its own two ends.
-        let mut placed: Vec<EntityId> = Vec::new();
-        for index in 0..self.arcs.len() {
-            let arc = self.arcs[index];
-            let (Some(tail), Some(head)) = (self.point_index(arc.from), self.point_index(arc.to))
-            else {
-                continue;
-            };
-            let Some((center, _radius)) = arc_center_radius(
-                self.points[tail].at.in_plane(),
-                self.points[head].at.in_plane(),
-                arc.sweep_degrees(),
-            ) else {
-                continue;
-            };
-            let at = SketchPoint::from_continuous(center[0], center[1]);
-            match self.point_index(arc.center) {
-                Some(existing) if !placed.contains(&arc.center) => {
-                    self.points[existing].at = at;
-                    placed.push(arc.center);
-                }
-                // A sharer does not get to move the dot, so it CONFORMS to it: its sweep is
-                // whatever puts its own two ends on a circle about the center that is already
-                // there. Sharing a center is the statement that this curve is defined by that
-                // center, which is one turn of Fusion's representation — an arc as a center, a
-                // radius and two angles — applied exactly where the drawing needs it.
-                //
-                // Deriving the sweep is what keeps the sharing honest without asserting anything.
-                // A slot's centerline is not authored, it is IMPLIED: its ends are the cap centers
-                // and its middle is the slot's own, so leaving it a free sweep and then adding a
-                // relation to pin that sweep back would be adding a freedom in order to remove it.
-                // Measured, the relation also over-coupled the solve — dragging a spine end
-                // rotated the whole slot and missed the cursor by a third of a block.
-                Some(_) => {
-                    let seat = self.points[self.point_index(arc.center).unwrap_or(tail)]
-                        .at
-                        .in_plane();
-                    let ends = [
-                        self.points[tail].at.in_plane(),
-                        self.points[head].at.in_plane(),
-                    ];
-                    if let Some(sweep) = Self::sweep_about(seat, ends, arc.sweep_degrees()) {
-                        if let Ok(bulge) = AngleMeasurement::try_from_degrees_f64(sweep) {
-                            self.arcs[index].bulge = ArcSweep::free(bulge);
-                        }
-                    }
-                }
-                None => {
-                    let minted = self.add_construction_point(at);
-                    self.arcs[index].center = minted;
-                    placed.push(minted);
-                }
-            }
-        }
-        for index in 0..self.conics.len() {
-            let conic = self.conics[index];
-            let Some(candidate) = self.conic_candidate(conic) else {
-                continue;
-            };
-            let at = SketchPoint::from_continuous(candidate.vertex[0], candidate.vertex[1]);
-            match self.point_index(conic.shoulder) {
-                Some(existing) => self.points[existing].at = at,
-                None => self.conics[index].shoulder = self.add_construction_point(at),
-            }
-        }
+        self.seat_arc_centers();
         self.sync_tangent_arms();
     }
 
+    /// Put every UNSHARED arc center back on its chord's perpendicular bisector.
+    ///
+    /// Not a derivation, and not a walk back from ADR 0038. The center keeps the freedom it
+    /// actually has — how far out along the bisector it stands, which is the arc's radius and the
+    /// author's to choose. What this takes away is the component running ALONG the chord, and that
+    /// is not a freedom of the arc at all: sliding the center that way names no different circle
+    /// through the two ends. It only lets the stored dot drift off the curve the author is
+    /// looking at, and nobody ever chose the drift.
+    ///
+    /// A SHARED center — two arcs deliberately tied to one dot by
+    /// [`tie_arc_centers`](Self::tie_arc_centers) — is left alone, because it cannot stand on two
+    /// bisectors at once. That case belongs to the solver: each arc contributes one equal-radius
+    /// row and the settle balances them against each other.
+    fn seat_arc_centers(&mut self) {
+        for index in 0..self.arcs.len() {
+            let arc = self.arcs[index];
+            if self
+                .arcs
+                .iter()
+                .filter(|other| other.center == arc.center)
+                .count()
+                > 1
+            {
+                continue;
+            }
+            let (Some(from), Some(to), Some(center)) = (
+                self.point_in_plane(arc.from),
+                self.point_in_plane(arc.to),
+                self.point_in_plane(arc.center),
+            ) else {
+                continue;
+            };
+            let Some(seat) = arc_center_on_bisector(from, to, center) else {
+                continue;
+            };
+            if let Some(stood) = self.point_index(arc.center) {
+                self.points[stood].at = SketchPoint::from_continuous(seat[0], seat[1]);
+            }
+        }
+    }
+
     /// Point every arc in `arcs` at the FIRST one's center, so a set of arcs turning about one
-    /// place shows the author one dot instead of one each.
+    /// place shares one dot instead of holding one each.
     ///
     /// Structural and permanent, which is why the caller must also ASSERT that these arcs are
     /// concentric. A shared dot can only be in one place, so sharing it is a claim that they agree;
@@ -5389,7 +5263,7 @@ impl Sketch {
             referenced.extend([ellipse.center, ellipse.major_endpoint, ellipse.width_point]);
         }
         for conic in &*self.conics {
-            referenced.extend([conic.from, conic.to, conic.control, conic.shoulder]);
+            referenced.extend([conic.from, conic.to, conic.control]);
         }
         for spline in &*self.splines {
             referenced.extend(spline.points.iter().copied());
@@ -5422,13 +5296,9 @@ impl Sketch {
         b: EntityId,
         sweep: AngleMeasurement,
     ) -> Option<EntityId> {
-        let degrees = sweep.to_degrees_f64();
         self.arcs
             .iter()
-            .find(|arc| {
-                (arc.from == a && arc.to == b && arc.sweep_degrees() == degrees)
-                    || (arc.from == b && arc.to == a && arc.sweep_degrees() == -degrees)
-            })
+            .find(|arc| self.arc_draws(arc, a, b, sweep.to_degrees_f64()))
             .map(|arc| arc.id)
     }
 
@@ -5467,11 +5337,29 @@ impl Sketch {
     /// too, so the reversed match is against the negated sweep — an arc bulging the other way
     /// over the same pair is a different curve, and legal.
     pub fn arc_traces(&self, from: EntityId, to: EntityId, sweep_degrees: f64) -> bool {
-        self.arcs.iter().any(|arc| {
-            let stored = arc.sweep_degrees();
-            (arc.from == from && arc.to == to && stored == sweep_degrees)
-                || (arc.from == to && arc.to == from && stored == -sweep_degrees)
-        })
+        self.arcs
+            .iter()
+            .any(|arc| self.arc_draws(arc, from, to, sweep_degrees))
+    }
+
+    /// Whether `arc` is the curve running `a → b` through the signed `sweep_degrees`.
+    ///
+    /// The stored form is counter-clockwise (ADR 0038), so a negative sweep asks about the same
+    /// drawn curve with its ends the other way round. The sweep is DERIVED from three placed
+    /// points and the ends are stored at `f32` fraction, so it is compared within
+    /// [`SAME_ARC_SWEEP_DEGREES`] rather than bit-for-bit: two arcs an author drew alike are the
+    /// same curve, and the last few bits of an `atan2` are not the difference between them.
+    fn arc_draws(&self, arc: &Arc, a: EntityId, b: EntityId, sweep_degrees: f64) -> bool {
+        let (from, to, turn) = if sweep_degrees < 0.0 {
+            (b, a, -sweep_degrees)
+        } else {
+            (a, b, sweep_degrees)
+        };
+        arc.from == from
+            && arc.to == to
+            && self
+                .arc_form(arc)
+                .is_some_and(|form| (form.sweep_degrees - turn).abs() < SAME_ARC_SWEEP_DEGREES)
     }
 
     /// Delete the arc with id `arc_id`, **and each of its ends that nothing else draws** — the
@@ -5583,14 +5471,20 @@ impl Sketch {
         self.segments.retain(|seg| {
             seg.from != seg.to && point_ids.contains(&seg.from) && point_ids.contains(&seg.to)
         });
-        // An arc is additionally invalid on a degenerate bulge — a zero sweep is a
-        // segment pretending, a full turn or more has no single chord-anchored shape.
-        self.arcs.retain(|arc| {
-            arc.from != arc.to
-                && point_ids.contains(&arc.from)
-                && point_ids.contains(&arc.to)
-                && arc_sweep_is_valid(arc.sweep_degrees())
-        });
+        // An arc is additionally invalid when its three points do not draw one: a missing
+        // center, ends stacked on each other, an end sitting on the center. Each of those is a
+        // sweep that cannot be read, which is what `arc_form` returning nothing means.
+        let arcs = std::mem::take(&mut self.arcs);
+        self.arcs = arcs
+            .into_iter()
+            .filter(|arc| {
+                arc.from != arc.to
+                    && point_ids.contains(&arc.from)
+                    && point_ids.contains(&arc.to)
+                    && point_ids.contains(&arc.center)
+                    && self.arc_form(arc).is_some()
+            })
+            .collect();
         // A circle is invalid on a missing center or a radius that is not a positive finite
         // length — either way there is no curve to draw.
         self.circles.retain(|circle| {
@@ -5724,6 +5618,56 @@ pub fn arc_center_radius(
         [mid[0] + left[0] * apothem, mid[1] + left[1] * apothem],
         radius,
     ))
+}
+
+/// How far two derived sweeps may differ and still be the same arc, in degrees.
+///
+/// A sweep is read off three placed points whose fractions are stored at `f32`, so an arc drawn to
+/// a given bulge reads back a hair away from it. The bound sits far under anything an author could
+/// have meant to tell apart and far over the drift a round trip through storage costs.
+const SAME_ARC_SWEEP_DEGREES: f64 = 1.0e-3;
+
+/// `center` moved onto the perpendicular bisector of `from → to`, so the circle it names passes
+/// through BOTH ends exactly. `None` for a degenerate chord, which has no bisector.
+///
+/// An arc's center is authored (ADR 0038) and nothing stops it standing nearer one end than the
+/// other — a drag puts it where the cursor was, and the solver's equal-radius row only pulls it
+/// back on the next solve. Display and measurement still have to name one circle, so the component
+/// of the center running ALONG the chord is dropped here. That is exactly the motion the
+/// equal-radius row removes, so this agrees with the solver rather than hiding a disagreement from
+/// it: where the solve has converged the projection moves nothing at all.
+///
+/// Written as a SUBTRACTION of the along-chord component rather than a rebuild from the midpoint,
+/// so a center already on the bisector comes back bit-for-bit. Rebuilding it costs a few ulps every
+/// read, and a few ulps is the whole discriminant where an arc meets a line it is nearly tangent
+/// to — the reading has to be stable, not merely close.
+fn arc_center_on_bisector(from: [f64; 2], to: [f64; 2], center: [f64; 2]) -> Option<[f64; 2]> {
+    let chord = [to[0] - from[0], to[1] - from[1]];
+    let chord_length = chord[0].hypot(chord[1]);
+    if !(chord_length > f64::EPSILON) {
+        return None;
+    }
+    let along = [chord[0] / chord_length, chord[1] / chord_length];
+    let mid = [(from[0] + to[0]) / 2.0, (from[1] + to[1]) / 2.0];
+    let drift = (center[0] - mid[0]) * along[0] + (center[1] - mid[1]) * along[1];
+    let seat = [center[0] - along[0] * drift, center[1] - along[1] * drift];
+    (seat[0].is_finite() && seat[1].is_finite()).then_some(seat)
+}
+
+/// The counter-clockwise turn from `from` to `to` about `center`, in degrees strictly inside
+/// `(0, 360)`. `None` where there is no turn to read: an end standing on the center, or the two
+/// ends at one bearing from it.
+///
+/// There is no sign to return. An arc runs counter-clockwise by definition (ADR 0038) and the
+/// endpoint ORDER is what says which way it goes, so the caller that wants the other arc over the
+/// same chord asks about the same three points with the ends swapped.
+fn counter_clockwise_sweep_degrees(center: [f64; 2], from: [f64; 2], to: [f64; 2]) -> Option<f64> {
+    let bearing = |at: [f64; 2]| {
+        let (run, rise) = (at[0] - center[0], at[1] - center[1]);
+        (run.hypot(rise) > f64::EPSILON).then(|| rise.atan2(run).to_degrees())
+    };
+    let turn = (bearing(to)? - bearing(from)?).rem_euclid(360.0);
+    arc_sweep_is_valid(turn).then_some(turn)
 }
 
 /// The arc's tessellated INTERIOR vertices from `from` to `to` (both endpoints

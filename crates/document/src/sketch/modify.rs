@@ -6,9 +6,8 @@
 //! so a hover cannot promise a different cut from the one an undoable click performs.
 
 use super::{
-    boxed_push, boxed_retain, AngleMeasurement, Arc, ArcSweep, ConstraintKind, EntityId,
-    EntityRole, PointLifetime, Segment, Sketch, SketchCurve, SketchLength, SketchPoint,
-    SketchSolid, ABSENT_DERIVED_POINT,
+    boxed_push, boxed_retain, AngleMeasurement, Arc, ConstraintKind, EntityId, EntityRole,
+    PointLifetime, Segment, Sketch, SketchCurve, SketchLength, SketchPoint, SketchSolid,
 };
 use substrate::curve_intersection::{CurveSupportCrossing, PlanarCurve};
 
@@ -64,7 +63,6 @@ pub enum ExtendRefusal {
     UnknownCurve,
     ClosedCurve,
     NoIntersection,
-    FixedSweep,
     Unrepresentable,
 }
 
@@ -250,20 +248,6 @@ impl SketchSolid {
             .ok_or(ExtendRefusal::UnknownCurve)?;
         if source_curve.is_closed() {
             return Err(ExtendRefusal::ClosedCurve);
-        }
-        if let SketchCurve::Arc(id) = source {
-            let arc = self
-                .sketch
-                .arcs
-                .iter()
-                .find(|arc| arc.id == id)
-                .ok_or(ExtendRefusal::UnknownCurve)?;
-            // Extending an arc necessarily changes its included angle. A measurement-backed
-            // sweep owns that value, so the preview must refuse here instead of promising a
-            // placement the commit would later be unable to persist.
-            if arc.bulge.free_value().is_none() {
-                return Err(ExtendRefusal::FixedSweep);
-            }
         }
         let endpoint = if squared_distance(witness, source_curve.start())
             <= squared_distance(witness, source_curve.end())
@@ -655,18 +639,22 @@ impl Sketch {
             .position(|arc| arc.id == id)
             .ok_or(BreakRefusal::UnknownCurve)?;
         let source = self.arcs[index];
+        if pieces.is_empty() {
+            return Err(BreakRefusal::Unrepresentable);
+        }
         let boundaries = self.open_piece_boundaries(pieces, source.from, source.to, source.role)?;
-        let first_sweep = piece_sweep(pieces.first().ok_or(BreakRefusal::Unrepresentable)?)?;
+        // The pieces are one circle cut up, so they SHARE the center point the whole arc turned
+        // about — nothing to derive, and the drawing shows the one dot it showed before. The cut
+        // points arrive in curve order and a stored arc runs counter-clockwise (ADR 0038), so
+        // consecutive boundaries are already each piece's `from → to`.
         self.arcs[index].to = boundaries[1];
-        self.arcs[index].bulge = ArcSweep::free(first_sweep);
-        for (piece, pair) in pieces[1..].iter().zip(boundaries[1..].array_windows::<2>()) {
+        for pair in boundaries[1..].array_windows::<2>() {
             let id = self.alloc_id();
             self.arcs.push(Arc {
                 id,
                 from: pair[0],
                 to: pair[1],
-                bulge: ArcSweep::free(piece_sweep(piece)?),
-                center: ABSENT_DERIVED_POINT,
+                center: source.center,
                 origin: source.origin,
                 role: source.role,
             });
@@ -685,15 +673,17 @@ impl Sketch {
         for piece in pieces {
             boundaries.push(self.point_for_break(piece.start(), source.role)?);
         }
-        for (piece_index, piece) in pieces.iter().enumerate() {
+        // Every arc the circle breaks into keeps turning about the circle's own center point,
+        // which is what makes them visibly still one circle and keeps them concentric for good
+        // rather than by coincidence.
+        for piece_index in 0..pieces.len() {
             let next_index = piece_index.saturating_add(1) % boundaries.len();
             let id = self.alloc_id();
             self.arcs.push(Arc {
                 id,
                 from: boundaries[piece_index],
                 to: boundaries[next_index],
-                bulge: ArcSweep::free(piece_sweep(piece)?),
-                center: ABSENT_DERIVED_POINT,
+                center: source.center,
                 origin: source.origin,
                 role: source.role,
             });
@@ -753,15 +743,30 @@ impl Sketch {
                     origin,
                     role,
                 }),
-                PlanarCurve::Arc { .. } => self.arcs.push(Arc {
-                    id,
-                    from,
-                    to,
-                    bulge: ArcSweep::free(piece_sweep(piece)?),
-                    center: ABSENT_DERIVED_POINT,
-                    origin,
-                    role,
-                }),
+                PlanarCurve::Arc {
+                    center,
+                    sweep_radians,
+                    ..
+                } => {
+                    let at = SketchPoint::try_from_continuous(center[0], center[1])
+                        .map_err(|_| BreakRefusal::Unrepresentable)?;
+                    let center = self.add_construction_point(at);
+                    // A stored arc runs counter-clockwise (ADR 0038), so a piece that travels the
+                    // other way is the same drawn curve with its ends the other way round.
+                    let (from, to) = if sweep_radians < 0.0 {
+                        (to, from)
+                    } else {
+                        (from, to)
+                    };
+                    self.arcs.push(Arc {
+                        id,
+                        from,
+                        to,
+                        center,
+                        origin,
+                        role,
+                    });
+                }
                 PlanarCurve::RationalBezier(curve) => {
                     let first_handle =
                         SketchPoint::try_from_continuous(curve.control[1][0], curve.control[1][1])
@@ -879,17 +884,14 @@ impl Sketch {
                     ExtendEndpoint::End => segment.to,
                 }
             }
+            // Extending an arc slides the END along the circle its center already names; the
+            // sweep grows because the end moved, not because anything wrote a new one (ADR 0038).
             SketchCurve::Arc(id) => {
-                let sweep =
-                    piece_sweep(&placement.extended).map_err(|_| ExtendRefusal::Unrepresentable)?;
                 let arc = self
                     .arcs
-                    .iter_mut()
+                    .iter()
                     .find(|arc| arc.id == id)
                     .ok_or(ExtendRefusal::UnknownCurve)?;
-                if !arc.replace_free_sweep(sweep) {
-                    return Err(ExtendRefusal::FixedSweep);
-                }
                 match placement.endpoint {
                     ExtendEndpoint::Start => arc.from,
                     ExtendEndpoint::End => arc.to,
@@ -927,7 +929,7 @@ impl Sketch {
             || self
                 .conics
                 .iter()
-                .any(|conic| [conic.from, conic.to, conic.control, conic.shoulder].contains(&point))
+                .any(|conic| [conic.from, conic.to, conic.control].contains(&point))
             || self
                 .splines
                 .iter()

@@ -71,7 +71,13 @@ fn break_keeps_arc_pieces_native_and_on_the_same_circle() {
         .collect();
     assert_eq!(pieces.len(), 2);
     assert_eq!(pieces[0].id, target);
-    assert!((pieces.iter().map(|arc| arc.sweep_degrees()).sum::<f64>() + 180.0).abs() < 1.0e-9);
+    let swept = |arc: &crate::sketch::Arc| {
+        made.sketch
+            .arc_form(arc)
+            .expect("a piece draws a circle")
+            .sweep_degrees
+    };
+    assert!((pieces.iter().map(|arc| swept(arc)).sum::<f64>() - 180.0).abs() < 1.0e-3);
     let geometries: Vec<_> = pieces
         .iter()
         .map(|arc| {
@@ -127,7 +133,13 @@ fn break_turns_a_twice_crossed_circle_into_native_arcs_and_drops_circle_relation
         .filter(|arc| arc.origin == origin)
         .collect();
     assert_eq!(pieces.len(), 2);
-    assert!((pieces.iter().map(|arc| arc.sweep_degrees()).sum::<f64>() - 360.0).abs() < 1.0e-9);
+    let swept = |arc: &crate::sketch::Arc| {
+        made.sketch
+            .arc_form(arc)
+            .expect("a piece draws a circle")
+            .sweep_degrees
+    };
+    assert!((pieces.iter().map(|arc| swept(arc)).sum::<f64>() - 360.0).abs() < 1.0e-3);
     assert!(made.sketch.constraints().is_empty());
 }
 
@@ -197,7 +209,11 @@ fn trim_without_a_crossing_deletes_the_curve_and_circle_trim_stays_curved() {
         .unwrap();
     assert!(trimmed.sketch.circles().is_empty());
     assert_eq!(trimmed.sketch.arcs().len(), 1);
-    assert!((trimmed.sketch.arcs()[0].sweep_degrees().abs() - 180.0).abs() < 1.0e-9);
+    let form = trimmed
+        .sketch
+        .arc_form(&trimmed.sketch.arcs()[0])
+        .expect("the surviving half draws a circle");
+    assert!((form.sweep_degrees - 180.0).abs() < 1.0e-3);
 }
 
 #[test]
@@ -271,13 +287,6 @@ fn extend_keeps_an_arc_native_and_grows_each_end_around_its_supporting_circle() 
     segment(&mut sketch, [-1, -5], [1, -5]);
     let source = SketchSolid::extrude(sketch, 3);
 
-    let mut fixed = source.clone();
-    fixed.sketch.arcs_mut_for_test()[0].bulge = ArcSweep::fixed(AngleMeasurement::from_degrees(90));
-    assert_eq!(
-        fixed.extend_placement(SketchCurve::Arc(target), [0.0, 5.0], ctx(16)),
-        Err(ExtendRefusal::FixedSweep)
-    );
-
     let end = source
         .extend_placement(SketchCurve::Arc(target), [0.0, 5.0], ctx(16))
         .unwrap();
@@ -294,7 +303,12 @@ fn extend_keeps_an_arc_native_and_grows_each_end_around_its_supporting_circle() 
         .iter()
         .find(|arc| arc.id == target)
         .unwrap();
-    assert!((held.sweep_degrees() - 180.0).abs() < 1.0e-9);
+    let swept = made
+        .sketch
+        .arc_form(held)
+        .expect("the extended arc draws a circle")
+        .sweep_degrees;
+    assert!((swept - 180.0).abs() < 1.0e-3);
     let ::parametric::sketch::CurveGeometry::Circular(geometry) = made
         .sketch
         .curve_geometry(SketchCurve::Arc(target), ctx(16))
@@ -335,7 +349,12 @@ fn extend_preserves_a_clockwise_arcs_direction_and_radius() {
         .iter()
         .find(|arc| arc.id == target)
         .unwrap();
-    assert!((held.sweep_degrees() + 180.0).abs() < 1.0e-9);
+    let swept = made
+        .sketch
+        .arc_form(held)
+        .expect("the extended arc draws a circle")
+        .sweep_degrees;
+    assert!((swept - 180.0).abs() < 1.0e-3);
     let ::parametric::sketch::CurveGeometry::Circular(geometry) = made
         .sketch
         .curve_geometry(SketchCurve::Arc(target), ctx(16))

@@ -2002,7 +2002,7 @@ fn slot_spine_handles(
         let standing = sketch
             .points()
             .iter()
-            .find(|point| !sketch.is_derived_point(point.id) && point.at.coincides(&at))
+            .find(|point| !sketch.is_arc_center(point.id) && point.at.coincides(&at))
             .map(|point| point.id);
         // A handle the slot MINTED outlives only the slot: nothing but its coincidence names it,
         // so once the boundary goes the dot has no job and should not be left behind. A handle

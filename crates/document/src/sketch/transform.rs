@@ -7,7 +7,7 @@
 
 use super::{
     boxed_push, Arc, Bezier, Circle, CircleRadius, Conic, Ellipse, EntityId, Point, ResolvedLength,
-    Segment, Sketch, SketchCurve, SketchPoint, SketchSolid, Spline, ABSENT_DERIVED_POINT,
+    Segment, Sketch, SketchCurve, SketchPoint, SketchSolid, Spline,
 };
 use std::collections::{HashMap, HashSet};
 use substrate::curve_intersection::PlanarCurve;
@@ -307,7 +307,9 @@ impl Sketch {
                         .find(|arc| arc.id == id)
                         .ok_or(SketchTransformRefusal::UnknownEntity)?;
                     closure.arcs.insert(id);
-                    closure.points.extend([arc.from, arc.to]);
+                    // The center travels with the arc. It is a placed point (ADR 0038), so a
+                    // transform that left it behind would reshape the arc instead of moving it.
+                    closure.points.extend([arc.from, arc.to, arc.center]);
                 }
                 SketchTransformEntity::Curve(SketchCurve::Circle(id)) => {
                     let circle = self
@@ -461,8 +463,7 @@ impl Sketch {
                 id,
                 from: mapped(&points, source.from)?,
                 to: mapped(&points, source.to)?,
-                bulge: source.bulge,
-                center: ABSENT_DERIVED_POINT,
+                center: mapped(&points, source.center)?,
                 origin: id,
                 role: source.role,
             });
@@ -551,7 +552,6 @@ impl Sketch {
                     from: mapped(points, source.from)?,
                     to: mapped(points, source.to)?,
                     control: mapped(points, source.control)?,
-                    shoulder: ABSENT_DERIVED_POINT,
                     rho: source.rho,
                     origin: id,
                     role: source.role,

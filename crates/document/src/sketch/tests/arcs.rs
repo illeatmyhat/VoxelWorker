@@ -4,9 +4,8 @@
 
 use super::ctx;
 use crate::sketch::{
-    arc_center_radius, arc_interior_points, included_angle_through_degrees, ArcSweep, EntityId,
-    PlaneAxis, Point, PointLifetime, Sketch, SketchPoint, SketchSolid,
-    ARC_SAGITTA_TOLERANCE_VOXELS,
+    arc_center_radius, arc_interior_points, included_angle_through_degrees, EntityId, PlaneAxis,
+    Point, PointLifetime, Sketch, SketchPoint, SketchSolid, ARC_SAGITTA_TOLERANCE_VOXELS,
 };
 use crate::voxel::VoxelProducer;
 use ::parametric::units::AngleMeasurement;
@@ -40,40 +39,6 @@ fn rounded_bottom_solid(height: u32) -> SketchSolid {
         .connect_arc(0, 3, AngleMeasurement::from_degrees(180))
         .expect("a fresh arc over an unjoined pair");
     SketchSolid::extrude(sketch, height)
-}
-
-#[test]
-fn legacy_direct_arc_sweep_fixture_loads_regardless_of_json_field_order() {
-    let fixture = r#"
-        {
-          "plane": "Z",
-          "points": [
-            { "id": 0, "at": { "offset_voxels": [0, 0] } },
-            { "id": 1, "at": { "offset_voxels": [4, 0] } }
-          ],
-          "segments": [],
-          "arcs": [{
-            "id": 2,
-            "from": 0,
-            "to": 1,
-            "bulge": { "degrees_denominator": 1, "degrees_numerator": 90 },
-            "origin": 2
-          }],
-          "circles": [],
-          "unpicked_points": [],
-          "constraints": [],
-          "next_id": 3
-        }
-    "#;
-
-    let sketch: Sketch = serde_json::from_str(fixture).expect("legacy direct arc loads");
-    assert_eq!(
-        sketch.arcs()[0]
-            .bulge
-            .free_value()
-            .map(|value| value.degrees().to_f64()),
-        Some(90.0)
-    );
 }
 
 #[test]
@@ -344,19 +309,20 @@ fn delete_cascades_and_repair_cover_arcs() {
     assert!(sketch.arcs().is_empty(), "the incident arc went with it");
     assert_eq!(sketch.points().len(), 1);
 
-    // Repair erases a dangling arc, a self-loop, and a degenerate bulge — and counts them.
+    // Repair erases a dangling arc, a self-loop, and one whose center is not a point in the
+    // store — three arcs that name no circle — and counts them.
     let mut broken = Sketch::new(PlaneAxis::Z, vec![]);
     let p = broken.add_free_point(SketchPoint::new(0, 0));
     let q = broken.add_free_point(SketchPoint::new(4, 0));
     let good = broken
         .connect_arc(p, q, AngleMeasurement::from_degrees(45))
         .expect("fresh arc");
+    let seat = broken.add_free_point(SketchPoint::new(2, 2));
     broken.arcs_mut_for_test().push(crate::sketch::Arc {
         id: 90,
         from: p,
         to: 77, // dangling
-        bulge: ArcSweep::free(AngleMeasurement::from_degrees(90)),
-        center: crate::sketch::ABSENT_DERIVED_POINT,
+        center: seat,
         origin: 90,
         role: crate::sketch::EntityRole::Real,
     });
@@ -364,8 +330,7 @@ fn delete_cascades_and_repair_cover_arcs() {
         id: 91,
         from: p,
         to: p, // self-loop
-        bulge: ArcSweep::free(AngleMeasurement::from_degrees(90)),
-        center: crate::sketch::ABSENT_DERIVED_POINT,
+        center: seat,
         origin: 91,
         role: crate::sketch::EntityRole::Real,
     });
@@ -373,8 +338,7 @@ fn delete_cascades_and_repair_cover_arcs() {
         id: 92,
         from: q,
         to: p,
-        bulge: ArcSweep::free(AngleMeasurement::from_degrees(0)), // degenerate bulge
-        center: crate::sketch::ABSENT_DERIVED_POINT,
+        center: 78, // dangling center
         origin: 92,
         role: crate::sketch::EntityRole::Real,
     });
@@ -494,39 +458,14 @@ fn dragging_a_center_changes_the_radius_and_nothing_else() {
     assert_near(position(from), [0.0, 0.0]);
     assert_near(position(to), [4.0, 0.0]);
     assert_near(center_of(&sketch, arc).at.in_plane(), [2.0, 2.0]);
+    let sweep = sketch
+        .arc_form_of(arc)
+        .expect("three points that draw an arc")
+        .sweep_degrees;
     assert!(
-        (sketch.arcs()[0].bulge.to_degrees_f64() - 90.0).abs() < 1.0e-3,
-        "the sweep follows the center: {:?}",
-        sketch.arcs()[0].bulge
+        (sweep - 90.0).abs() < 1.0e-3,
+        "the sweep follows the center: {sweep}"
     );
-}
-
-#[test]
-fn center_resweep_keeps_the_solver_value_without_angle_quantization() {
-    let (mut sketch, _from, _to, arc) = half_turn();
-    let center = center_of(&sketch, arc).id;
-    let requested = SketchPoint::from_continuous(2.0, 1.234_567_8);
-    let target = requested.in_plane();
-    let expected = 2.0 * 2.0f64.atan2(target[1]).to_degrees();
-
-    assert!(sketch
-        .move_point(center, requested, ctx(16))
-        .expect("evaluation context"));
-    assert_eq!(
-        sketch.arcs()[0].bulge.to_degrees_f64().to_bits(),
-        expected.to_bits(),
-        "the persisted exact ratio must evaluate to the solved f64, not a nearby arc-second"
-    );
-}
-
-#[test]
-fn an_unrepresentable_center_resweep_leaves_the_existing_arc_unchanged() {
-    let (mut sketch, _from, _to, _arc) = half_turn();
-    let before = sketch.arcs()[0].bulge;
-
-    sketch.resweep_arc_to_center(0, [2.0, 2f64.powi(128)]);
-
-    assert_eq!(sketch.arcs()[0].bulge, before);
 }
 
 /// A center has ONE degree of freedom — the chord's perpendicular bisector. A drag with a
@@ -552,7 +491,10 @@ fn a_center_dragged_into_the_bulge_makes_the_major_arc() {
     assert!(sketch
         .move_point(center, SketchPoint::new(2, -2), ctx(16))
         .expect("evaluation context"));
-    let sweep = sketch.arcs()[0].bulge.to_degrees_f64();
+    let sweep = sketch
+        .arc_form_of(arc)
+        .expect("three points that draw an arc")
+        .sweep_degrees;
     assert!(
         (sweep - 270.0).abs() < 1.0e-3,
         "apothem -2 with half-chord 2 is the 270 major arc, still positive: {sweep}"
@@ -560,10 +502,12 @@ fn a_center_dragged_into_the_bulge_makes_the_major_arc() {
     assert_near(center_of(&sketch, arc).at.in_plane(), [2.0, -2.0]);
 }
 
+/// The center is authored, but its ONE freedom is how far out along the chord's bisector it
+/// stands — so when an end moves, the seat moves with the bisector rather than staying put and
+/// leaving the dot off the curve.
 #[test]
-fn a_center_re_derives_when_an_endpoint_moves() {
+fn a_center_re_seats_when_an_endpoint_moves() {
     let (mut sketch, _from, to, arc) = half_turn();
-    // Halving the chord halves the radius, so the center slides to the new midpoint.
     assert!(sketch
         .move_point(to, SketchPoint::new(2, 0), ctx(16))
         .expect("evaluation context"));
@@ -598,38 +542,6 @@ fn a_center_lives_and_dies_with_its_arc() {
     kept.connect(from, center).expect("a radius line");
     kept.delete_arc(arc);
     assert!(kept.points().iter().any(|point| point.id == center));
-}
-
-#[test]
-fn a_pre_center_document_gains_its_centers_on_load() {
-    let (sketch, _from, _to, arc) = half_turn();
-    let mut value = serde_json::to_value(&sketch).expect("a sketch serializes");
-    // Strip every `center` the way a document written before centers existed would have.
-    for stored in value["arcs"]
-        .as_array_mut()
-        .expect("the arcs are an array")
-        .iter_mut()
-    {
-        stored
-            .as_object_mut()
-            .expect("an arc is a JSON object")
-            .remove("center")
-            .expect("the key was present");
-    }
-    // ... and drop the orphaned center point too, so the store is exactly the old shape.
-    value["points"]
-        .as_array_mut()
-        .expect("the points are an array")
-        .retain(|point| point["role"] != "Construction");
-
-    let mut loaded: Sketch = serde_json::from_value(value).expect("a pre-center document loads");
-    assert_eq!(loaded.arcs()[0].center, crate::sketch::ABSENT_DERIVED_POINT);
-    assert_eq!(
-        loaded.repair(ctx(16)),
-        0,
-        "nothing was structurally invalid"
-    );
-    assert_near(center_of(&loaded, arc).at.in_plane(), [2.0, 0.0]);
 }
 
 /// A face bounded by an arc keeps the ARC. Its boundary is two straight sides, one more, and the

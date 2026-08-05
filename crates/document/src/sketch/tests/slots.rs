@@ -304,7 +304,7 @@ fn handle_at(made: &SketchSolid, at: SketchPoint) -> EntityId {
     made.sketch
         .points()
         .iter()
-        .find(|point| !made.sketch.is_derived_point(point.id) && point.at.coincides(&at))
+        .find(|point| !made.sketch.is_arc_center(point.id) && point.at.coincides(&at))
         .map(|point| point.id)
         .expect("the slot reifies its spine as draggable handles")
 }
@@ -709,7 +709,7 @@ fn an_overall_slots_extremes_go_quiet_and_its_cap_centers_do_not() {
             let [x, y] = point.at.in_plane();
             y.abs() < 1.0e-6 && ((x - 4.0).abs() < 1.0e-6 || (x - 16.0).abs() < 1.0e-6)
         })
-        .filter(|point| !sketch.is_derived_point(point.id))
+        .filter(|point| !sketch.is_arc_center(point.id))
         .map(|point| point.id)
         .collect();
 
@@ -765,7 +765,12 @@ fn a_straight_slots_caps_bulge_outward_whichever_side_the_width_was_picked() {
             .map(|arc| {
                 let center = at(arc.center);
                 let from = at(arc.from);
-                let half = arc.sweep_degrees().to_radians() / 2.0;
+                let half = sketch
+                    .arc_form(arc)
+                    .expect("a cap draws a circle")
+                    .sweep_degrees
+                    .to_radians()
+                    / 2.0;
                 let (dx, dy) = (from[0] - center[0], from[1] - center[1]);
                 dx.mul_add(half.cos(), -(dy * half.sin())) + center[0]
             })
@@ -987,7 +992,7 @@ fn an_arc_slot_draws_one_dot_at_its_middle_and_it_is_the_draggable_one() {
         );
         for point in drawn {
             assert!(
-                !made.sketch.is_derived_point(point.id),
+                !made.sketch.is_arc_center(point.id),
                 "{grammar} kept the dot the author cannot drag"
             );
         }
@@ -1081,7 +1086,7 @@ fn resizing_an_arc_slot_keeps_its_three_arcs_on_one_center() {
         shared
             .iter()
             .filter(|arc| arc.role == wanted)
-            .map(|arc| arc.sweep_degrees().abs())
+            .filter_map(|arc| Some(made.sketch.arc_form(arc)?.sweep_degrees))
             .fold(0.0_f64, f64::max)
     };
     let (rails, spine) = (sweep(EntityRole::Real), sweep(EntityRole::Construction));
@@ -1106,7 +1111,10 @@ fn dragging_an_arc_slots_rail_spends_its_radius_about_a_center_that_holds() {
         .iter()
         .find(|arc| {
             arc.role != EntityRole::Construction
-                && arc.sweep_degrees().abs() < 170.0
+                && made
+                    .sketch
+                    .arc_form(arc)
+                    .is_some_and(|form| form.sweep_degrees < 170.0)
                 && made
                     .sketch
                     .point_in_plane(arc.from)

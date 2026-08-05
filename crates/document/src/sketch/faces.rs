@@ -314,21 +314,16 @@ fn drawn_curves(
         ));
     }
     for arc in sketch.arcs.iter().filter(|a| a.role == EntityRole::Real) {
-        let (Some(from), Some(to)) = (position(arc.from), position(arc.to)) else {
-            continue;
-        };
-        // The bulge solve already lives in `ProfileEdge`; read the circle back off it rather than
-        // keeping a second copy of that trigonometry here.
-        let Some(solved) = ProfileEdge::curved(from, to, arc.sweep_degrees()).arc else {
+        let Some(form) = sketch.arc_form(arc) else {
             continue;
         };
         curves.push((
             arc.origin,
             PlanarCurve::Arc {
-                center: solved.center,
-                radius: solved.radius,
-                start_radians: solved.start_radians,
-                sweep_radians: solved.sweep_radians,
+                center: form.center,
+                radius: form.radius,
+                start_radians: (form.from[1] - form.center[1]).atan2(form.from[0] - form.center[0]),
+                sweep_radians: form.sweep_degrees.to_radians(),
             },
         ));
     }

@@ -189,19 +189,22 @@ pub(super) fn residuals(
             }),
             SymmetryBranch::Direct | SymmetryBranch::Reversed,
         ) => {
+            // A reflection reverses the sense of travel, and a stored arc has only one sense:
+            // counter-clockwise from its tail to its head (ADR 0038). So an arc's mirror is
+            // ALWAYS the reversed correspondence — the first arc's tail reflects onto the
+            // second's head — and the branch, which is only ever a statement about which end
+            // answers which, has nothing left to say for this pair. The two turns are equal
+            // because a mirror preserves how FAR a curve turns; the direction it reverses is
+            // already carried by the swapped ends.
             endpoint_rows(
                 (first.from, first.to),
                 (second.from, second.to),
-                branch == SymmetryBranch::Reversed,
+                true,
                 origin,
                 along,
                 &mut result.rows,
             );
-            result.rows[4] = if branch == SymmetryBranch::Direct {
-                first.sweep_radians + second.sweep_radians
-            } else {
-                first.sweep_radians - second.sweep_radians
-            };
+            result.rows[4] = first.sweep_radians - second.sweep_radians;
         }
         (
             CurveGeometry::Circular(CircularCurve {
@@ -241,11 +244,21 @@ pub fn choose_symmetry_branch(
         return Err(SymmetryError::NonFinite);
     }
     match (first, second) {
-        (CurveGeometry::Segment { .. }, CurveGeometry::Segment { .. })
-        | (
+        // An arc has one sense of travel and a mirror reverses it (ADR 0038), so there is no
+        // correspondence to pick: the answer is the mirrored one, always. Comparing the two
+        // branches here would be comparing a value against itself, since the arc arm of
+        // `residuals` no longer reads the branch at all.
+        (
             CurveGeometry::Circular(CircularCurve { arc: Some(_), .. }),
             CurveGeometry::Circular(CircularCurve { arc: Some(_), .. }),
         ) => {
+            let mirrored = residuals(first, second, axis, SymmetryBranch::Reversed);
+            if !mirrored.squared_norm().is_finite() {
+                return Err(SymmetryError::NonFinite);
+            }
+            Ok(SymmetryBranch::Reversed)
+        }
+        (CurveGeometry::Segment { .. }, CurveGeometry::Segment { .. }) => {
             let direct = residuals(first, second, axis, SymmetryBranch::Direct);
             let reversed = residuals(first, second, axis, SymmetryBranch::Reversed);
             let direct_norm = direct.squared_norm();
@@ -369,8 +382,11 @@ mod tests {
         );
     }
 
+    /// An arc pair has no branch to choose. A mirror reverses the sense of travel and a stored arc
+    /// only ever runs counter-clockwise (ADR 0038), so the tail of one always answers the head of
+    /// the other, and asking for `Direct` cannot make it otherwise.
     #[test]
-    fn arc_sweep_sign_participates_in_branch_choice() {
+    fn an_arc_pair_always_mirrors_end_for_end() {
         let arc = |from, to, sweep| {
             CurveGeometry::Circular(CircularCurve {
                 center: [0.0, 0.0],
@@ -397,8 +413,12 @@ mod tests {
             5
         );
         assert!(residuals(first, second, axis, SymmetryBranch::Reversed).satisfied());
-        let direct_second = arc([1.0, 0.0], [1.0, 1.0], -1.0);
-        assert!(residuals(first, direct_second, axis, SymmetryBranch::Direct).satisfied());
+        // The stored branch is not read for arcs, so the same pair reads the same either way.
+        assert!(residuals(first, second, axis, SymmetryBranch::Direct).satisfied());
+        // Ends in the OTHER correspondence are not symmetric at all, whatever branch is named.
+        let end_for_end = arc([1.0, 0.0], [1.0, 1.0], 1.0);
+        assert!(!residuals(first, end_for_end, axis, SymmetryBranch::Direct).satisfied());
+        assert!(!residuals(first, end_for_end, axis, SymmetryBranch::Reversed).satisfied());
     }
 
     #[test]

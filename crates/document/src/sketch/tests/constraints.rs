@@ -985,12 +985,10 @@ fn a_point_lands_on_the_circle_an_arc_is_cut_from() {
         .expect("a free point can always reach a circle");
 
     let here = position(&sketch, point);
-    let (center, radius) = arc_center_radius(
-        position(&sketch, from),
-        position(&sketch, to),
-        sketch.arcs()[0].sweep_degrees(),
-    )
-    .expect("the arc still has a center");
+    let form = sketch
+        .arc_form_of(arc)
+        .expect("the arc still draws a circle");
+    let (center, radius) = (form.center, form.radius);
     assert!(
         ((here[0] - center[0]).hypot(here[1] - center[1]) - radius).abs() < 1e-6,
         "off the circle: {here:?} against {center:?} r{radius}"
@@ -1160,10 +1158,10 @@ fn arc_with_center() -> (Sketch, EntityId, EntityId, EntityId, EntityId) {
     (sketch, tail, head, center, loose)
 }
 
-/// **A constraint on an arc's center is met by moving the ARC.** The center is not a coordinate the
-/// solver may choose — it is what the ends and the sweep make it — so the correction lands on the
-/// ends and the center follows. A correction written into the center's own slot instead would do
-/// nothing visible: `sync_derived_points` overwrites that slot on the next edit.
+/// **A constraint on an arc's center still moves the ARC.** The center is a placed point now
+/// (ADR 0038) and the solver may choose its coordinates outright — but it cannot choose them
+/// alone, because the arc's own row says the center stands the same distance from both ends. So a
+/// center pinned somewhere new drags the ends after it.
 ///
 /// The loose point is `Fix`ed so that it is the reference piece and the arc is what travels. Left
 /// free, the three-point arc outweighs it under the parametric anchoring policy and the point comes
@@ -1171,7 +1169,7 @@ fn arc_with_center() -> (Sketch, EntityId, EntityId, EntityId, EntityId) {
 #[test]
 fn a_constraint_on_an_arcs_center_moves_the_arc() {
     let (mut sketch, tail, head, center, loose) = arc_with_center();
-    assert!(sketch.is_derived_point(center));
+    assert!(sketch.is_arc_center(center));
     let (before_tail, before_head) = (position(&sketch, tail), position(&sketch, head));
     sketch
         .add_constraint(
@@ -1201,17 +1199,16 @@ fn a_constraint_on_an_arcs_center_moves_the_arc() {
     let moved = position(&sketch, tail) != before_tail || position(&sketch, head) != before_head;
     assert!(moved, "the ends took the correction, not the center's slot");
 
-    // And the stored center still agrees with the arc it belongs to — the write-back re-derives it,
-    // so a later `sync_derived_points` is a no-op rather than an eraser.
-    // Not exact: a `SketchPoint` stores an integer voxel plus an f32 fraction, so re-deriving from
-    // the ROUND-TRIPPED endpoints lands a storage epsilon away. The claim is that the sync leaves
-    // it where the solve put it, not that the two arithmetics agree bit for bit.
+    // And the stored center still agrees with the arc it belongs to: the solve satisfied the
+    // equal-radius row, so seating it onto the chord's bisector afterwards has nothing to move.
+    // Not exact: a `SketchPoint` stores an integer voxel plus an f32 fraction, so the seat computed
+    // from the ROUND-TRIPPED endpoints lands a storage epsilon away.
     let settled = position(&sketch, center);
     sketch.sync_derived_points();
     let after_sync = position(&sketch, center);
     assert!(
         (settled[0] - after_sync[0]).abs() < 1e-5 && (settled[1] - after_sync[1]).abs() < 1e-5,
-        "re-deriving does not move it: {settled:?} vs {after_sync:?}"
+        "seating does not move it: {settled:?} vs {after_sync:?}"
     );
 }
 
@@ -1873,9 +1870,9 @@ fn loaded_off_domain_tangent_keeps_solve_and_drag_atomic() {
 }
 
 #[test]
-/// Resweeping an unconstrained arc is the center drag's one permitted write: its endpoints and
-/// unrelated circles are not numerical side effects of changing the authored sweep.
-fn valid_arc_center_resweep_changes_only_the_free_sweep() {
+/// Dragging an unconstrained arc's center moves that one point: the turn between the three points
+/// changes because the center did, and endpoints and unrelated circles are untouched.
+fn dragging_an_arc_center_moves_only_that_point() {
     let (mut sketch, tail, head, center, _) = arc_with_center();
     sketch
         .add_circle(SketchPoint::new(50, 20), SketchLength::new(7))
@@ -1893,12 +1890,22 @@ fn valid_arc_center_resweep_changes_only_the_free_sweep() {
         .copied()
         .expect("head");
     let before_circles = sketch.circles().to_vec();
-    let before_sweep = sketch.arcs()[0].bulge;
+    let arc = sketch.arcs()[0].id;
+    let sweep_of = |sketch: &Sketch| {
+        sketch
+            .arc_form_of(arc)
+            .expect("the arc draws a circle")
+            .sweep_degrees
+    };
+    let before_sweep = sweep_of(&sketch);
 
     assert!(sketch
         .move_point(center, SketchPoint::new(10, 20), ctx(16))
-        .expect("valid resweep"));
-    assert_ne!(sketch.arcs()[0].bulge, before_sweep, "sweep changed");
+        .expect("a center is an ordinary point to drag"));
+    assert!(
+        (sweep_of(&sketch) - before_sweep).abs() > 1.0e-6,
+        "the sweep followed the center"
+    );
     assert_eq!(
         sketch.points().iter().find(|point| point.id == tail),
         Some(&before_tail),
@@ -1917,9 +1924,10 @@ fn valid_arc_center_resweep_changes_only_the_free_sweep() {
 }
 
 #[test]
-/// An arc-center resweep cannot use NLLS to repair a standing Tangent. If the new authored sweep
-/// no longer touches its segment, every persisted field returns to the pre-drag snapshot.
-fn invalid_arc_center_resweep_with_tangent_rolls_back_exactly() {
+/// A center under a standing Tangent is dragged, not refused. The old model could only rewrite the
+/// arc's sweep and had to give up when no sweep satisfied the relation; a placed center pins where
+/// the cursor left it and the settle moves the rest of the drawing to keep the tangency (ADR 0038).
+fn an_arc_center_drag_under_a_tangent_settles_the_drawing() {
     let (mut sketch, tail, _head, center, _) = arc_with_center();
     let line_from = sketch.add_free_point(SketchPoint::new(-10, 10));
     let line = sketch
@@ -1936,13 +1944,34 @@ fn invalid_arc_center_resweep_with_tangent_rolls_back_exactly() {
             ctx(16),
         )
         .expect("arc endpoint is tangent to the line");
-    let before = serde_json::to_value(&sketch).expect("snapshot");
 
-    assert!(matches!(
+    assert_eq!(
         sketch.move_point(center, SketchPoint::new(10, 20), ctx(16)),
-        Err(SketchEvaluationError::InvalidTangent { constraint, .. }) if constraint == tangent
-    ));
-    assert_eq!(serde_json::to_value(&sketch).expect("after drag"), before);
+        Ok(true)
+    );
+    assert!(
+        sketch.arc_form_of(arc).is_some(),
+        "the settled arc still draws a circle"
+    );
+    let ConstraintKind::Tangent {
+        first,
+        second,
+        branch,
+    } = sketch
+        .constraints()
+        .iter()
+        .find(|constraint| constraint.id == tangent)
+        .expect("the tangent survives the drag")
+        .kind
+    else {
+        panic!("tangent kind")
+    };
+    assert!(
+        sketch
+            .tangent_contact(first, second, branch, ctx(16))
+            .is_ok(),
+        "the two curves still touch"
+    );
 }
 
 #[test]
@@ -1950,7 +1979,6 @@ fn invalid_arc_center_resweep_with_tangent_rolls_back_exactly() {
 /// relation nor a later ordinary solve may turn them into free solved values.
 fn add_and_solve_preserve_fixed_arc_and_circle_authority_byte_exactly() {
     let (mut sketch, tail, _head, _center, _) = arc_with_center();
-    sketch.arcs_mut_for_test()[0].bulge = ArcSweep::fixed(AngleMeasurement::from_degrees(90));
     sketch
         .add_circle(SketchPoint::new(50, 20), SketchLength::new(7))
         .expect("circle");
@@ -1990,14 +2018,23 @@ fn add_and_solve_preserve_fixed_arc_and_circle_authority_byte_exactly() {
 }
 
 #[test]
-/// The center-drag transaction includes preparation itself. A malformed unrelated entity can make
-/// preparation fail only after the sweep has been tentatively changed; that error must still put
-/// the authored arc back exactly where it started.
-fn arc_center_prepare_error_restores_the_tentative_resweep() {
+/// The drag transaction includes preparation itself. A malformed entity the drag can reach makes
+/// preparation fail only after the dragged point has tentatively taken the cursor's position; that
+/// error must still put the drawing back exactly where it started.
+fn arc_center_prepare_error_restores_the_drag_exactly() {
     let (mut source, _tail, _head, center, _) = arc_with_center();
-    source
+    // A drag prepares only what it can reach, so the malformed circle has to be tied to the arc —
+    // an unrelated one is skipped, and skipping it is the point of scoping the solve.
+    let arc = source.arcs()[0].id;
+    let circle = source
         .add_circle(SketchPoint::new(50, 20), SketchLength::new(7))
         .expect("circle to corrupt in raw payload");
+    source
+        .add_constraint(
+            ConstraintKind::concentric(SketchCurve::Arc(arc), SketchCurve::Circle(circle)),
+            ctx(16),
+        )
+        .expect("concentric");
     let mut raw = serde_json::to_value(&source).expect("serialize source");
     raw["circles"][0]["center"] = serde_json::json!(EntityId::MAX);
     let mut loaded: Sketch = serde_json::from_value(raw).expect("structural load");
@@ -2098,36 +2135,10 @@ fn tangent_changes_a_free_circle_radius_when_centers_and_line_are_fixed() {
     assert!((radius.free_value().expect("free").value() - 6.0).abs() < 1e-5);
 }
 
+/// With both ends and the line `Fix`ed, the arc has ONE freedom left — where its center stands
+/// along the chord's bisector — and tangency is met by spending it (ADR 0038).
 #[test]
-fn tangent_keeps_a_fixed_arc_sweep_byte_exactly() {
-    let (mut sketch, tail, _head, _center, _) = arc_with_center();
-    let line_from = sketch.add_free_point(SketchPoint::new(-10, 10));
-    let line = sketch
-        .connect(line_from, tail)
-        .expect("endpoint tangent segment");
-    let arc = sketch.arcs()[0].id;
-    sketch.arcs_mut_for_test()[0].bulge = ArcSweep::fixed(AngleMeasurement::from_degrees(90));
-    let source = sketch.arcs()[0];
-
-    sketch
-        .add_constraint(
-            ConstraintKind::tangent(
-                SketchCurve::Arc(arc),
-                SketchCurve::Segment(line),
-                TangentBranch::Line(LineSide::Left),
-            ),
-            ctx(16),
-        )
-        .expect("fixed-sweep tangent");
-    assert_eq!(
-        sketch.arcs()[0],
-        source,
-        "fixed sweep source remains byte-exact"
-    );
-}
-
-#[test]
-fn tangent_changes_a_free_arc_sweep_when_endpoints_and_line_are_fixed() {
+fn tangent_moves_an_arc_center_when_its_ends_and_the_line_are_fixed() {
     let mut sketch = Sketch::empty(PlaneAxis::Z);
     let tail = sketch.add_free_point(SketchPoint::new(0, 0));
     let head = sketch.add_free_point(SketchPoint::new(10, 0));
@@ -2152,7 +2163,13 @@ fn tangent_changes_a_free_arc_sweep_when_endpoints_and_line_are_fixed() {
             )
             .expect("fix authored geometry");
     }
-    let before = sketch.arcs()[0].bulge;
+    let sweep_of = |sketch: &Sketch| {
+        sketch
+            .arc_form_of(arc)
+            .expect("the arc draws a circle")
+            .sweep_degrees
+    };
+    let before = sweep_of(&sketch);
 
     sketch
         .add_constraint(
@@ -2163,11 +2180,10 @@ fn tangent_changes_a_free_arc_sweep_when_endpoints_and_line_are_fixed() {
             ),
             ctx(16),
         )
-        .expect("free sweep can satisfy endpoint tangent");
-    let sweep = sketch.arcs()[0].bulge;
-    assert!(sweep.free_value().is_some(), "still free");
-    assert_ne!(sweep, before, "Tangent wrote the free sweep");
-    assert!((sweep.to_degrees_f64() - 90.0).abs() < 1e-5, "{sweep:?}");
+        .expect("a free center can satisfy endpoint tangent");
+    let sweep = sweep_of(&sketch);
+    assert!((sweep - before).abs() > 1e-6, "Tangent moved the center");
+    assert!((sweep - 90.0).abs() < 1e-5, "{sweep:?}");
 }
 
 #[test]
@@ -2842,12 +2858,15 @@ fn circle_symmetry_reads_fixed_radius_authority_at_each_density() {
     );
 }
 
+/// Two arcs held symmetric agree about how far they turn — and an arc has no scalar to be told
+/// that with, so the free one gets there by MOVING (ADR 0038).
+///
+/// Both branches are asked because a reflection reverses the sense of travel and a stored arc has
+/// only one sense, so the branch has nothing left to choose between for a pair of arcs. The two
+/// answers must therefore be the same answer.
 #[test]
-fn arc_symmetry_reads_fixed_sweep_authority_for_direct_and_reversed_branches() {
-    for (branch, second_ends, fixed_degrees) in [
-        (SymmetryBranch::Direct, ([8, 0], [2, 0]), -120),
-        (SymmetryBranch::Reversed, ([2, 0], [8, 0]), 120),
-    ] {
+fn arc_symmetry_moves_the_free_arc_to_match_its_pinned_partner() {
+    for branch in [SymmetryBranch::Direct, SymmetryBranch::Reversed] {
         let mut sketch = Sketch::empty(PlaneAxis::Z);
         let (_, _, axis) = add_test_segment(&mut sketch, [0, -20], [0, 20]);
         let first_from = sketch.add_free_point(SketchPoint::new(-8, 0));
@@ -2855,19 +2874,24 @@ fn arc_symmetry_reads_fixed_sweep_authority_for_direct_and_reversed_branches() {
         let first = sketch
             .connect_arc(first_from, first_to, AngleMeasurement::from_degrees(90))
             .expect("free arc");
-        let second_from =
-            sketch.add_free_point(SketchPoint::new(second_ends.0[0], second_ends.0[1]));
-        let second_to = sketch.add_free_point(SketchPoint::new(second_ends.1[0], second_ends.1[1]));
+        let second_from = sketch.add_free_point(SketchPoint::new(2, 0));
+        let second_to = sketch.add_free_point(SketchPoint::new(8, 0));
         let second = sketch
-            .connect_arc(
-                second_from,
-                second_to,
-                AngleMeasurement::from_degrees(fixed_degrees),
-            )
-            .expect("fixed arc");
-        sketch.arcs_mut_for_test()[1].bulge =
-            ArcSweep::fixed(AngleMeasurement::from_degrees(fixed_degrees));
-        let fixed_bits = serde_json::to_vec(&sketch.arcs()[1].bulge).expect("fixed sweep");
+            .connect_arc(second_from, second_to, AngleMeasurement::from_degrees(120))
+            .expect("the partner arc");
+        let pinned = sketch.arcs()[1];
+        for point in [pinned.from, pinned.to, pinned.center] {
+            let at = position(&sketch, point);
+            sketch
+                .add_constraint(
+                    ConstraintKind::Fix {
+                        point,
+                        at: SketchPoint::from_continuous(at[0], at[1]),
+                    },
+                    ctx(16),
+                )
+                .expect("pin the partner");
+        }
         sketch
             .add_constraint(
                 ConstraintKind::symmetry(
@@ -2878,20 +2902,15 @@ fn arc_symmetry_reads_fixed_sweep_authority_for_direct_and_reversed_branches() {
                 ),
                 ctx(16),
             )
-            .expect("free sweep follows fixed authority");
-        assert!((sketch.arcs()[0].sweep_degrees() - 120.0).abs() < 1.0e-6);
-        assert_eq!(
-            serde_json::to_vec(&sketch.arcs()[1].bulge).expect("fixed sweep"),
-            fixed_bits
-        );
-        sketch
-            .solve(ctx(32))
-            .expect("density-independent angle source");
-        assert!((sketch.arcs()[0].sweep_degrees() - 120.0).abs() < 1.0e-6);
-        assert_eq!(
-            serde_json::to_vec(&sketch.arcs()[1].bulge).expect("fixed sweep"),
-            fixed_bits
-        );
+            .expect("the free arc follows its pinned partner");
+        let sweep = |id| {
+            sketch
+                .arc_form_of(id)
+                .expect("the arc draws a circle")
+                .sweep_degrees
+        };
+        assert!((sweep(first) - 120.0).abs() < 1.0e-3, "{}", sweep(first));
+        assert!((sweep(second) - 120.0).abs() < 1.0e-3, "{}", sweep(second));
     }
 }
 
@@ -3012,11 +3031,15 @@ fn loaded_conflicting_symmetry_keeps_solve_and_drag_byte_atomic_with_sorted_blam
 }
 
 #[test]
-fn repair_refreshes_a_derived_arc_center_before_validating_a_symmetry_axis() {
+/// Repair seats an arc center before it judges anything that reads the center. The stored dot has
+/// drifted along the chord — the one direction that names no different circle (ADR 0038) — onto the
+/// other end of a symmetry axis, and an axis with both ends in one place would be erased along with
+/// the relation standing on it. Seating first is the difference between a nudge and a deletion.
+fn repair_seats_an_arc_center_before_validating_a_symmetry_axis() {
     let mut sketch = Sketch::empty(PlaneAxis::Z);
     add_test_arc(&mut sketch, [0, 0]);
     let center = sketch.arcs()[0].center;
-    let axis_to = sketch.add_free_point(SketchPoint::new(0, 10));
+    let axis_to = sketch.add_free_point(SketchPoint::new(7, 10));
     let axis = sketch.connect(center, axis_to).expect("center-based axis");
     let (_, _, first) = add_test_segment(&mut sketch, [-4, 2], [-4, 5]);
     let (_, _, second) = add_test_segment(&mut sketch, [4, 2], [4, 5]);
@@ -3035,14 +3058,15 @@ fn repair_refreshes_a_derived_arc_center_before_validating_a_symmetry_axis() {
         .points
         .iter_mut()
         .find(|point| point.id == center)
-        .expect("derived center")
-        .at = SketchPoint::new(0, 10);
-    let raw = serde_json::to_vec(&sketch).expect("stale derived cache");
+        .expect("the arc center")
+        .at = SketchPoint::new(7, 10);
+    let raw = serde_json::to_vec(&sketch).expect("a center adrift along its chord");
     let mut loaded: Sketch = serde_json::from_slice(&raw).expect("structural load");
     assert_eq!(loaded.repair(ctx(16)), 0);
     assert_eq!(loaded.constraints().len(), 1);
     let center = position(&loaded, center);
-    assert!(center[0].hypot(center[1]) < 1.0e-12);
+    assert!(center[0].abs() < 1.0e-12, "seated back onto the bisector");
+    assert!((center[1] - 10.0).abs() < 1.0e-12, "and no further");
 }
 
 #[test]
@@ -3080,8 +3104,11 @@ fn concentric_keeps_unequal_radius_authorities_exact_across_density() {
     assert_eq!(sketch.circles()[1].resolved_radius(ctx(32)), 32.0);
 }
 
+/// With its two ends `Fix`ed, an arc held concentric with a fixed-center circle has exactly one
+/// place left to put its center — and getting there is the whole of what concentric means to an
+/// arc now (ADR 0038).
 #[test]
-fn concentric_reads_and_writes_arc_sweep_authority() {
+fn concentric_places_an_arcs_center_on_the_circles() {
     let mut sketch = Sketch::empty(PlaneAxis::Z);
     let from = sketch.add_free_point(SketchPoint::new(0, 0));
     let to = sketch.add_free_point(SketchPoint::new(10, 0));
@@ -3112,25 +3139,22 @@ fn concentric_reads_and_writes_arc_sweep_authority() {
             ConstraintKind::concentric(SketchCurve::Arc(arc), SketchCurve::Circle(circle)),
             ctx(16),
         )
-        .expect("free sweep can place its derived center");
-    let solved = sketch.arcs()[0]
-        .bulge
-        .free_value()
-        .expect("free sweep")
-        .to_degrees_f64();
-    assert!((solved - 180.0).abs() < 1e-4, "solved sweep was {solved}");
+        .expect("a free center can be brought onto the circle's");
+    let solved = sketch
+        .arc_form_of(arc)
+        .expect("the arc draws a circle")
+        .sweep_degrees;
+    assert!((solved - 180.0).abs() < 1e-3, "solved sweep was {solved}");
 }
 
 #[test]
-fn concentric_preserves_a_fixed_arc_sweep() {
+fn concentric_leaves_an_already_concentric_arc_alone() {
     let mut sketch = Sketch::empty(PlaneAxis::Z);
     let from = sketch.add_free_point(SketchPoint::new(0, 0));
     let to = sketch.add_free_point(SketchPoint::new(10, 0));
     let arc = sketch
         .connect_arc(from, to, AngleMeasurement::from_degrees(90))
         .expect("arc");
-    sketch.arcs_mut_for_test()[0].bulge = ArcSweep::fixed(AngleMeasurement::from_degrees(90));
-    sketch.sync_derived_points();
     let center = sketch
         .circular_curve_center(SketchCurve::Arc(arc))
         .expect("derived center");
@@ -3140,7 +3164,10 @@ fn concentric_preserves_a_fixed_arc_sweep() {
             SketchLength::new(6),
         )
         .expect("circle");
-    let before = sketch.arcs()[0].bulge;
+    let before = sketch
+        .arc_form_of(arc)
+        .expect("the arc draws a circle")
+        .sweep_degrees;
     sketch
         .add_constraint(
             ConstraintKind::concentric(SketchCurve::Arc(arc), SketchCurve::Circle(circle)),
@@ -3148,7 +3175,11 @@ fn concentric_preserves_a_fixed_arc_sweep() {
         )
         .expect("already concentric");
     sketch.solve(ctx(32)).expect("solve");
-    assert_eq!(sketch.arcs()[0].bulge, before);
+    let after = sketch
+        .arc_form_of(arc)
+        .expect("the arc draws a circle")
+        .sweep_degrees;
+    assert!((after - before).abs() < 1e-3, "{before} became {after}");
 }
 
 #[test]
@@ -3354,7 +3385,9 @@ fn concentric_api_refuses_self_pairs_and_segments_without_mutation() {
 }
 
 #[test]
-fn concentric_arc_center_resweep_is_atomic() {
+/// Concentric is what makes a center drag carry its partner. Both centers are placed points now, so
+/// the relation is two points holding one spot and the drag moves the pair (ADR 0038).
+fn dragging_one_concentric_center_carries_the_other() {
     let mut sketch = Sketch::empty(PlaneAxis::Z);
     let arc = add_test_arc(&mut sketch, [0, 0]);
     let arc_center = sketch.arcs()[0].center;
@@ -3367,11 +3400,17 @@ fn concentric_arc_center_resweep_is_atomic() {
             ctx(16),
         )
         .expect("concentric");
-    let before = serde_json::to_value(&sketch).expect("before");
-    assert!(!sketch
-        .move_point(arc_center, SketchPoint::new(0, 4), ctx(16))
-        .expect("ordinary refusal"));
-    assert_eq!(serde_json::to_value(&sketch).expect("after"), before);
+    assert_eq!(
+        sketch.move_point(arc_center, SketchPoint::new(0, 4), ctx(16)),
+        Ok(true)
+    );
+    let dragged = position(&sketch, arc_center);
+    let carried = position(&sketch, sketch.circles()[0].center);
+    assert!((dragged[1] - 4.0).abs() < 1.0e-9, "dragged to {dragged:?}");
+    assert!(
+        (dragged[0] - carried[0]).hypot(dragged[1] - carried[1]) < 1.0e-9,
+        "the circle stayed at {carried:?}"
+    );
 }
 
 /// The kind-level answer and the geometry-level one are the same fact, so they are held to each

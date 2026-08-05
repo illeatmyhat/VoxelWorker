@@ -658,21 +658,16 @@ mod tests {
         let SketchCurve::Arc(id) = created else {
             panic!("arc identity")
         };
-        let arc = committed
-            .sketch
-            .arcs()
-            .iter()
-            .find(|arc| arc.id == id)
-            .unwrap();
         assert!((persisted.center[0] - upper.center[0]).abs() < 1.0e-10);
         assert!((persisted.center[1] - upper.center[1]).abs() < 1.0e-10);
         assert!((persisted.radius - upper.radius).abs() < 1.0e-10);
-        let sweep = arc
-            .bulge
-            .free_value()
-            .or_else(|| arc.bulge.fixed_source())
+        // The candidate turns counter-clockwise, which is the one sense a stored arc has, so the
+        // turn read off its three points is the candidate's own sweep (ADR 0038).
+        let sweep = committed
+            .sketch
+            .arc_form_of(id)
             .unwrap()
-            .to_degrees_f64()
+            .sweep_degrees
             .to_radians();
         assert!((sweep - upper.sweep_radians).abs() < 1.0e-10);
     }

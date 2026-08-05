@@ -3,7 +3,7 @@
 //! The document owns persistence and evaluation policy; this module only states which value is
 //! solver-writable and which is source-owned. A fixed source never carries a resolved-value cache.
 
-use crate::units::{AngleMeasurement, ExactRational, Measurement, RationalFromF64Error};
+use crate::units::{ExactRational, Measurement, RationalFromF64Error};
 use serde::de::Error as _;
 use serde::ser::SerializeStruct;
 
@@ -220,19 +220,8 @@ impl ResolvedLength {
     }
 }
 
-/// The scalar state of an arc's signed included angle.
-pub type ArcSweep = CurveParameter<AngleMeasurement, AngleMeasurement>;
 /// The scalar state of a circle radius: a free exact value or a fixed measurement source.
+///
+/// The only remaining instantiation. An arc's sweep used to be one too, until ADR 0038 made the
+/// arc three placed points and left the turn between them to be read rather than stored.
 pub type CircleRadius = CurveParameter<ResolvedLength, Measurement>;
-
-impl CurveParameter<AngleMeasurement, AngleMeasurement> {
-    /// Resolve the density-free angular source or free value for geometry evaluation.
-    #[must_use]
-    pub fn to_degrees_f64(&self) -> f64 {
-        match &self.0 {
-            CurveParameterState::Free(value) | CurveParameterState::Fixed(value) => {
-                value.to_degrees_f64()
-            }
-        }
-    }
-}

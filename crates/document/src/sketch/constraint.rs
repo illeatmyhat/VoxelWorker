@@ -20,7 +20,6 @@
 
 use super::{
     Arc, Circle, CircleRadius, EntityId, Point, Segment, Sketch, SketchLength, SketchPoint, Spline,
-    ABSENT_DERIVED_POINT,
 };
 use parametric::sketch::{
     ArcId, BuildError, CircleId, ConstraintId, PointId, Problem, ProblemBuilder, Relation,
@@ -687,7 +686,7 @@ pub(super) struct PreparedProblem {
     problem: Problem,
     points: Vec<(EntityId, PointId)>,
     segments: Vec<(EntityId, SegmentId)>,
-    arcs: Vec<(EntityId, ArcId, parametric::sketch::ParameterId)>,
+    arcs: Vec<(EntityId, ArcId)>,
     circles: Vec<(EntityId, CircleId, parametric::sketch::ParameterId)>,
     constraints: Vec<(EntityId, ConstraintId)>,
     /// Kept whole because a curvature relation reads its span out of the spline rather than out of
@@ -720,22 +719,18 @@ pub(super) struct StandingTangentFailure {
 pub(super) enum ScalarWritebackError {
     MissingSolutionPoint,
     MissingSolutionParameter,
-    ParameterKindMismatch,
-    SweepNotRepresentable,
     RadiusNotRepresentable,
     MissingDocumentEntity,
 }
 
 pub(super) struct ApplyPlan {
     points: Vec<Point>,
-    arcs: Vec<Arc>,
     circles: Vec<Circle>,
 }
 
 impl ApplyPlan {
     pub(super) fn apply(self, sketch: &mut Sketch) {
         sketch.points = self.points;
-        sketch.arcs = self.arcs;
         sketch.circles = self.circles;
     }
 }
@@ -816,15 +811,15 @@ impl PreparedProblem {
         self.problem.drag_together(&hands)
     }
 
+    /// An arc takes no part here. Its shape is its three placed points (ADR 0038), and those
+    /// have already been written back with every other point above.
     pub(super) fn plan_apply(
         &self,
         points: &[Point],
-        arcs: &[Arc],
         circles: &[Circle],
         solution: &parametric::sketch::Solution,
     ) -> Result<ApplyPlan, ScalarWritebackError> {
         let mut points = points.to_vec();
-        let mut arcs = arcs.to_vec();
         let mut circles = circles.to_vec();
         for (id, point) in &self.points {
             let at = solution
@@ -836,24 +831,6 @@ impl PreparedProblem {
                 .ok_or(ScalarWritebackError::MissingDocumentEntity)?;
             point.at = SketchPoint::from_continuous(at[0], at[1]);
         }
-        for (id, _, parameter) in &self.arcs {
-            let arc = arcs
-                .iter_mut()
-                .find(|arc| arc.id == *id)
-                .ok_or(ScalarWritebackError::MissingDocumentEntity)?;
-            if arc.bulge.free_value().is_none() {
-                continue;
-            }
-            let parametric::sketch::ParameterValue::SweepDegrees(value) = solution
-                .parameter(*parameter)
-                .ok_or(ScalarWritebackError::MissingSolutionParameter)?
-            else {
-                return Err(ScalarWritebackError::ParameterKindMismatch);
-            };
-            let value = parametric::units::AngleMeasurement::try_from_degrees_f64(value)
-                .map_err(|_| ScalarWritebackError::SweepNotRepresentable)?;
-            arc.replace_free_sweep(value);
-        }
         for (id, _, parameter) in &self.circles {
             let circle = circles
                 .iter_mut()
@@ -864,19 +841,12 @@ impl PreparedProblem {
             }
             let parametric::sketch::ParameterValue::Radius(value) = solution
                 .parameter(*parameter)
-                .ok_or(ScalarWritebackError::MissingSolutionParameter)?
-            else {
-                return Err(ScalarWritebackError::ParameterKindMismatch);
-            };
+                .ok_or(ScalarWritebackError::MissingSolutionParameter)?;
             let value = super::ResolvedLength::try_from_f64(value)
                 .map_err(|_| ScalarWritebackError::RadiusNotRepresentable)?;
             circle.radius = CircleRadius::free(value);
         }
-        Ok(ApplyPlan {
-            points,
-            arcs,
-            circles,
-        })
+        Ok(ApplyPlan { points, circles })
     }
 
     pub(super) fn point(&self, id: EntityId) -> Option<PointId> {
@@ -903,8 +873,8 @@ impl PreparedProblem {
             ParametricSketchCurve::Arc(key) => self
                 .arcs
                 .iter()
-                .find(|(_, local, _)| *local == key)
-                .map(|(stable, _, _)| *stable),
+                .find(|(_, local)| *local == key)
+                .map(|(stable, _)| *stable),
             ParametricSketchCurve::Circle(key) => self
                 .circles
                 .iter()
@@ -930,7 +900,7 @@ fn relation_for(
     kind: ConstraintKind,
     points: &[(EntityId, PointId)],
     segments: &[(EntityId, SegmentId)],
-    arcs: &[(EntityId, ArcId, parametric::sketch::ParameterId)],
+    arcs: &[(EntityId, ArcId)],
     circles: &[(EntityId, CircleId, parametric::sketch::ParameterId)],
     splines: &[Spline],
 ) -> Option<Relation> {
@@ -950,8 +920,8 @@ fn relation_for(
         SketchCurve::Segment(id) => segment(id).map(ParametricSketchCurve::Segment),
         SketchCurve::Arc(id) => arcs
             .iter()
-            .find(|(candidate, _, _)| *candidate == id)
-            .map(|(_, local, _)| ParametricSketchCurve::Arc(*local)),
+            .find(|(candidate, _)| *candidate == id)
+            .map(|(_, local)| ParametricSketchCurve::Arc(*local)),
         SketchCurve::Circle(id) => circles
             .iter()
             .find(|(candidate, _, _)| *candidate == id)
@@ -1094,7 +1064,7 @@ fn add_constraints(
     constraints: &[Constraint],
     points: &[(EntityId, PointId)],
     segments: &[(EntityId, SegmentId)],
-    arcs: &[(EntityId, ArcId, parametric::sketch::ParameterId)],
+    arcs: &[(EntityId, ArcId)],
     circles: &[(EntityId, CircleId, parametric::sketch::ParameterId)],
     splines: &[Spline],
 ) -> Vec<(EntityId, ConstraintId)> {
@@ -1171,11 +1141,7 @@ pub(super) fn prepare_scoped(
     arcs.sort_by_key(|arc| arc.id);
     let mut local_arcs = Vec::new();
     for arc in arcs {
-        if arc.center == ABSENT_DERIVED_POINT
-            || !in_scope(arc.center)
-            || !in_scope(arc.from)
-            || !in_scope(arc.to)
-        {
+        if !in_scope(arc.center) || !in_scope(arc.from) || !in_scope(arc.to) {
             continue;
         }
         let (Some(center), Some(from), Some(to)) =
@@ -1183,14 +1149,7 @@ pub(super) fn prepare_scoped(
         else {
             return Err(PrepareError::InvalidDocumentGeometry);
         };
-        let sweep = match (arc.bulge.free_value(), arc.bulge.fixed_source()) {
-            (Some(value), None) => builder.add_free_signed_sweep(value.to_degrees_f64()),
-            (None, Some(source)) => builder.add_fixed_signed_sweep(source.to_degrees_f64()),
-            _ => return Err(PrepareError::InvalidDocumentGeometry),
-        }
-        .map_err(PrepareError::InvalidLocalProblem)?;
-        let local = builder.add_arc(center, from, to, sweep);
-        local_arcs.push((arc.id, local, sweep));
+        local_arcs.push((arc.id, builder.add_arc(center, from, to)));
     }
 
     let mut circles: Vec<&Circle> = sketch.circles.iter().collect();

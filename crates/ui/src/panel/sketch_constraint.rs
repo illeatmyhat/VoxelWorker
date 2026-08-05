@@ -896,7 +896,7 @@ mod tests {
             .expect("a quarter turn");
         let center = sketch.arcs()[0].center;
         let loose = sketch.add_free_point(SketchPoint::from_continuous(40.0, 17.0));
-        assert!(sketch.is_derived_point(center));
+        assert!(sketch.is_arc_center(center));
 
         let mut armed = ArmedConstraint::new(ConstraintVerb::Coincident);
         assert_eq!(

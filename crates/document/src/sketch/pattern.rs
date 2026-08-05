@@ -11,9 +11,7 @@ use std::num::NonZeroU32;
 use parametric::units::AngleMeasurement;
 use substrate::curve_intersection::PlanarCurve;
 
-use super::{
-    arc_center_radius, EntityId, EntityRole, Sketch, SketchCurve, SketchLength, SketchSolid,
-};
+use super::{EntityId, EntityRole, Sketch, SketchCurve, SketchLength, SketchSolid};
 
 pub(super) fn pattern_store_is_empty(patterns: &[SketchPattern]) -> bool {
     patterns.is_empty()
@@ -374,16 +372,14 @@ impl Sketch {
             }
             SketchCurve::Arc(id) => {
                 let arc = self.arcs.iter().find(|arc| arc.id == id)?;
-                let from = self.point_position(arc.from)?;
-                let to = self.point_position(arc.to)?;
-                let sweep_radians = arc.sweep_degrees().to_radians();
-                let (center, radius) = arc_center_radius(from, to, arc.sweep_degrees())?;
+                let form = self.arc_form(arc)?;
                 Some((
                     vec![PlanarCurve::Arc {
-                        center,
-                        radius,
-                        start_radians: (from[1] - center[1]).atan2(from[0] - center[0]),
-                        sweep_radians,
+                        center: form.center,
+                        radius: form.radius,
+                        start_radians: (form.from[1] - form.center[1])
+                            .atan2(form.from[0] - form.center[0]),
+                        sweep_radians: form.sweep_degrees.to_radians(),
                     }],
                     arc.role,
                 ))

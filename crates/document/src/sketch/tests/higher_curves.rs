@@ -1,4 +1,5 @@
 use super::*;
+use ::parametric::units::ExactRational;
 
 #[test]
 fn ellipse_is_one_closed_profile_without_boundary_points() {
@@ -77,13 +78,14 @@ fn dragging_a_conic_control_point_onto_its_chord_is_refused_and_rolls_back() {
         .expect("the drag is answered"));
 }
 
-/// Rho is the one authored freedom of a conic with no other handle on it, so the shoulder is
-/// reified and dragging it re-solves rho — the same trade an arc's center makes for its sweep.
-/// Moving the CONTROL point instead leaves rho alone and takes the shoulder along with it.
+/// Rho is the one authored freedom of a conic with no point of its own, and ADR 0038 took away
+/// the on-curve "shoulder" dot that used to stand in for it. The conic's BODY is the handle now:
+/// pulling it toward the control point sharpens the curve, pushing it back flattens it. Moving
+/// the CONTROL point instead leaves rho alone and takes the curve along with it.
 #[test]
-fn dragging_a_conic_shoulder_resolves_its_rho_while_the_control_point_keeps_it() {
+fn dragging_a_conics_body_resolves_its_rho_while_the_control_point_keeps_it() {
     let mut sketch = Sketch::empty(PlaneAxis::Z);
-    sketch
+    let conic = sketch
         .add_conic(
             SketchPoint::new(0, 0),
             SketchPoint::new(8, 0),
@@ -92,29 +94,20 @@ fn dragging_a_conic_shoulder_resolves_its_rho_while_the_control_point_keeps_it()
         )
         .expect("valid conic");
     let held = sketch.conics()[0];
-    let shoulder_at = |sketch: &Sketch| {
-        sketch
-            .points()
-            .iter()
-            .find(|point| point.id == held.shoulder)
-            .expect("the shoulder is a real point")
-            .at
-    };
-    assert_eq!(shoulder_at(&sketch), SketchPoint::new(4, 4));
-    assert!(sketch.is_derived_point(held.shoulder));
+    assert!((sketch.conics()[0].rho.value() - 0.5).abs() < 1.0e-9);
 
+    // The chord midpoint is (4, 0) and the control point is (4, 8), so a body drag to (4, 6) puts
+    // the curve three quarters of the way out the track.
     assert!(sketch
-        .move_point(held.shoulder, SketchPoint::new(4, 6), ctx(16))
-        .expect("the shoulder drag is answered"));
+        .drag_curve_through(SketchCurve::Conic(conic), [4.0, 4.0], [4.0, 6.0], ctx(16))
+        .expect("the body drag is answered"));
     assert!((sketch.conics()[0].rho.value() - 0.75).abs() < 1.0e-9);
-    assert_eq!(shoulder_at(&sketch), SketchPoint::new(4, 6));
 
-    // The control point authors position, not pull: rho survives and the shoulder follows.
+    // The control point authors position, not pull: rho survives.
     assert!(sketch
         .move_point(held.control, SketchPoint::new(4, 16), ctx(16))
         .expect("the control drag is answered"));
     assert!((sketch.conics()[0].rho.value() - 0.75).abs() < 1.0e-9);
-    assert_eq!(shoulder_at(&sketch), SketchPoint::new(4, 12));
 }
 
 #[test]
@@ -138,12 +131,8 @@ fn higher_curve_handles_retarget_with_density_but_rho_does_not() {
         .iter()
         .map(|point| point.at.in_plane())
         .collect();
-    // Anchors, control point, and the derived shoulder that rho puts three quarters of the way
-    // from the chord midpoint (4, 0) out to the control point (4, 4).
-    assert_eq!(
-        positions,
-        vec![[0.0, 0.0], [8.0, 0.0], [4.0, 4.0], [4.0, 3.0]]
-    );
+    // The two anchors and the control point — a conic stores no fourth point (ADR 0038).
+    assert_eq!(positions, vec![[0.0, 0.0], [8.0, 0.0], [4.0, 4.0]]);
 }
 
 #[test]

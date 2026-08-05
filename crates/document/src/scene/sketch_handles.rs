@@ -231,7 +231,7 @@ impl Scene {
         let point_ids: Vec<EntityId> = points.iter().map(|point| point.id).collect();
         let derived: Vec<bool> = point_ids
             .iter()
-            .map(|id| producer.sketch.is_derived_point(*id))
+            .map(|id| producer.sketch.is_arc_center(*id))
             .collect();
 
         // The overlay frame anchors on the RESOLVE's anchor — the filled region's bbox-min, the
@@ -348,11 +348,12 @@ impl Scene {
             .arcs()
             .iter()
             .filter_map(|arc| {
+                let form = producer.sketch.arc_form(arc)?;
                 Some(SketchArcHandle {
                     entity: arc.id,
-                    from: position_of(arc.from)?,
-                    to: position_of(arc.to)?,
-                    sweep_degrees: arc.sweep_degrees(),
+                    from: form.from,
+                    to: form.to,
+                    sweep_degrees: form.sweep_degrees,
                     role: arc.role,
                 })
             })
@@ -538,7 +539,7 @@ mod tests {
 
         assert_eq!(handles.derived.len(), handles.point_ids.len());
         for (index, point) in handles.point_ids.iter().enumerate() {
-            assert_eq!(handles.derived[index], made.sketch.is_derived_point(*point));
+            assert_eq!(handles.derived[index], made.sketch.is_arc_center(*point));
         }
         let stacked = handles.vertices.iter().enumerate().any(|(index, vertex)| {
             handles.vertices.iter().enumerate().any(|(other, twin)| {

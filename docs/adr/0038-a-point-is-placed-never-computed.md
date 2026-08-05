@@ -66,9 +66,12 @@ old design hid inside `sync_derived_points`.
 
 This amends ADR 0037 for arcs. `ArcSweep` and the `CurveParameter` authority it instantiates are
 retired; `CircleRadius`, the other instantiation, is unaffected and stays exactly as 0037 decided.
-An author who wants a particular sweep asserts an angle dimension, the same way they assert a
-distance — an intrinsic that silently fought the relations becomes a relation that argues with them
-in the open.
+
+Retiring `ArcSweep` costs no authored quantity, because there was never a path to author one. Every
+arc the tools make carries `ArcSweep::free`; the `Fixed` arm is reachable only by deserializing a
+document that names one, and no gesture, inspector field or edit produces it. A sweep an author
+wants HELD becomes an angle dimension when that relation lands — the same way a distance is held —
+and until then a sweep is exactly as free as it already was.
 
 ### 2. A conic is two endpoints and a placed control point
 
@@ -109,11 +112,11 @@ through, and the center follows from the three. `connect_arc(from, to, angle)` b
 convenience that computes where the center has to be and places it there, which is what a slot
 builder and a test want.
 
-**An authored sweep stops being retained as an authored quantity.** ADR 0029 keeps what the author
-typed, and a sweep typed into the inspector was kept as an `AngleMeasurement` on the arc. After
-this it is kept as an angle DIMENSION instead, or not at all. This is a real loss of retention for
-arcs specifically, taken deliberately: an intrinsic and a relation asserting the same angle is two
-sources for one fact, and the relation is the one the author can see, select and delete.
+**The drawn arc always passes through both of its ends.** The stored center is projected onto the
+chord's perpendicular bisector before the geometry is read, so an unsolved or mid-drag drawing
+still shows a real arc between the two endpoints rather than one that misses them. The projection
+throws away the center's motion ALONG THE CHORD, and that is exactly the freedom the equal-radius
+residual removes — the two agree, and in a solved drawing the projection is the identity.
 
 **Nothing here licenses a third case yet.** A fit-point spline's tangent arms are the remaining
 structure that keeps a point and a derived twin — `sync_tangent_arms` and `carry_authored_handles`
