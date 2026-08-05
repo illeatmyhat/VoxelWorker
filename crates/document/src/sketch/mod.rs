@@ -5121,25 +5121,36 @@ impl Sketch {
     /// An arc's center comes from its endpoints and bulge; a conic's shoulder from its endpoints,
     /// its control point and rho. A curve whose defining points are missing or degenerate is left
     /// alone; [`repair`](Self::repair) erases it.
-    pub fn sync_derived_points(&mut self) {
-        // Which center each arc has just put where. Arcs turning about ONE place get ONE dot: the
-        // endpoints of a curve already reuse whatever point is standing where they land, and a
-        // center that did not was the whole of why an arc slot carried four marks at its middle
-        // where the author drew one. Three of those four were the same answer computed again.
-        //
-        // Adoption is only ever from another ARC's center, never from an ordinary point that
-        // happens to be there. Naming an author's corner as a center would make it derived, and a
-        // derived point is not draggable — the drawing would silently take a handle away.
-        //
-        // Sharing lasts exactly as long as agreement. An arc that comes to want its center
-        // somewhere else takes a fresh one rather than overwrite a neighbour's: concentric-looking
-        // is not concentric, and two arcs that merely passed through the same arrangement must be
-        // able to leave it. Nothing here asserts they are concentric; a relation does that, and it
-        // stays the thing that HOLDS them so, which is why it must remain free to be deleted.
-        let mut placed: Vec<(EntityId, [f64; 2])> = Vec::new();
-        let apart = |first: [f64; 2], second: [f64; 2]| {
-            (first[0] - second[0]).hypot(first[1] - second[1]) > STACKED_DOT_VOXELS
+    /// The signed sweep that carries `ends[0]` to `ends[1]` about `seat`, keeping the turn `like`
+    /// was going. `None` where the ends sit on the seat and no turn is defined.
+    ///
+    /// The sign has to be carried in because two ends and a center describe two arcs — the short
+    /// way round and the long way — and only the curve itself knows which one it is.
+    fn sweep_about(seat: [f64; 2], ends: [[f64; 2]; 2], like: f64) -> Option<f64> {
+        let angle = |at: [f64; 2]| {
+            let (run, rise) = (at[0] - seat[0], at[1] - seat[1]);
+            (run.hypot(rise) > f64::EPSILON).then(|| rise.atan2(run).to_degrees())
         };
+        let (from, to) = (angle(ends[0])?, angle(ends[1])?);
+        let mut sweep = (to - from).rem_euclid(360.0);
+        if like < 0.0 {
+            sweep -= 360.0;
+        }
+        arc_sweep_is_valid(sweep).then_some(sweep)
+    }
+
+    pub fn sync_derived_points(&mut self) {
+        // Arcs turning about ONE place share ONE dot, and which arcs those are is decided when
+        // they are drawn ([`tie_arc_centers`](Self::tie_arc_centers)) rather than guessed here from
+        // where they happen to stand. Coincidence is the wrong test both ways: two unrelated arcs
+        // that pass through a concentric arrangement would bind forever, and two arcs that ARE held
+        // concentric disagree mid-solve, so a tolerance would split them on a transient and never
+        // put them back.
+        //
+        // The FIRST arc to reach a shared center places it; the rest leave it alone. The dot can
+        // only be in one place, so letting the last one win would move it by nothing more than arc
+        // order. It is an echo either way — every relation measures an arc from its own two ends.
+        let mut placed: Vec<EntityId> = Vec::new();
         for index in 0..self.arcs.len() {
             let arc = self.arcs[index];
             let (Some(tail), Some(head)) = (self.point_index(arc.from), self.point_index(arc.to))
@@ -5155,26 +5166,40 @@ impl Sketch {
             };
             let at = SketchPoint::from_continuous(center[0], center[1]);
             match self.point_index(arc.center) {
-                Some(existing) => match placed.iter().find(|(id, _)| *id == arc.center) {
-                    Some(&(_, stood)) if apart(stood, center) => {
-                        let fresh = self.add_construction_point(at);
-                        self.arcs[index].center = fresh;
-                        placed.push((fresh, center));
+                Some(existing) if !placed.contains(&arc.center) => {
+                    self.points[existing].at = at;
+                    placed.push(arc.center);
+                }
+                // A sharer does not get to move the dot, so it CONFORMS to it: its sweep is
+                // whatever puts its own two ends on a circle about the center that is already
+                // there. Sharing a center is the statement that this curve is defined by that
+                // center, which is one turn of Fusion's representation — an arc as a center, a
+                // radius and two angles — applied exactly where the drawing needs it.
+                //
+                // Deriving the sweep is what keeps the sharing honest without asserting anything.
+                // A slot's centerline is not authored, it is IMPLIED: its ends are the cap centers
+                // and its middle is the slot's own, so leaving it a free sweep and then adding a
+                // relation to pin that sweep back would be adding a freedom in order to remove it.
+                // Measured, the relation also over-coupled the solve — dragging a spine end
+                // rotated the whole slot and missed the cursor by a third of a block.
+                Some(_) => {
+                    let seat = self.points[self.point_index(arc.center).unwrap_or(tail)]
+                        .at
+                        .in_plane();
+                    let ends = [
+                        self.points[tail].at.in_plane(),
+                        self.points[head].at.in_plane(),
+                    ];
+                    if let Some(sweep) = Self::sweep_about(seat, ends, arc.sweep_degrees()) {
+                        if let Ok(bulge) = AngleMeasurement::try_from_degrees_f64(sweep) {
+                            self.arcs[index].bulge = ArcSweep::free(bulge);
+                        }
                     }
-                    Some(_) => {}
-                    None => {
-                        self.points[existing].at = at;
-                        placed.push((arc.center, center));
-                    }
-                },
+                }
                 None => {
-                    let adopted = placed
-                        .iter()
-                        .find(|(_, stood)| !apart(*stood, center))
-                        .map(|(id, _)| *id);
-                    let center_point = adopted.unwrap_or_else(|| self.add_construction_point(at));
-                    self.arcs[index].center = center_point;
-                    placed.push((center_point, center));
+                    let minted = self.add_construction_point(at);
+                    self.arcs[index].center = minted;
+                    placed.push(minted);
                 }
             }
         }
@@ -5192,6 +5217,48 @@ impl Sketch {
         self.sync_tangent_arms();
     }
 
+    /// Point every arc in `arcs` at the FIRST one's center, so a set of arcs turning about one
+    /// place shows the author one dot instead of one each.
+    ///
+    /// Structural and permanent, which is why the caller must also ASSERT that these arcs are
+    /// concentric. A shared dot can only be in one place, so sharing it is a claim that they agree;
+    /// backed by a relation the claim stays true through every drag, and backed by nothing it
+    /// becomes a lie the first time the shape is resized. Deciding it here rather than by noticing
+    /// coincident centers also keeps two arcs that merely pass through a concentric arrangement
+    /// from binding to each other forever.
+    ///
+    /// The centers this orphans are dropped, but ONLY those — a general sweep here would take the
+    /// slot's own handles with them. A handle is named by nothing except the coincidence tying it
+    /// to a center, and merely being named by a relation is not what keeps a point alive.
+    fn tie_arc_centers(&mut self, arcs: &[SketchCurve]) {
+        let center = arcs.iter().find_map(|curve| match curve {
+            SketchCurve::Arc(id) => self
+                .arcs
+                .iter()
+                .find(|arc| arc.id == *id)
+                .map(|arc| arc.center),
+            _ => None,
+        });
+        let Some(center) = center else {
+            return;
+        };
+        let mut replaced = Vec::new();
+        for curve in arcs {
+            let SketchCurve::Arc(id) = curve else {
+                continue;
+            };
+            if let Some(arc) = self.arcs.iter_mut().find(|arc| arc.id == *id) {
+                if arc.center != center {
+                    replaced.push(arc.center);
+                    arc.center = center;
+                }
+            }
+        }
+        let referenced = self.referenced_points();
+        self.points
+            .retain(|point| !replaced.contains(&point.id) || referenced.contains(&point.id));
+    }
+
     /// Drop every construction point nothing references any more — the center of an arc that
     /// has just been deleted. A center the author has since drawn to (an edge names it) is
     /// referenced, so it survives as ordinary geometry.
@@ -5203,6 +5270,14 @@ impl Sketch {
     /// enough — see [`ConstraintKind::anchored_points`] — so a `Fix`ed circle center still goes
     /// with its circle.
     fn prune_orphan_centers(&mut self) {
+        let referenced = self.referenced_points();
+        self.points.retain(|point| {
+            point.lifetime != PointLifetime::CurveAnchored || referenced.contains(&point.id)
+        });
+    }
+
+    /// Every point some piece of geometry or anchoring relation names.
+    fn referenced_points(&self) -> std::collections::BTreeSet<EntityId> {
         let mut referenced = std::collections::BTreeSet::new();
         for constraint in &self.constraints {
             referenced.extend(constraint.kind.anchored_points());
@@ -5229,9 +5304,7 @@ impl Sketch {
             referenced.extend(spline.points.iter().copied());
             referenced.extend(spline.tangents.values().flat_map(|handle| handle.arms()));
         }
-        self.points.retain(|point| {
-            point.lifetime != PointLifetime::CurveAnchored || referenced.contains(&point.id)
-        });
+        referenced
     }
 
     /// The straight segment joining `a` and `b` in either direction, if one is held.

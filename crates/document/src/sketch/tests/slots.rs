@@ -1025,3 +1025,68 @@ fn an_arc_slot_draws_one_dot_at_its_middle_and_it_is_the_draggable_one() {
         );
     }
 }
+
+/// Resizing an arc slot must not put the extra dots back.
+///
+/// The three arcs share one center, and a shared center is only honest while they agree about
+/// where it is. Nothing asserts that they do — the centerline's sweep is DERIVED from the center it
+/// shares, so it cannot drift off the middle it is named for, and the rails are held concentric by
+/// the relation they were always given. What this guards is the failure that hid behind the first
+/// attempt at sharing: a tolerance test that split a shared center the moment two arcs disagreed
+/// mid-solve, minting a point the author never drew and never putting it back.
+#[test]
+fn resizing_an_arc_slot_keeps_its_three_arcs_on_one_center() {
+    let mut made = arc_slot();
+    let rail = made
+        .sketch
+        .arcs()
+        .iter()
+        .find(|arc| arc.role != EntityRole::Construction)
+        .map(|arc| SketchCurve::Arc(arc.id))
+        .expect("a rail to grab");
+    let before = made.sketch.points().len();
+
+    assert!(made
+        .sketch
+        .translate_curve(rail, [1.0, 1.0], ctx(16))
+        .expect("the rail drag is answered"));
+
+    assert_eq!(
+        made.sketch.points().len(),
+        before,
+        "resizing minted a point"
+    );
+
+    // Five arcs about three centers: a cap at each end, and ONE for the two rails and the
+    // centerline running between them.
+    let mut about: std::collections::BTreeMap<EntityId, Vec<&Arc>> =
+        std::collections::BTreeMap::new();
+    for arc in made.sketch.arcs() {
+        about.entry(arc.center).or_default().push(arc);
+    }
+    assert_eq!(made.sketch.arcs().len(), 5, "an arc slot draws five arcs");
+    assert_eq!(
+        about.len(),
+        3,
+        "five arcs came apart onto {} centers",
+        about.len()
+    );
+    let shared = about
+        .values()
+        .find(|arcs| arcs.len() == 3)
+        .expect("the rails and their centerline share one center");
+
+    // Derived, not merely coincident: the centerline turns through the middle of what the rails do.
+    let sweep = |wanted: EntityRole| {
+        shared
+            .iter()
+            .filter(|arc| arc.role == wanted)
+            .map(|arc| arc.sweep_degrees().abs())
+            .fold(0.0_f64, f64::max)
+    };
+    let (rails, spine) = (sweep(EntityRole::Real), sweep(EntityRole::Construction));
+    assert!(
+        (rails - spine).abs() < 1.0e-2,
+        "the centerline kept {spine} while its rails turned {rails}"
+    );
+}

@@ -1101,8 +1101,19 @@ impl SketchSolid {
         // A slot gets ONE line down its middle. Where the author gave extremes, the line out to
         // them already runs through both cap centers, so drawing the shorter cap-to-cap curve as
         // well puts a second construction mark on top of the first and says nothing new.
-        if placement.reach.is_none() {
-            slot_spine_curve(&mut next.sketch, placement, &handles)?;
+        // A turning slot's rails and its centerline all turn about the SAME place, so they get one
+        // dot between them rather than three stacked on each other. Nothing is asserted to keep
+        // them agreeing: the centerline is not authored, it is implied by the two cap centers and
+        // the middle they turn about, so sharing the center is what DEFINES it — its sweep is then
+        // derived from that center rather than solved, and there is no freedom to pin back.
+        let spine_curve = if placement.reach.is_none() {
+            slot_spine_curve(&mut next.sketch, placement, &handles)?
+        } else {
+            None
+        };
+        if let Some(spine) = spine_curve {
+            next.sketch
+                .tie_arc_centers(&[first_rail, second_rail, spine]);
         }
         let spine_line =
             slot_spine_line(&mut next.sketch, placement, &handles, [start_cap, end_cap])?;
@@ -2020,18 +2031,21 @@ fn slot_spine_handles(
 /// signed angle because a rail is the spine offset sideways and traversal runs start cap to end
 /// cap. Reading the rail is what keeps the two concentric by construction.
 ///
-/// No relation is asserted. The curve is pinned by what it is drawn from — two endpoints already
-/// tied to the caps' centers, plus a stored sweep — so a relation here would be a second authority
-/// over a shape that has no freedom left.
+/// A turning centerline is returned so the caller can assert it CONCENTRIC with the rails. Being
+/// drawn from the right numbers does not keep it there: its two ends are tied to the cap centers,
+/// but its sweep is a free parameter like any arc's, and nothing was holding it. Resize the slot
+/// and the rails would turn while the centerline kept the angle it was born with — drifting off
+/// the middle it is named for, and taking a second dot with it where the author had one.
 fn slot_spine_curve(
     sketch: &mut Sketch,
     placement: &SlotPlacement,
     handles: &[(EntityId, EntityId)],
-) -> Result<(), SlotRefusal> {
+) -> Result<Option<SketchCurve>, SlotRefusal> {
     let [(start, _), (end, _), ..] = handles else {
         return Err(SlotRefusal::Unrepresentable);
     };
     let (start, end) = (*start, *end);
+    let turning = placement.spine.center.is_some();
     let curve = match placement.spine.center {
         None => sketch
             .connect(start, end)
@@ -2048,7 +2062,9 @@ fn slot_spine_curve(
     }
     .ok_or(SlotRefusal::Unrepresentable)?;
     sketch.set_construction(curve);
-    Ok(())
+    // Only a TURNING centerline is an arc, and only an arc has a center to share or a sweep that
+    // needs holding. A straight one is a segment and the caller has nothing to assert about it.
+    Ok(turning.then_some(SketchCurve::Arc(curve)))
 }
 
 /// Draw an Overall Slot's middle as a construction line, and return what holds it there.
