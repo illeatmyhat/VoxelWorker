@@ -1098,7 +1098,12 @@ impl SketchSolid {
                 first: handle.min(derived),
                 second: handle.max(derived),
             });
-        slot_spine_curve(&mut next.sketch, placement, &handles)?;
+        // A slot gets ONE line down its middle. Where the author gave extremes, the line out to
+        // them already runs through both cap centers, so drawing the shorter cap-to-cap curve as
+        // well puts a second construction mark on top of the first and says nothing new.
+        if placement.reach.is_none() {
+            slot_spine_curve(&mut next.sketch, placement, &handles)?;
+        }
         let spine_line =
             slot_spine_line(&mut next.sketch, placement, &handles, [start_cap, end_cap])?;
         let tangencies = placement
@@ -2006,9 +2011,9 @@ fn slot_spine_handles(
 ///
 /// A slot IS a spine plus a width, and the boundary the tool emits is exactly the curve that does
 /// not contain it — so without this the centerline is a thing the author reasoned in and the
-/// drawing does not have. Every grammar draws one (owner, 2026-08-03); the Overall Slot's longer
-/// line out to the extremes is a DIFFERENT curve, answering "how long end to end" rather than
-/// "where does the middle run", and [`slot_spine_line`] still adds it on top.
+/// drawing does not have. Every grammar draws one (owner, 2026-08-03), but only one (owner,
+/// 2026-08-04): an Overall Slot's line out to the extremes runs through both cap centers on its
+/// way, so [`slot_spine_line`] draws the middle for that grammar and the caller skips this.
 ///
 /// A turning slot's centerline is an ARC, and it turns about the slot's own center rather than
 /// about anything fitted through the two ends: it takes a rail's stored sweep, which is the same
@@ -2057,6 +2062,9 @@ fn slot_spine_curve(
 /// centers held on that line and each extreme held on the cap it reaches. Four rows against four
 /// new freedoms: the width is still the one thing nothing pins, so it is still dragged rather than
 /// typed. Every other slot grammar reports no reach and this does nothing.
+///
+/// This line IS the grammar's centerline, not a second one beside it: it passes through both cap
+/// centers on its way out to the extremes, so [`slot_spine_curve`] stands down where this runs.
 fn slot_spine_line(
     sketch: &mut Sketch,
     placement: &SlotPlacement,

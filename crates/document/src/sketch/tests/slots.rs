@@ -81,18 +81,17 @@ fn every_linear_slot_grammar_commits_two_lines_and_two_native_caps() {
         let made = source
             .with_linear_slot(kind, first, second, SketchPoint::new(0, 1), ctx(16))
             .unwrap();
-        // Every grammar draws its centerline as construction. Overall draws a SECOND one, further
-        // out: the line between the extremes it was authored by, which answers a different
-        // question — how long the slot is end to end.
-        let reach_line = usize::from(kind == ::parametric::sketch::LinearSlotKind::Overall);
-        assert_eq!(made.sketch.segments().len(), 2 + 1 + reach_line);
+        // Every grammar draws its centerline as construction, and exactly one. Overall's runs
+        // further out — all the way to the extremes it was authored by — but it is still the
+        // middle of the slot, passing through both cap centers on its way.
+        assert_eq!(made.sketch.segments().len(), 2 + 1);
         assert_eq!(
             made.sketch
                 .segments()
                 .iter()
                 .filter(|segment| segment.role == EntityRole::Construction)
                 .count(),
-            1 + reach_line
+            1
         );
         assert_eq!(made.sketch.arcs().len(), 2);
         assert_eq!(made.sketch.region(ctx(16)).len(), 1);
@@ -413,23 +412,17 @@ fn an_overall_slot_keeps_its_extremes_on_a_construction_line() {
             .map(|point| point.at.in_plane())
             .expect("a named point exists")
     };
-    // Two construction lines run down this slot: the centerline every grammar draws, cap center to
-    // cap center, and the longer one out to the extremes that only Overall has. The one under test
-    // is the latter, picked by the span it covers rather than by being the only one.
-    let line = made
+    // ONE construction line runs down this slot, out to the extremes and through both cap centers
+    // on the way. The shorter cap-to-cap curve every other grammar draws would land on top of it.
+    let construction: Vec<Segment> = made
         .sketch
         .segments()
         .iter()
         .filter(|segment| segment.role == EntityRole::Construction)
-        .max_by(|first, second| {
-            let span = |segment: &Segment| {
-                let (from, to) = (position(segment.from), position(segment.to));
-                (to[0] - from[0]).hypot(to[1] - from[1])
-            };
-            span(first).total_cmp(&span(second))
-        })
         .copied()
-        .expect("the middle is drawn as a construction line");
+        .collect();
+    assert_eq!(construction.len(), 1, "one line down the middle, not two");
+    let line = construction[0];
     let (tail, head) = (position(line.from), position(line.to));
     for end in [tail, head] {
         assert!(
@@ -734,6 +727,61 @@ fn an_overall_slots_extremes_go_quiet_and_its_cap_centers_do_not() {
             sketch.point_draws_at_rest(handle),
             "the cap center at {:?} is the grip the slot is held by",
             at(handle)
+        );
+    }
+}
+
+/// Which side the author picks the width on cannot change the shape.
+///
+/// A cap runs from one rail's corner to the other's and has to bulge OUT past the end of the slot.
+/// The half-turn was hardcoded clockwise, which is right for one hand and reads as the inside turn
+/// on the mirrored traversal — so picking the width below the spine bit a bite out of both ends. No
+/// test that always picks its width on the same side of the spine can see that.
+#[test]
+fn a_straight_slots_caps_bulge_outward_whichever_side_the_width_was_picked() {
+    for width_point in [SketchPoint::new(0, 2), SketchPoint::new(0, -2)] {
+        let made = source()
+            .with_linear_slot(
+                ::parametric::sketch::LinearSlotKind::CenterToCenter,
+                SketchPoint::new(0, 0),
+                SketchPoint::new(6, 0),
+                width_point,
+                ctx(16),
+            )
+            .expect("a valid slot");
+        let sketch = &made.sketch;
+        let at = |id: EntityId| {
+            sketch
+                .points()
+                .iter()
+                .find(|point| point.id == id)
+                .map(|point| point.at.in_plane())
+                .expect("a named point exists")
+        };
+        // Each cap's crest: its start swung half its own sweep about its own center.
+        let mut crests: Vec<f64> = sketch
+            .arcs()
+            .iter()
+            .map(|arc| {
+                let center = at(arc.center);
+                let from = at(arc.from);
+                let half = arc.sweep_degrees().to_radians() / 2.0;
+                let (dx, dy) = (from[0] - center[0], from[1] - center[1]);
+                dx.mul_add(half.cos(), -(dy * half.sin())) + center[0]
+            })
+            .collect();
+        crests.sort_by(f64::total_cmp);
+
+        assert_eq!(crests.len(), 2, "two caps");
+        assert!(
+            crests[0] < -1.0,
+            "the start cap reaches back past the spine's start, not into the slot: \
+             {crests:?} for a width picked at {width_point:?}"
+        );
+        assert!(
+            crests[1] > 7.0,
+            "the end cap reaches past the spine's end: \
+             {crests:?} for a width picked at {width_point:?}"
         );
     }
 }

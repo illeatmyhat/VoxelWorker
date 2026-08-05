@@ -296,6 +296,12 @@ fn linear_boundary(
     } else {
         LineSide::Left
     };
+    // And which way each cap turns, off the same reading. A cap runs from the far rail's corner to
+    // the near one and has to bulge OUT past the end of the slot; mirror the offset and that same
+    // half-turn comes back around the inside, biting a bite out of each end. A hardcoded sign was
+    // right for one hand and wrong for the other, which is a thing no test that always picks its
+    // width on the same side of the spine can see.
+    let cap_sweep_degrees = if offset_hand > 0.0 { -180.0 } else { 180.0 };
     SlotCandidate {
         spine: SlotSpine {
             start: start_center,
@@ -312,7 +318,7 @@ fn linear_boundary(
             SlotEdgeCandidate::Arc {
                 from: points[1],
                 to: points[2],
-                sweep_degrees: -180.0,
+                sweep_degrees: cap_sweep_degrees,
             },
             SlotEdgeCandidate::Line {
                 from: points[2],
@@ -321,7 +327,7 @@ fn linear_boundary(
             SlotEdgeCandidate::Arc {
                 from: points[3],
                 to: points[0],
-                sweep_degrees: -180.0,
+                sweep_degrees: cap_sweep_degrees,
             },
         ],
     }

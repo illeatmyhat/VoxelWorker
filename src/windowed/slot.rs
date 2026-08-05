@@ -390,13 +390,13 @@ mod tests {
             let SlotEdit::Document(made) = result else {
                 panic!("final click completes")
             };
-            // Four boundary curves, plus the construction centerline every grammar draws down its
-            // middle, plus the second one an Overall Slot draws out to the extremes it was
-            // authored by.
-            let reach_line = usize::from(kind == SlotKind::Overall);
+            // Four boundary curves, plus the ONE construction centerline every grammar draws down
+            // its middle. An Overall Slot's runs further out — all the way to the extremes it was
+            // authored by — but it passes through both cap centers on its way, so it IS that
+            // grammar's centerline rather than a second line beside it.
             assert_eq!(
                 made.sketch.segments().len() + made.sketch.arcs().len(),
-                4 + 1 + reach_line
+                4 + 1
             );
             assert!(gesture.pending.is_none());
         }
