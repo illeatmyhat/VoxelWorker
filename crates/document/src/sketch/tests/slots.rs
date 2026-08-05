@@ -1157,14 +1157,18 @@ fn dragging_an_arc_slots_rail_spends_its_radius_about_a_center_that_holds() {
     );
 }
 
-/// A line has no middle to turn about, so the same gesture carries it instead — and carries it
-/// only SIDEWAYS, because dragging a line along its own direction produces the same line and the
-/// grip slides rather than pushing anything.
+/// A line has no middle to turn about, so the same gesture carries it — and carries it BOTH ways.
+///
+/// Dragging a line along its own direction produces the same line, so the along part of a drag
+/// cannot mean a deformation. That is not the same as meaning nothing: a line with nothing holding
+/// it has every freedom to travel, and travelling is what it does. The distinction the gesture
+/// draws is deform versus carry, never move versus stay still — a drawing that answered a body
+/// drag by holding still read to the author as the shape being stuck (owner, 2026-08-05).
 #[test]
-fn dragging_a_lines_body_carries_it_across_and_not_along() {
+fn dragging_a_lines_body_carries_it_whichever_way_it_is_pulled() {
     for (tag, from, to, want) in [
         ("across", [3.0, 0.0], [3.0, 3.0], [0.0, 3.0]),
-        ("along", [3.0, 0.0], [6.0, 0.0], [0.0, 0.0]),
+        ("along", [3.0, 0.0], [6.0, 0.0], [3.0, 0.0]),
     ] {
         let mut made = source();
         let tail = made.sketch.add_free_point(SketchPoint::new(0, 0));
@@ -1182,4 +1186,209 @@ fn dragging_a_lines_body_carries_it_across_and_not_along() {
             "dragged {tag}, the tail went to {at:?} rather than {want:?}"
         );
     }
+}
+
+/// The whole of what a body drag decides, on the one shape that shows both answers.
+///
+/// A rectangle's four sides are held square to each other and nothing else, so which way its edge
+/// is pulled settles what the drawing can do about it:
+///
+/// - pulled OUTWARD, moving that edge alone is available and costs two corners, so the rectangle
+///   resizes and the far edge stays where the author left it;
+/// - pulled SIDEWAYS, the vertical relations forbid the shear that would let one edge go on its
+///   own, so the only answer left is to carry all four corners.
+///
+/// Neither is a rule about rectangles. The gesture states the same thing both times — the across
+/// part of the pull seeds a deformation, and the whole of it pulls — and the two answers are the
+/// relations', which is the point. See [`Sketch::what_a_body_drag_asks_of`].
+#[test]
+fn a_rectangles_edge_resizes_it_outward_and_carries_it_sideways() {
+    let made = source()
+        .with_rectangle(SketchPoint::new(0, 0), SketchPoint::new(40, 20), ctx(16))
+        .expect("a rectangle");
+    let bottom = made.sketch.segments()[0].id;
+    let corners = |sketch: &Sketch| {
+        let mut at: Vec<[f64; 2]> = sketch
+            .points()
+            .iter()
+            .map(|point| point.at.in_plane())
+            .collect();
+        at.sort_by(|first, second| {
+            first[0]
+                .total_cmp(&second[0])
+                .then(first[1].total_cmp(&second[1]))
+        });
+        at
+    };
+    // A voxel is 1/16 of a block and the drawing is exact to a ten-thousandth of one, so the claim
+    // is about which corners moved, never about the last bit of the arithmetic.
+    let stands_at = |got: Vec<[f64; 2]>, want: [[f64; 2]; 4]| {
+        got.iter().zip(want).all(|(got, want)| {
+            (got[0] - want[0]).abs() < 1.0e-4 && (got[1] - want[1]).abs() < 1.0e-4
+        })
+    };
+
+    let mut outward = made.sketch.clone();
+    assert!(outward
+        .drag_curve_through(
+            SketchCurve::Segment(bottom),
+            [20.0, 0.0],
+            [20.0, 6.0],
+            ctx(16)
+        )
+        .expect("the drag is answered"));
+    assert!(
+        stands_at(
+            corners(&outward),
+            [[0.0, 6.0], [0.0, 20.0], [40.0, 6.0], [40.0, 20.0]]
+        ),
+        "pulled outward, the bottom edge rises alone and the top stays put: {:?}",
+        corners(&outward)
+    );
+
+    let mut sideways = made.sketch.clone();
+    assert!(sideways
+        .drag_curve_through(
+            SketchCurve::Segment(bottom),
+            [20.0, 0.0],
+            [26.0, 0.0],
+            ctx(16)
+        )
+        .expect("the drag is answered"));
+    assert!(
+        stands_at(
+            corners(&sideways),
+            [[6.0, 0.0], [6.0, 20.0], [46.0, 0.0], [46.0, 20.0]]
+        ),
+        "pulled sideways, every corner carries and the rectangle keeps its size: {:?}",
+        corners(&sideways)
+    );
+}
+
+/// A straight slot's rail, whose two answers the author actually spends.
+///
+/// Across, the rail is how the slot's width is authored, and it widens SYMMETRICALLY — the spine
+/// takes half, so the far rail mirrors the grabbed one. Along, the slot has the freedom to slide
+/// and does, with the width EXACTLY unchanged rather than merely nearly so: the earlier reading
+/// seeded the whole displacement, which broke the tangency web along the rail as well as across
+/// it, and the repair leaked into the width by 0.12, then 0.50, then 0.94 over three equal steps.
+#[test]
+fn a_slots_rail_widens_it_across_and_slides_it_along() {
+    let made = source()
+        .with_linear_slot(
+            ::parametric::sketch::LinearSlotKind::CenterToCenter,
+            SketchPoint::new(100, 100),
+            SketchPoint::new(160, 100),
+            SketchPoint::new(130, 106),
+            ctx(16),
+        )
+        .expect("a straight slot");
+    let rail = made.sketch.segments()[0].id;
+    let width = |sketch: &Sketch| {
+        sketch
+            .arc_form(sketch.arcs().first().expect("a cap"))
+            .expect("the cap reads")
+            .radius
+            * 2.0
+    };
+    let spine = |sketch: &Sketch| {
+        sketch
+            .point_in_plane(sketch.arcs().first().expect("a cap").center)
+            .expect("the cap center stands")
+    };
+    let (was_wide, was_spine) = (width(&made.sketch), spine(&made.sketch));
+
+    let mut across = made.sketch.clone();
+    assert!(across
+        .drag_curve_through(
+            SketchCurve::Segment(rail),
+            [130.0, 106.0],
+            [130.0, 109.0],
+            ctx(16)
+        )
+        .expect("the drag is answered"));
+    assert!(
+        (width(&across) - was_wide - 3.0).abs() < 1.0e-6,
+        "three out on one rail is three of width: {}",
+        width(&across) - was_wide
+    );
+    assert!(
+        (spine(&across)[1] - was_spine[1] - 1.5).abs() < 1.0e-6,
+        "the spine takes half, so the far rail mirrors: {:?}",
+        spine(&across)
+    );
+
+    let mut along = made.sketch.clone();
+    assert!(along
+        .drag_curve_through(
+            SketchCurve::Segment(rail),
+            [130.0, 106.0],
+            [138.0, 106.0],
+            ctx(16)
+        )
+        .expect("the drag is answered"));
+    assert!(
+        (width(&along) - was_wide).abs() < 1.0e-9,
+        "slid along its own rail, a slot keeps its width exactly: {}",
+        width(&along) - was_wide
+    );
+    assert!(
+        (spine(&along)[0] - was_spine[0] - 8.0).abs() < 1.0e-4,
+        "and the whole of it travels: {:?}",
+        spine(&along)
+    );
+}
+
+/// A curved slot is the shape a long drag used to break, and the reason one is delivered as a walk.
+///
+/// Its relations have a FAMILY of exact answers — grow the caps outward, or balloon the inner rail
+/// inward, both perfectly tangent — so a solve asked for a long motion in one go can cross to a
+/// distant member of that family. Measured before the walk: a two-voxel pull on the outer rail of
+/// a radius-forty slot threw its inner rail twenty-four voxels inward, and the step after failed a
+/// tangency outright.
+#[test]
+fn a_curved_slot_widens_under_a_long_drag_rather_than_jumping_branch() {
+    let made = source()
+        .with_center_arc_slot(
+            SketchPoint::new(0, 0),
+            SketchPoint::new(40, 0),
+            SketchPoint::new(0, 40),
+            ::parametric::sketch::ArcTurn::CounterClockwise,
+            SketchPoint::new(44, 0),
+            ctx(16),
+        )
+        .expect("a curved slot");
+    let nearest_radius = |sketch: &Sketch, want: f64| {
+        sketch
+            .arcs()
+            .iter()
+            .filter_map(|arc| sketch.arc_form(arc))
+            .map(|form| form.radius)
+            .min_by(|first, second| (first - want).abs().total_cmp(&(second - want).abs()))
+            .expect("the slot still has arcs")
+    };
+    let outer = made
+        .sketch
+        .arcs()
+        .iter()
+        .filter_map(|arc| Some((arc.id, made.sketch.arc_form(arc)?.radius)))
+        .max_by(|first, second| first.1.total_cmp(&second.1))
+        .expect("an outer rail")
+        .0;
+
+    let mut sketch = made.sketch.clone();
+    assert!(sketch
+        .drag_curve_through(SketchCurve::Arc(outer), [44.0, 0.0], [46.0, 0.0], ctx(16))
+        .expect("the drag is answered"));
+    assert!(
+        (nearest_radius(&sketch, 46.0) - 46.0).abs() < 1.0e-6,
+        "the grabbed rail goes where it was pulled: {}",
+        nearest_radius(&sketch, 46.0)
+    );
+    // The inner rail is the one that used to fly. It stays within a fortieth of a voxel of home.
+    assert!(
+        (nearest_radius(&sketch, 36.0) - 36.0).abs() < 0.025,
+        "the far rail holds: {}",
+        nearest_radius(&sketch, 36.0)
+    );
 }

@@ -239,6 +239,82 @@ pub struct RectanglePlacement {
     pub corners: [SketchPoint; 4],
 }
 
+/// How far a body drag is allowed to ask for in one solve, in voxels.
+///
+/// A relation web has a FAMILY of exact answers, not one, and a solve reaches whichever it walks
+/// to. Asked for a small motion it walks to the answer beside the drawing, which is the one the
+/// author meant; asked for a large one it can cross to a distant member of the same family that
+/// satisfies everything equally well and looks nothing like the shape they drew. Measured on a
+/// curved slot of radius forty: a quarter-voxel pull widened it by exactly a quarter voxel, while
+/// the same pull delivered as one two-voxel jump threw its inner rail twenty-four voxels inward
+/// and then failed a tangency outright.
+///
+/// So a long displacement is delivered as a run of short ones, each read off the geometry the last
+/// one left. This is continuation, and it is the ordinary remedy: every intermediate drawing is a
+/// real drawing, so the search never has to cross ground where the answer is ambiguous.
+const NUDGE_A_DRAG_WALKS_IN_VOXELS: f64 = 0.25;
+
+/// The ceiling on how many nudges one drag is broken into.
+///
+/// A drag is answered inside a frame, so the work it can ask for has to be bounded no matter how
+/// far the cursor jumped. Past this the nudges simply get longer, which is the old behavior and no
+/// worse than it was.
+const MOST_NUDGES_A_DRAG_WALKS: usize = 24;
+
+/// Break the displacement from `grabbed` to `to` into the nudges a drag is delivered in, each a
+/// (from, to) pair. See [`NUDGE_A_DRAG_WALKS_IN_VOXELS`] for why a drag walks rather than jumps.
+///
+/// The pairs are struck off the STRAIGHT line the cursor travelled, not off the curve as it moves.
+/// Where the drawing carries the curve somewhere else along the way, the next nudge is read
+/// against the geometry that arrived, which is what makes the walk follow the shape instead of the
+/// plan — see [`Sketch::what_a_body_drag_asks_of`].
+fn nudges_a_drag_is_delivered_in(grabbed: [f64; 2], to: [f64; 2]) -> Vec<([f64; 2], [f64; 2])> {
+    let by = [to[0] - grabbed[0], to[1] - grabbed[1]];
+    let reach = by[0].hypot(by[1]);
+    if !reach.is_finite() || reach <= NUDGE_A_DRAG_WALKS_IN_VOXELS {
+        return vec![(grabbed, to)];
+    }
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a positive finite ratio, and the ceiling below bounds it either way"
+    )]
+    let count =
+        ((reach / NUDGE_A_DRAG_WALKS_IN_VOXELS).ceil() as usize).clamp(1, MOST_NUDGES_A_DRAG_WALKS);
+    let mut walked = Vec::with_capacity(count);
+    let mut stood = grabbed;
+    for nudge in 1..=count {
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "bounded by MOST_NUDGES_A_DRAG_WALKS, which is exact in f64"
+        )]
+        let carried = nudge as f64 / count as f64;
+        let next = [
+            carried.mul_add(by[0], grabbed[0]),
+            carried.mul_add(by[1], grabbed[1]),
+        ];
+        walked.push((stood, next));
+        stood = next;
+    }
+    walked
+}
+
+/// Below this a curve is too small for the direction across it to be read from its own points,
+/// and a drag of it would report a wild displacement out of a rounding difference.
+const DEGENERATE_CURVE_VOXELS: f64 = 1.0e-9;
+
+/// What a body drag of a curve asks of the drawing: where the curve's own points are PUT before
+/// the solve runs, and where they are PULLED while it does.
+///
+/// Two lists rather than one, because they mean different things. See
+/// [`what_a_body_drag_asks_of`](Sketch::what_a_body_drag_asks_of) for why the difference is the
+/// whole of how a drag says "reshape" instead of "travel".
+#[derive(Debug, Clone, PartialEq)]
+struct BodyDrag {
+    seeded: Vec<(EntityId, [f64; 2])>,
+    pulled: Vec<(EntityId, [f64; 2])>,
+}
+
 /// Why a regular polygon could not be appended atomically.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PolygonRefusal {
@@ -2556,6 +2632,30 @@ impl Sketch {
         if !curve.carries_relation_geometry() {
             return self.translate_curve(curve, [to[0] - grabbed[0], to[1] - grabbed[1]], context);
         }
+        // Only a curve with ENDS can be seeded, which is the whole of what a seed does: put its
+        // own points somewhere the relations no longer hold and let the solve repair them. A circle
+        // has none, so it keeps the grip below.
+        if self.curve_a_body_drag_can_seed(curve) {
+            return self.drag_or_leave_it_alone(|sketch| {
+                let mut stood = true;
+                for (from, until) in nudges_a_drag_is_delivered_in(grabbed, to) {
+                    let Some(asked) = sketch.what_a_body_drag_asks_of(curve, from, until) else {
+                        return Ok(false);
+                    };
+                    for (point, at) in &asked.seeded {
+                        if let Some(index) = sketch.point_index(*point) {
+                            sketch.points[index].at = SketchPoint::from_continuous(at[0], at[1]);
+                        }
+                    }
+                    sketch.sync_derived_points();
+                    stood = sketch.settle_under_the_hands(&asked.pulled, context)?;
+                    if !stood {
+                        break;
+                    }
+                }
+                Ok(stood)
+            });
+        }
         let grip = self.add_free_point(SketchPoint::from_continuous(grabbed[0], grabbed[1]));
         self.set_point_lifetime(grip, PointLifetime::CurveAnchored);
         let holding = self.alloc_id();
@@ -2589,6 +2689,165 @@ impl Sketch {
         self.points.retain(|point| point.id != grip);
         self.sync_derived_points();
         stood
+    }
+
+    /// Whether `curve` has the ends a body drag needs in order to seed it. A circle has none, and
+    /// keeps the grip.
+    fn curve_a_body_drag_can_seed(&self, curve: SketchCurve) -> bool {
+        match curve {
+            SketchCurve::Segment(id) => self.segments.iter().any(|segment| segment.id == id),
+            SketchCurve::Arc(id) => self.arcs.iter().any(|arc| arc.id == id),
+            SketchCurve::Circle(_)
+            | SketchCurve::Bezier(_)
+            | SketchCurve::Ellipse(_)
+            | SketchCurve::Conic(_)
+            | SketchCurve::Spline(_) => false,
+        }
+    }
+
+    /// What a body drag of `curve` from `grabbed` to `to` asks of the drawing.
+    ///
+    /// `None` for a curve with no ends to seed — a circle, and the higher curves a body drag
+    /// translates whole.
+    ///
+    /// # Why the seed and the pull are not the same displacement
+    ///
+    /// A hand is a soft pull, so a solve given nothing but hands answers with the cheapest motion
+    /// of the WHOLE drawing, and the cheapest motion is always a rigid slide. Measured that way,
+    /// every drag came out a translation and nothing ever changed shape — a rectangle's edge
+    /// pulled outward carried the whole rectangle with it.
+    ///
+    /// What tells the solve that a curve DEFORMED is where the configuration starts. Putting the
+    /// curve's own points somewhere the relations no longer hold, and letting them be repaired
+    /// from there, is the whole of "this curve moved and what the rest does about it is the
+    /// drawing's business". The seed is the intent; the pull only says how far.
+    ///
+    /// # Which part of a drag can be a deformation
+    ///
+    /// A curve slid ALONG itself is the same curve, so the along part of a displacement cannot
+    /// mean a deformation, and the across part is the only part that can. Nothing here reads what
+    /// shape the curve belongs to — the split is a fact about curves, not about slots or
+    /// rectangles. So the across part seeds, the whole displacement pulls, and the gap between
+    /// them is exactly the travel. Measured, and each of these is the relations' answer rather
+    /// than a rule stated here:
+    ///
+    /// - a rectangle's edge pulled outward moves that edge alone and the rectangle resizes;
+    /// - the same edge pulled sideways translates the whole rectangle rigidly;
+    /// - a slot's rail pulled across widens it symmetrically, the spine and far rail taking half;
+    /// - the same rail pulled along slides the slot with its width EXACTLY unchanged;
+    /// - an arc's rim pulled outward grows its radius at fixed sweep, and pulled sideways slides.
+    ///
+    /// This is also why the earlier reading of a body drag wandered. Seeding the whole
+    /// displacement broke tangency along the curve as well as across it, and the repair split the
+    /// difference between travelling and reshaping: a slot slid along its own rail fattened by
+    /// 0.12, then 0.50, then 0.94 over three steps of the same size.
+    fn what_a_body_drag_asks_of(
+        &self,
+        curve: SketchCurve,
+        grabbed: [f64; 2],
+        to: [f64; 2],
+    ) -> Option<BodyDrag> {
+        let ends = match curve {
+            SketchCurve::Segment(id) => {
+                let segment = self.segments.iter().find(|segment| segment.id == id)?;
+                [segment.from, segment.to]
+            }
+            SketchCurve::Arc(id) => {
+                let arc = self.arcs.iter().find(|arc| arc.id == id)?;
+                [arc.from, arc.to]
+            }
+            SketchCurve::Circle(_)
+            | SketchCurve::Bezier(_)
+            | SketchCurve::Ellipse(_)
+            | SketchCurve::Conic(_)
+            | SketchCurve::Spline(_) => return None,
+        };
+        let by = [to[0] - grabbed[0], to[1] - grabbed[1]];
+        let (across, reach) = self.the_part_of_a_drag_that_crosses(curve, grabbed, by)?;
+        let along = [by[0] - across[0], by[1] - across[1]];
+        let hub = self
+            .center_point_of(curve)
+            .and_then(|id| Some((id, self.point_in_plane(id)?)));
+        // A curve that turns deforms by GROWING about its center, so the across part scales its
+        // ends; a straight one has no center and simply moves. Both ends grow by the SAME reach
+        // rather than by the projection of a vector onto each, which would be zero at an end
+        // standing a quarter turn from the place the author grabbed.
+        let deformed = |at: [f64; 2]| match hub {
+            Some((_, hub)) => {
+                let out = [at[0] - hub[0], at[1] - hub[1]];
+                let radius = out[0].hypot(out[1]);
+                let grown = if radius > DEGENERATE_CURVE_VOXELS {
+                    1.0 + reach / radius
+                } else {
+                    1.0
+                };
+                [grown.mul_add(out[0], hub[0]), grown.mul_add(out[1], hub[1])]
+            }
+            None => [at[0] + across[0], at[1] + across[1]],
+        };
+        let seeded: Vec<(EntityId, [f64; 2])> = ends
+            .into_iter()
+            .filter_map(|point| Some((point, deformed(self.point_in_plane(point)?))))
+            .collect();
+        // The pull is the seed plus the travel, for the curve's center as much as for its ends.
+        //
+        // The center is PULLED and never seeded, which is the difference between an arc standing on
+        // its own and one of an arc slot's two rails. That center is shared — the far rail, the
+        // caps and the spine are all concentric with it — so writing it would move their geometry
+        // without moving them, and measured, it did: a rail slid along its own sweep threw a point
+        // twenty units sideways and failed a tangency outright. A pull states the same wish and
+        // lets everything standing on the center come along.
+        let mut pulled: Vec<(EntityId, [f64; 2])> = seeded
+            .iter()
+            .map(|(point, at)| (*point, [at[0] + along[0], at[1] + along[1]]))
+            .collect();
+        pulled.extend(hub.map(|(id, at)| (id, [at[0] + along[0], at[1] + along[1]])));
+        (!seeded.is_empty()).then_some(BodyDrag { seeded, pulled })
+    }
+
+    /// The part of `by` that crosses `curve` at `grabbed` — across a segment, radially out of a
+    /// curve that turns — as a displacement and as the signed reach along that direction.
+    ///
+    /// Both, because the two forms are wanted in different places: a straight curve moves by the
+    /// displacement, while one that turns grows by the reach about a center it keeps.
+    ///
+    /// `None` where the curve is too small for that direction to mean anything.
+    fn the_part_of_a_drag_that_crosses(
+        &self,
+        curve: SketchCurve,
+        grabbed: [f64; 2],
+        by: [f64; 2],
+    ) -> Option<([f64; 2], f64)> {
+        let across = match curve {
+            SketchCurve::Segment(id) => {
+                let segment = self.segments.iter().find(|segment| segment.id == id)?;
+                let tail = self.point_in_plane(segment.from)?;
+                let head = self.point_in_plane(segment.to)?;
+                let span = [head[0] - tail[0], head[1] - tail[1]];
+                let length = span[0].hypot(span[1]);
+                if length < DEGENERATE_CURVE_VOXELS {
+                    return None;
+                }
+                [-span[1] / length, span[0] / length]
+            }
+            SketchCurve::Arc(id) => {
+                let arc = self.arcs.iter().find(|arc| arc.id == id)?;
+                let center = self.point_in_plane(arc.center)?;
+                let out = [grabbed[0] - center[0], grabbed[1] - center[1]];
+                let reach = out[0].hypot(out[1]);
+                if reach < DEGENERATE_CURVE_VOXELS {
+                    return None;
+                }
+                [out[0] / reach, out[1] / reach]
+            }
+            SketchCurve::Circle(_)
+            | SketchCurve::Bezier(_)
+            | SketchCurve::Ellipse(_)
+            | SketchCurve::Conic(_)
+            | SketchCurve::Spline(_) => return None,
+        };
+        let reach = by[0].mul_add(across[0], by[1] * across[1]);
+        Some(([reach * across[0], reach * across[1]], reach))
     }
 
     /// Whether `curve` is a curve this drawing actually holds.
@@ -3349,7 +3608,17 @@ impl Sketch {
             .filter(|constraint| self.constraint_stands_within(constraint, &reach))
             .copied()
             .collect();
+        // Nothing standing means nothing to trade the pull off against, so every hand is reachable
+        // exactly and the hands ARE the answer. Returning here without writing them would drop the
+        // gesture on the floor: measured, a bare arc dragged sideways did not move at all, because
+        // no relation touched it and so no solve ran to carry the pull.
         if standing.is_empty() {
+            for (point, at) in hands {
+                if let Some(index) = self.point_index(*point) {
+                    self.points[index].at = SketchPoint::from_continuous(at[0], at[1]);
+                }
+            }
+            self.sync_derived_points();
             return Ok(true);
         }
         let prepared = constraint::prepare_scoped(self, &standing, Some(context), Some(&reach))
