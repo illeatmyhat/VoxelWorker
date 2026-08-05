@@ -1871,13 +1871,24 @@ mod tests {
         assert_eq!(relation.residual_count(), 5);
         arcs.add_constraint(relation);
         let analysis = arcs.finish().unwrap().analyze();
-        // Eight points, so sixteen coordinates. Seven rows stand — five for the symmetry and one
-        // equal-radius row per arc (ADR 0038) — but only six are independent: a mirror already
-        // makes the two radii agree, so the second arc's row is implied by the first's and the
-        // symmetry. Sixteen coordinates less six independent equations is ten freedoms.
+        // Eight points, so sixteen coordinates, and seven rows stand — five for the symmetry and
+        // one equal-radius row per arc (ADR 0038).
+        //
+        // Only FIVE of the seven are independent, and both dependencies are the drawing's rather
+        // than the relation's. A mirror already makes the two radii agree, so the second arc's row
+        // is implied by the first's and the symmetry. And these particular numbers settle into a
+        // COLLAPSE: each arc's two ends land on each other about a millionth of a unit apart, and
+        // an arc with no sweep has an equal-radius row whose Jacobian degenerates too. Sixteen
+        // coordinates less five independent equations is eleven freedoms.
+        //
+        // The collapse is the geometry, not the solver — the same three numbers collapsed to the
+        // same place before the solver took least-norm steps. What changed is that it now stops
+        // three ten-millionths from the degeneracy instead of two millionths, near enough for the
+        // rank reading to see the second dependency it was previously just missing. This test is
+        // about row counts and rank, so a degenerate answer serves it; nothing here draws.
         assert_eq!(
             (analysis.witness_rank, analysis.degrees_of_freedom),
-            (7, 10)
+            (7, 11)
         );
     }
 

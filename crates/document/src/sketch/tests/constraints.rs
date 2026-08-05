@@ -513,10 +513,14 @@ fn the_producer_door_asserts_without_touching_the_original() {
         .expect("nothing else is asserted");
 
     assert_eq!(position(&before.sketch, head), [10.0, 4.0], "the original");
-    assert_eq!(
-        position(&after.sketch, tail)[1],
-        position(&after.sketch, head)[1],
-        "the copy is leveled"
+    // NEAR, not bit-identical. Horizontal is a claim about the two heights agreeing, and a solved
+    // drawing agrees to the solver's precision rather than to the last bit — asking for the bit was
+    // asking the search to arrive by one particular route.
+    assert!(
+        (position(&after.sketch, tail)[1] - position(&after.sketch, head)[1]).abs() < 1.0e-9,
+        "the copy is leveled: {:?} vs {:?}",
+        position(&after.sketch, tail),
+        position(&after.sketch, head)
     );
     assert_eq!(after.sketch.constraints().len(), 1);
     assert_eq!(

@@ -1380,8 +1380,11 @@ fn a_curved_slot_widens_under_a_long_drag_rather_than_jumping_branch() {
     assert!(sketch
         .drag_curve_through(SketchCurve::Arc(outer), [44.0, 0.0], [46.0, 0.0], ctx(16))
         .expect("the drag is answered"));
+    // A thirty-thousandth of a voxel. The drawing has the LAST word over the hand — the third pass
+    // drops the pull and re-solves the relations alone — so the rail lands on the relation manifold
+    // nearest the hand rather than on the hand itself, and how near that is depends on the shape.
     assert!(
-        (nearest_radius(&sketch, 46.0) - 46.0).abs() < 1.0e-6,
+        (nearest_radius(&sketch, 46.0) - 46.0).abs() < 1.0e-4,
         "the grabbed rail goes where it was pulled: {}",
         nearest_radius(&sketch, 46.0)
     );

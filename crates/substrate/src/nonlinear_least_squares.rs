@@ -17,14 +17,31 @@
 //! between them leaves the region otherwise. The radius is in the same units as the parameters, so
 //! "the solver is taking 0.01-voxel steps" is a statement anyone can act on.
 //!
+//! ## An under-constrained system gets the LEAST-NORM step, not a repaired one
+//!
+//! `JᵀJ h = −Jᵀr` is the over-determined normal equation, and a sketch is usually not
+//! over-determined: an under-constrained drawing has a rank-deficient Jacobian BY CONSTRUCTION,
+//! because a free parameter is exactly a direction the residuals do not see. With fewer residuals
+//! than parameters, `JᵀJ` is singular with nullity at least their difference — so it is the wrong
+//! matrix to ask, and no care in factorising it recovers what it does not contain.
+//!
+//! So that case asks the other question: of all the `h` solving `J h = −r`, take the SHORTEST.
+//! `h = Jᵀ(JJᵀ)⁻¹(−r)`, where `JJᵀ` is residuals-by-residuals and non-singular whenever the
+//! residuals are independent. The shortest correction is the one that leaves every free parameter
+//! nearest where it was, which is what an author means by geometry nothing has asked to move.
+//!
 //! ## The LM fallback is not an alternative, it is a repair
 //!
-//! The Gauss-Newton step needs `JᵀJ` to be invertible, and in a sketch it very often is not: an
-//! under-constrained drawing has a rank-deficient Jacobian BY CONSTRUCTION, because a free
-//! parameter is exactly a direction the residuals do not see. So when the Cholesky factorisation
-//! fails, the step is recomputed from `JᵀJ + λI` with λ raised until it succeeds. That is one
-//! Levenberg–Marquardt step, used as a repair for the singular case rather than as the outer
-//! algorithm.
+//! Either normal matrix can still come back singular — two residuals saying the same thing does it.
+//! When the Cholesky factorisation fails, the step is recomputed from `M + λI` with λ raised until
+//! it succeeds. That is one Levenberg–Marquardt step, used as a repair for the singular case rather
+//! than as the outer algorithm.
+//!
+//! Its companion is the PIVOT TOLERANCE. A singular matrix has a zero pivot exactly and a pivot of
+//! rounding dust in floating point, and dust has an arbitrary sign; a factorisation that only asks
+//! whether the pivot is positive accepts half of those and then divides by the dust. So a pivot is
+//! measured against the matrix's largest diagonal, and one that small is called singular — which is
+//! what sends it through the repair above instead of out through an answer made of noise.
 //!
 //! ## The rank report is the diagnosis
 //!
@@ -441,15 +458,30 @@ fn clipped(step: &[f64], length: f64, trust_radius: f64) -> Vec<f64> {
     step.iter().map(|value| value * scale).collect()
 }
 
-/// The Gauss-Newton step: the `h` solving `JᵀJ h = −Jᵀr`, by Cholesky.
+/// The Gauss-Newton step, in whichever of its two forms the system's shape calls for.
 ///
-/// `None` never comes back for a system with any curvature at all, because the LEVENBERG–MARQUARDT
-/// FALLBACK is here: `JᵀJ` is singular whenever the system is rank-deficient — which for a sketch
-/// is the NORMAL case, not an exotic one, since every unconstrained degree of freedom is a null
-/// direction — so a failed factorisation retries on `JᵀJ + λI` with λ climbing until it succeeds.
-/// Damping picks the minimum-norm-ish step out of the flat directions instead of diverging along
-/// one of them, which is exactly what an under-constrained sketch should do: leave the free
-/// parameters where the author put them.
+/// **More residuals than parameters** is the over-determined case, and the step is the `h` solving
+/// the normal equations `JᵀJ h = −Jᵀr`.
+///
+/// **Fewer residuals than parameters** is an UNDER-CONSTRAINED sketch, which is the ordinary case
+/// rather than an exotic one — a free degree of freedom is exactly a direction the residuals do not
+/// see. There `JᵀJ` is singular BY CONSTRUCTION, with nullity at least `columns − rows`, so it is
+/// the wrong matrix to be asking: no amount of care factorising it recovers information it does not
+/// contain. The right question is the LEAST-NORM one — of all the `h` solving `J h = −r`, take the
+/// shortest — whose answer is `h = Jᵀ(JJᵀ)⁻¹(−r)`. `JJᵀ` is `rows × rows`, it is non-singular
+/// whenever the residuals are independent, and the step it gives moves the free parameters as
+/// little as the correction allows.
+///
+/// That last property is the whole point, and it is what an under-constrained drawing needs: a
+/// point no relation touches should stay where the author put it. Solving the singular `JᵀJ`
+/// instead left the free directions to whatever the factorisation's rounding error happened to
+/// contain, amplified by a near-zero pivot and then clipped to the full trust radius — which is
+/// motion with no meaning, in geometry the author never named. It is the same choice `planegcs`
+/// offers as `DogLegGaussStep::LeastNormLdlt`.
+///
+/// Either matrix can still come back singular — duplicate residuals do it, and so does a redundant
+/// relation — so both go through the same LEVENBERG–MARQUARDT REPAIR: retry on `M + λI` with λ
+/// climbing until the factorisation succeeds.
 fn gauss_newton_step(
     jacobian_matrix: &[f64],
     residuals: &[f64],
@@ -457,35 +489,65 @@ fn gauss_newton_step(
     rows: usize,
     columns: usize,
 ) -> Option<Vec<f64>> {
+    if rows < columns {
+        let normal = self_times_transpose(jacobian_matrix, rows, columns);
+        let negative_residuals: Vec<f64> =
+            residuals.iter().take(rows).map(|value| -value).collect();
+        let weights = solve_damped(&normal, &negative_residuals, rows)?;
+        return Some(transpose_times(jacobian_matrix, &weights, rows, columns));
+    }
     let normal = transpose_times_self(jacobian_matrix, rows, columns);
     let negative_gradient: Vec<f64> = gradient.iter().map(|value| -value).collect();
-    if let Some(step) = cholesky_solve(&normal, &negative_gradient, columns) {
-        return Some(step);
+    solve_damped(&normal, &negative_gradient, columns)
+}
+
+/// `M x = b` for a symmetric positive-SEMI-definite `M`, damping until it factorises.
+///
+/// The undamped solve is tried first because it is the exact one where it exists. Where it does
+/// not, λ starts small relative to the largest diagonal and climbs by tens — the smallest damping
+/// that makes the system definite is the one that perturbs the answer least.
+fn solve_damped(normal: &[f64], vector: &[f64], size: usize) -> Option<Vec<f64>> {
+    if let Some(solution) = cholesky_solve(normal, vector, size) {
+        return Some(solution);
     }
-    let scale = (0..columns)
-        .zip(normal.chunks_exact(columns))
-        .map(|(index, row)| row.get(index).copied().unwrap_or_default())
-        .fold(0.0f64, f64::max)
-        .max(1.0);
+    let scale = largest_diagonal(normal, size);
     let mut damping = DAMPING_SEED * scale;
     for _ in 0..DAMPING_ATTEMPTS {
-        let mut damped = normal.clone();
-        for (index, row) in damped.chunks_exact_mut(columns).take(columns).enumerate() {
+        let mut damped = normal.to_vec();
+        for (index, row) in damped.chunks_exact_mut(size).take(size).enumerate() {
             if let Some(diagonal) = row.get_mut(index) {
                 *diagonal += damping;
             }
         }
-        if let Some(step) = cholesky_solve(&damped, &negative_gradient, columns) {
-            return Some(step);
+        if let Some(solution) = cholesky_solve(&damped, vector, size) {
+            return Some(solution);
         }
         damping *= 10.0;
     }
-    let _ = residuals;
     None
 }
 
-/// The first λ the fallback tries, relative to the largest diagonal of `JᵀJ`.
+/// The largest entry on a square row-major matrix's diagonal, floored at one so it can scale a
+/// tolerance without a degenerate matrix driving that tolerance to zero.
+fn largest_diagonal(matrix: &[f64], size: usize) -> f64 {
+    matrix
+        .chunks_exact(size)
+        .take(size)
+        .enumerate()
+        .filter_map(|(index, row)| row.get(index).copied())
+        .fold(0.0f64, f64::max)
+        .max(1.0)
+}
+
+/// The first λ the fallback tries, relative to the largest diagonal of the normal matrix.
 const DAMPING_SEED: f64 = 1.0e-9;
+
+/// How large a Cholesky pivot must be, relative to the matrix's largest diagonal, to count as
+/// positive rather than as rounding dust around zero. See the guard in [`cholesky_solve`].
+///
+/// It sits well below [`DAMPING_SEED`] on purpose: a damped matrix's null directions have pivots of
+/// about λ, and those must pass, or the repair would reject its own repair.
+const PIVOT_TOLERANCE: f64 = 1.0e-13;
 
 /// How many times λ may be multiplied by ten before the step is declared unavailable.
 const DAMPING_ATTEMPTS: usize = 12;
@@ -494,6 +556,7 @@ const DAMPING_ATTEMPTS: usize = 12;
 /// factorisation. `None` when `A` is not positive definite, which is the signal the caller damps
 /// on rather than an error.
 fn cholesky_solve(matrix: &[f64], vector: &[f64], size: usize) -> Option<Vec<f64>> {
+    let tolerance = PIVOT_TOLERANCE * largest_diagonal(matrix, size);
     let mut lower: Vec<Vec<f64>> = (0..size).map(|_| vec![0.0; size]).collect();
     for row in 0..size {
         for column in 0..=row {
@@ -517,9 +580,19 @@ fn cholesky_solve(matrix: &[f64], vector: &[f64], size: usize) -> Option<Vec<f64
                 sum = (-column_value).mul_add(row_value, sum);
             }
             if row == column {
-                // A non-positive or non-finite pivot is exactly "not positive definite" — the
-                // signal to damp, so it leaves by the same door as any other singular matrix.
-                if sum.is_nan() || sum <= 0.0 || sum.is_infinite() {
+                // A pivot at or below the tolerance is "not positive definite" — the signal to
+                // damp, so it leaves by the same door as any other singular matrix.
+                //
+                // RELATIVE, not merely positive. A singular matrix has a zero pivot in exact
+                // arithmetic and a pivot of a few ulps of the largest diagonal in floating point,
+                // and the sign of that dust is arbitrary. Tested against zero, half of those
+                // matrices factorise: the back-substitution then divides by the square root of the
+                // dust, and the solution's component along the direction that was singular is
+                // rounding error scaled by ten-to-the-nine. Measured on a sketch, that came out as
+                // geometry nothing had asked to move drifting a full trust radius per iteration,
+                // in a different direction each time. `planegcs` sets the same tolerance at 1e-13
+                // and calls it `qrpivotThreshold`.
+                if !sum.is_finite() || sum <= tolerance {
                     return None;
                 }
                 let values = lower.get_mut(row)?;
@@ -619,6 +692,34 @@ fn transpose_times(matrix: &[f64], vector: &[f64], rows: usize, columns: usize) 
 }
 
 /// `MᵀM` for a `rows × columns` row-major `M`, as a `columns × columns` row-major matrix.
+/// `M · Mᵀ` for a `rows × columns` row-major `M`, as a `rows × rows` row-major matrix.
+///
+/// The least-norm counterpart of [`transpose_times_self`]: that one is the over-determined normal
+/// matrix, this one the under-determined.
+fn self_times_transpose(matrix: &[f64], rows: usize, columns: usize) -> Vec<f64> {
+    let row_at = |index: usize| matrix.chunks_exact(columns).nth(index);
+    let mut product: Vec<Vec<f64>> = (0..rows).map(|_| vec![0.0; rows]).collect();
+    for left in 0..rows {
+        for right in left..rows {
+            let sum: f64 = match (row_at(left), row_at(right)) {
+                (Some(first), Some(second)) => first
+                    .iter()
+                    .zip(second.iter())
+                    .map(|(&one, &other)| one * other)
+                    .sum(),
+                _ => 0.0,
+            };
+            if let Some(slot) = product.get_mut(left).and_then(|row| row.get_mut(right)) {
+                *slot = sum;
+            }
+            if let Some(slot) = product.get_mut(right).and_then(|row| row.get_mut(left)) {
+                *slot = sum;
+            }
+        }
+    }
+    product.into_iter().flat_map(Vec::into_iter).collect()
+}
+
 fn transpose_times_self(matrix: &[f64], rows: usize, columns: usize) -> Vec<f64> {
     let mut product: Vec<Vec<f64>> = (0..columns).map(|_| vec![0.0; columns]).collect();
     for left in 0..columns {
@@ -878,6 +979,63 @@ mod tests {
             "the direction nothing constrains was left alone: {parameters:?}"
         );
         assert_eq!(report.degrees_of_freedom, 1, "{report:?}");
+    }
+
+    /// An under-constrained system moves ONLY as far as its one residual asks, and spreads that
+    /// motion evenly over the parameters that can supply it.
+    ///
+    /// One residual over four parameters: `JᵀJ` is four-by-four with rank one, singular by three,
+    /// and asking it for a step is asking a matrix for information it does not carry. The least-norm
+    /// form asks `JJᵀ` instead — one-by-one, non-singular — and answers with the shortest correction
+    /// that does the job. Here the residual wants the sum to fall by four, and the shortest way to
+    /// do that is one each.
+    ///
+    /// The old form answered by factorising the singular matrix anyway, which succeeded whenever
+    /// rounding left its last pivot a hair above zero, and then divided by that hair.
+    #[test]
+    fn an_under_constrained_system_takes_the_shortest_correction() {
+        let sum_is_ten = |p: &[f64]| p[0] + p[1] + p[2] + p[3] - 10.0;
+        let system = Closures {
+            parameters: 4,
+            residuals: vec![&sum_is_ten],
+        };
+        let mut parameters = vec![5.0, 3.0, 4.0, 2.0];
+        let report = solve(&system, &mut parameters, SolveSettings::default());
+        assert_eq!(report.outcome, SolveOutcome::Converged, "{report:?}");
+        assert!(report.residual_norm < 1.0e-9, "{report:?}");
+        for (moved, was) in parameters.iter().zip([5.0, 3.0, 4.0, 2.0]) {
+            assert!(
+                (moved - (was - 1.0)).abs() < 1.0e-6,
+                "each parameter gave up exactly its quarter: {parameters:?}"
+            );
+        }
+        assert_eq!(report.degrees_of_freedom, 3, "{report:?}");
+    }
+
+    /// A pivot that is only rounding dust above zero is treated as zero, so the step goes through
+    /// the damped door rather than dividing by the dust.
+    ///
+    /// Two residuals saying the SAME thing about one parameter, and a second parameter nothing
+    /// mentions. Redundancy like this is ordinary in a sketch — two relations that agree — and it
+    /// leaves the normal matrix singular in exact arithmetic and a few ulps off it in floating
+    /// point. What must not happen is the untouched parameter wandering: whatever the factorisation
+    /// does with the direction nothing constrains, it must not be to move it.
+    #[test]
+    fn a_redundant_system_leaves_the_untouched_parameter_alone() {
+        let says_it_once = |p: &[f64]| p[0] - 3.0;
+        let says_it_again = |p: &[f64]| 2.0f64.mul_add(p[0], -6.0);
+        let system = Closures {
+            parameters: 2,
+            residuals: vec![&says_it_once, &says_it_again],
+        };
+        let mut parameters = vec![0.0, 137.5];
+        let report = solve(&system, &mut parameters, SolveSettings::default());
+        assert!((parameters[0] - 3.0).abs() < 1.0e-8, "{parameters:?}");
+        assert!(
+            (parameters[1] - 137.5).abs() < 1.0e-9,
+            "the parameter no residual names did not drift: {parameters:?}"
+        );
+        assert!(report.redundant_residuals >= 1, "{report:?}");
     }
 
     /// A system already at its solution takes no step and says so immediately.
