@@ -1,6 +1,6 @@
 # ADR 0037 — Curve-intrinsic authority and evaluation context
 
-- **Status:** Accepted
+- **Status:** Accepted; the `ArcSweep` half amended by [0038](0038-a-point-is-placed-never-computed.md)
 - **Date:** 2026-08-01
 
 ## Context

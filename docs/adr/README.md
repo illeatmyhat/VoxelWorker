@@ -68,7 +68,8 @@ can be skipped entirely; one superseded *in part* cannot.
 | [0033](0033-selection-is-not-undo-state.md) | Selection is view state, not undo state | Accepted |
 | [0035](0035-the-sketch-tool-suite.md) | The sketch tool suite: a constraint solver, a geometric arrangement, a parametric library | Accepted; being built |
 | [0036](0036-parametric-sketch-solver-ownership.md) | Parametric owns continuous sketch solving | Accepted |
-| [0037](0037-curve-intrinsic-authority-and-evaluation-context.md) | Curve-intrinsic authority and density-aware evaluation | Accepted |
+| [0037](0037-curve-intrinsic-authority-and-evaluation-context.md) | Curve-intrinsic authority and density-aware evaluation | Accepted; the `ArcSweep` half **amended** by 0038 |
+| [0038](0038-a-point-is-placed-never-computed.md) | A point is placed, never computed | Accepted; being built. Amends 0037 for arcs |
 
 ## Records that quote documents no longer in the repo
 
