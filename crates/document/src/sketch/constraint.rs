@@ -62,6 +62,43 @@ impl SketchCurve {
             | Self::Spline(id) => id,
         }
     }
+
+    /// Whether the relation system can read this KIND of curve as a whole shape.
+    ///
+    /// This is the ONE statement of which curves Tangent, Symmetry, and point-on-curve can be
+    /// about, and it is here rather than restated by each caller that has to turn a pick away.
+    /// [`Sketch::curve_geometry`](super::Sketch::curve_geometry) is the implementation of the same
+    /// fact; a test holds the two to each other, because a kind that answers yes here and yields
+    /// no geometry there is a gesture that completes and then cannot be applied.
+    ///
+    /// An aggregate answers no because it has no single center, radius, or direction — the
+    /// relations resolve their spans individually, and which span the author meant is not
+    /// something the identity carries.
+    pub const fn carries_relation_geometry(self) -> bool {
+        matches!(self, Self::Segment(_) | Self::Arc(_) | Self::Circle(_))
+    }
+
+    /// Whether this curve is a constant radius about a center, which is what Concentric needs on
+    /// both sides and what makes an arc and a circle interchangeable to it. An ellipse has a
+    /// center too, and is still not this: its radius is not one number.
+    pub const fn is_circular(self) -> bool {
+        matches!(self, Self::Arc(_) | Self::Circle(_))
+    }
+
+    /// Whether two identities name the same KIND of curve — what Symmetry means by mirroring like
+    /// onto like, and the reason its second pick narrows once the first one lands.
+    pub const fn same_kind_as(self, other: Self) -> bool {
+        matches!(
+            (self, other),
+            (Self::Segment(_), Self::Segment(_))
+                | (Self::Arc(_), Self::Arc(_))
+                | (Self::Circle(_), Self::Circle(_))
+                | (Self::Bezier(_), Self::Bezier(_))
+                | (Self::Ellipse(_), Self::Ellipse(_))
+                | (Self::Conic(_), Self::Conic(_))
+                | (Self::Spline(_), Self::Spline(_))
+        )
+    }
 }
 
 /// What a constraint asserts. Every reference is a stable document entity id, never a slot.

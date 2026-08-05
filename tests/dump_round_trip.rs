@@ -380,7 +380,12 @@ fn every_enum_variant_survives_the_full_loop() {
     }
     for (label, picked) in [
         ("point", vec![SketchEntity::Point(4)]),
-        ("segment", vec![SketchEntity::Segment(6)]),
+        (
+            "segment",
+            vec![SketchEntity::Curve(document::sketch::SketchCurve::Segment(
+                6,
+            ))],
+        ),
     ] {
         let mut config = base();
         let verb = match label {

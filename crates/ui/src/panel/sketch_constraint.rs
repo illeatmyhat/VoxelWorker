@@ -27,13 +27,18 @@ use document::sketch::{ConstraintKind, EntityId, Sketch, SketchCurve};
 
 use crate::icons::Icon;
 
-/// A sketch entity a constraint can name.
+/// A sketch entity a constraint can name: a point, or **the document's own curve identity**.
+///
+/// The curve arm carries [`SketchCurve`] whole rather than re-spelling its variants. A second
+/// enumeration of the curve kinds would be a vocabulary the drawing does not have — every hit,
+/// every persisted pick and every selection would need a hand-written translation both ways, and
+/// a curve kind added to the document would compile clean here while being silently unnameable.
+/// What a relation can actually be ABOUT is a separate question, and
+/// [`SketchCurve::carries_relation_geometry`] is where the drawing answers it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SketchEntity {
     Point(EntityId),
-    Segment(EntityId),
-    Arc(EntityId),
-    Circle(EntityId),
+    Curve(SketchCurve),
 }
 
 /// What a constraint slot accepts.
@@ -55,35 +60,34 @@ pub enum PickRequirement {
     Segment,
     Curve,
     CircularCurve,
-    Arc,
-    Circle,
+    /// A curve of the same KIND as one already picked. Symmetry is the only verb that narrows this
+    /// way, and it carries the curve rather than a kind tag so that adding a curve kind to the
+    /// document needs nothing here.
+    MatchingCurve(SketchCurve),
     PointOrCurve,
 }
 
 impl PickRequirement {
+    /// Whether `entity` fills this slot.
+    ///
+    /// Every curve arm asks [`SketchCurve::carries_relation_geometry`] first. An aggregate is
+    /// nameable — it is a real curve with a real identity, and the hit-test resolves it — but no
+    /// relation can read one, so taking the pick would arm a gesture that completes and then
+    /// cannot be applied. The refusal belongs at the click, where the tool is still waiting.
     fn accepts(self, entity: SketchEntity) -> bool {
-        matches!(
-            (self, entity),
-            (Self::Point, SketchEntity::Point(_))
-                | (Self::Segment, SketchEntity::Segment(_))
-                | (
-                    Self::Curve,
-                    SketchEntity::Segment(_) | SketchEntity::Arc(_) | SketchEntity::Circle(_)
-                )
-                | (
-                    Self::CircularCurve,
-                    SketchEntity::Arc(_) | SketchEntity::Circle(_)
-                )
-                | (Self::Arc, SketchEntity::Arc(_))
-                | (Self::Circle, SketchEntity::Circle(_))
-                | (
-                    Self::PointOrCurve,
-                    SketchEntity::Point(_)
-                        | SketchEntity::Segment(_)
-                        | SketchEntity::Arc(_)
-                        | SketchEntity::Circle(_)
-                )
-        )
+        let curve = match entity {
+            SketchEntity::Point(_) => return matches!(self, Self::Point | Self::PointOrCurve),
+            SketchEntity::Curve(curve) => curve,
+        };
+        match self {
+            Self::Point => false,
+            Self::Segment => matches!(curve, SketchCurve::Segment(_)),
+            Self::Curve | Self::PointOrCurve => curve.carries_relation_geometry(),
+            Self::CircularCurve => curve.is_circular(),
+            Self::MatchingCurve(like) => {
+                like.same_kind_as(curve) && curve.carries_relation_geometry()
+            }
+        }
     }
 
     pub fn wanted(self) -> &'static str {
@@ -92,10 +96,48 @@ impl PickRequirement {
             Self::Segment => "a line",
             Self::Curve => "a curve",
             Self::CircularCurve => "an arc or circle",
-            Self::Arc => "an arc",
-            Self::Circle => "a circle",
+            Self::MatchingCurve(like) => another_of_the_same_kind(like),
             Self::PointOrCurve => "a point or a curve",
         }
+    }
+
+    /// What the status line says when a click found nothing of the kind this slot wants.
+    ///
+    /// Written out rather than assembled from [`wanted`](Self::wanted), because the refusal is
+    /// held as one `&'static str`. It lives HERE, beside the vocabulary it extends, so the shell
+    /// that shows it does not carry a second table of what each slot is called.
+    pub fn nothing_under_the_cursor(self) -> &'static str {
+        match self {
+            Self::Point => "nothing under the cursor — pick a point",
+            Self::Segment => "nothing under the cursor — pick a line",
+            Self::Curve => "nothing under the cursor — pick a curve",
+            Self::CircularCurve => "nothing under the cursor — pick an arc or circle",
+            Self::MatchingCurve(SketchCurve::Segment(_)) => {
+                "nothing under the cursor — pick another line"
+            }
+            Self::MatchingCurve(SketchCurve::Arc(_)) => {
+                "nothing under the cursor — pick another arc"
+            }
+            Self::MatchingCurve(SketchCurve::Circle(_)) => {
+                "nothing under the cursor — pick another circle"
+            }
+            Self::MatchingCurve(_) => "nothing under the cursor — pick a curve of the same kind",
+            Self::PointOrCurve => "nothing under the cursor — pick a point or a curve",
+        }
+    }
+}
+
+/// How the prompt asks for a second curve like the first one. It names the KIND, because that is
+/// the whole of what the second pick has to match.
+fn another_of_the_same_kind(like: SketchCurve) -> &'static str {
+    match like {
+        SketchCurve::Segment(_) => "another line",
+        SketchCurve::Arc(_) => "another arc",
+        SketchCurve::Circle(_) => "another circle",
+        SketchCurve::Bezier(_) => "another curve piece",
+        SketchCurve::Ellipse(_) => "another ellipse",
+        SketchCurve::Conic(_) => "another conic",
+        SketchCurve::Spline(_) => "another spline",
     }
 }
 
@@ -349,9 +391,7 @@ impl ArmedConstraint {
     pub fn wants(&self) -> Option<PickRequirement> {
         if self.verb == ConstraintVerb::Symmetry && self.picked.len() == 1 {
             return match self.picked[0] {
-                SketchEntity::Segment(_) => Some(PickRequirement::Segment),
-                SketchEntity::Arc(_) => Some(PickRequirement::Arc),
-                SketchEntity::Circle(_) => Some(PickRequirement::Circle),
+                SketchEntity::Curve(curve) => Some(PickRequirement::MatchingCurve(curve)),
                 SketchEntity::Point(_) => None,
             };
         }
@@ -403,12 +443,21 @@ impl ArmedConstraint {
             return Offer::Refused(match slot {
                 PickRequirement::Point => "that is not a point",
                 PickRequirement::Segment => "that is not a line",
-                PickRequirement::Curve => "that is not a curve",
+                // An aggregate reaches this arm too, and the message is right for it: no relation
+                // reads a spline or an ellipse as a whole shape, so to this slot it is not one.
+                PickRequirement::Curve => "that is not a curve a constraint can hold",
                 PickRequirement::CircularCurve => "pick an arc or circle — lines have no center",
-                PickRequirement::Arc => "pick another arc",
-                PickRequirement::Circle => "pick another circle",
-                // Nothing a sketch holds is refused by this slot, so the message is unreachable
-                // rather than merely unlikely. It stays honest in case a fifth entity kind lands.
+                PickRequirement::MatchingCurve(like) => match like {
+                    SketchCurve::Segment(_) => "pick another line",
+                    SketchCurve::Arc(_) => "pick another arc",
+                    SketchCurve::Circle(_) => "pick another circle",
+                    SketchCurve::Bezier(_)
+                    | SketchCurve::Ellipse(_)
+                    | SketchCurve::Conic(_)
+                    | SketchCurve::Spline(_) => "pick a curve of the same kind",
+                },
+                // A point or any relation-bearing curve fills this, so the message is reached only
+                // by an aggregate — which is a curve the author drew and a claim they cannot make.
                 PickRequirement::PointOrCurve => "that is not a point or a curve",
             });
         }
@@ -421,7 +470,10 @@ impl ArmedConstraint {
         if self.verb == ConstraintVerb::Tangent
             && matches!(
                 (&self.picked[..], candidate),
-                ([SketchEntity::Segment(_)], SketchEntity::Segment(_))
+                (
+                    [SketchEntity::Curve(SketchCurve::Segment(_))],
+                    SketchEntity::Curve(SketchCurve::Segment(_))
+                )
             )
         {
             return Offer::Refused("two lines use Parallel — pick a curve");
@@ -449,30 +501,31 @@ impl ArmedConstraint {
         // The two-slot verbs read their pair the same way, so the pair is pulled out once. A
         // verb's slot list is what guarantees these are the kinds asked for; `offer` enforces it.
         let segment_pair = || match (self.picked.first()?, self.picked.get(1)?) {
-            (SketchEntity::Segment(first), SketchEntity::Segment(second)) => {
+            (
+                SketchEntity::Curve(SketchCurve::Segment(first)),
+                SketchEntity::Curve(SketchCurve::Segment(second)),
+            ) => Some((*first, *second)),
+            _ => None,
+        };
+        let circular_pair = || match (self.picked.first()?, self.picked.get(1)?) {
+            (SketchEntity::Curve(first), SketchEntity::Curve(second))
+                if first.is_circular() && second.is_circular() =>
+            {
                 Some((*first, *second))
             }
             _ => None,
         };
-        let circular_pair = || {
-            let curve = |entity| match entity {
-                SketchEntity::Arc(id) => Some(SketchCurve::Arc(id)),
-                SketchEntity::Circle(id) => Some(SketchCurve::Circle(id)),
-                SketchEntity::Point(_) | SketchEntity::Segment(_) => None,
-            };
-            curve(*self.picked.first()?).zip(curve(*self.picked.get(1)?))
-        };
         match self.verb {
             ConstraintVerb::HorizontalOrVertical => match self.picked.first()? {
-                SketchEntity::Segment(segment) => nearer_axis(sketch, *segment),
-                SketchEntity::Point(_) | SketchEntity::Arc(_) | SketchEntity::Circle(_) => None,
+                SketchEntity::Curve(SketchCurve::Segment(segment)) => nearer_axis(sketch, *segment),
+                SketchEntity::Point(_) | SketchEntity::Curve(_) => None,
             },
             ConstraintVerb::Fix => match self.picked.first()? {
                 SketchEntity::Point(point) => {
                     let at = sketch.points().iter().find(|p| p.id == *point)?.at;
                     Some(ConstraintKind::Fix { point: *point, at })
                 }
-                SketchEntity::Segment(_) | SketchEntity::Arc(_) | SketchEntity::Circle(_) => None,
+                SketchEntity::Curve(_) => None,
             },
             ConstraintVerb::Quantize => match self.picked.first()? {
                 SketchEntity::Point(point) => Some(ConstraintKind::Quantize {
@@ -480,7 +533,7 @@ impl ArmedConstraint {
                     pitch: document::sketch::SketchLength::retained_voxels(1),
                     phase: document::sketch::SketchLength::retained_voxels(0),
                 }),
-                SketchEntity::Segment(_) | SketchEntity::Arc(_) | SketchEntity::Circle(_) => None,
+                SketchEntity::Curve(_) => None,
             },
             ConstraintVerb::Coincident => match (self.picked.first()?, self.picked.get(1)?) {
                 (SketchEntity::Point(first), SketchEntity::Point(second)) => {
@@ -489,22 +542,10 @@ impl ArmedConstraint {
                         second: *second,
                     })
                 }
-                (SketchEntity::Point(point), SketchEntity::Segment(id)) => {
+                (SketchEntity::Point(point), SketchEntity::Curve(curve)) => {
                     Some(ConstraintKind::PointOnCurve {
                         point: *point,
-                        curve: SketchCurve::Segment(*id),
-                    })
-                }
-                (SketchEntity::Point(point), SketchEntity::Arc(id)) => {
-                    Some(ConstraintKind::PointOnCurve {
-                        point: *point,
-                        curve: SketchCurve::Arc(*id),
-                    })
-                }
-                (SketchEntity::Point(point), SketchEntity::Circle(id)) => {
-                    Some(ConstraintKind::PointOnCurve {
-                        point: *point,
-                        curve: SketchCurve::Circle(*id),
+                        curve: *curve,
                     })
                 }
                 _ => None,
@@ -526,24 +567,22 @@ impl ArmedConstraint {
                 Some(ConstraintKind::Collinear { first, second })
             }
             ConstraintVerb::Midpoint => match (self.picked.first()?, self.picked.get(1)?) {
-                (SketchEntity::Point(point), SketchEntity::Segment(segment)) => {
-                    Some(ConstraintKind::Midpoint {
-                        point: *point,
-                        segment: *segment,
-                    })
-                }
+                (
+                    SketchEntity::Point(point),
+                    SketchEntity::Curve(SketchCurve::Segment(segment)),
+                ) => Some(ConstraintKind::Midpoint {
+                    point: *point,
+                    segment: *segment,
+                }),
                 _ => None,
             },
             ConstraintVerb::Curvature => match (self.picked.first()?, self.picked.get(1)?) {
-                (SketchEntity::Point(joint), against) => Some(ConstraintKind::Curvature {
-                    joint: *joint,
-                    against: match against {
-                        SketchEntity::Segment(id) => SketchCurve::Segment(*id),
-                        SketchEntity::Arc(id) => SketchCurve::Arc(*id),
-                        SketchEntity::Circle(id) => SketchCurve::Circle(*id),
-                        SketchEntity::Point(_) => return None,
-                    },
-                }),
+                (SketchEntity::Point(joint), SketchEntity::Curve(against)) => {
+                    Some(ConstraintKind::Curvature {
+                        joint: *joint,
+                        against: *against,
+                    })
+                }
                 _ => None,
             },
             ConstraintVerb::Tangent | ConstraintVerb::Symmetry => None,
@@ -572,17 +611,16 @@ impl ArmedConstraint {
             return self.kind(sketch).ok_or("constraint is incomplete");
         }
         if self.verb == ConstraintVerb::Symmetry {
-            let curve = |entity: SketchEntity| match entity {
-                SketchEntity::Segment(id) => Some(SketchCurve::Segment(id)),
-                SketchEntity::Arc(id) => Some(SketchCurve::Arc(id)),
-                SketchEntity::Circle(id) => Some(SketchCurve::Circle(id)),
-                SketchEntity::Point(_) => None,
-            };
-            let (Some(first), Some(second), Some(SketchEntity::Segment(axis))) = (
-                self.picked.first().copied().and_then(curve),
-                self.picked.get(1).copied().and_then(curve),
+            let (
+                Some(SketchEntity::Curve(first)),
+                Some(SketchEntity::Curve(second)),
+                Some(SketchEntity::Curve(SketchCurve::Segment(axis))),
+            ) = (
+                self.picked.first().copied(),
+                self.picked.get(1).copied(),
                 self.picked.get(2).copied(),
-            ) else {
+            )
+            else {
                 return Err("pick two matching curves and an axis");
             };
             let branch = sketch
@@ -590,21 +628,18 @@ impl ArmedConstraint {
                 .map_err(|_| "cannot mirror those curves about that axis")?;
             return Ok(ConstraintKind::symmetry(first, second, axis, branch));
         }
-        let (Some(first), Some(second), Some(first_locus), Some(second_locus)) = (
-            self.picked.first(),
-            self.picked.get(1),
+        let (
+            Some(SketchEntity::Curve(first)),
+            Some(SketchEntity::Curve(second)),
+            Some(first_locus),
+            Some(second_locus),
+        ) = (
+            self.picked.first().copied(),
+            self.picked.get(1).copied(),
             self.loci.first(),
             self.loci.get(1),
-        ) else {
-            return Err("pick two curves");
-        };
-        let curve = |entity: SketchEntity| match entity {
-            SketchEntity::Segment(id) => Some(SketchCurve::Segment(id)),
-            SketchEntity::Arc(id) => Some(SketchCurve::Arc(id)),
-            SketchEntity::Circle(id) => Some(SketchCurve::Circle(id)),
-            SketchEntity::Point(_) => None,
-        };
-        let (Some(first), Some(second)) = (curve(*first), curve(*second)) else {
+        )
+        else {
             return Err("pick two curves");
         };
         let branch = sketch
@@ -642,12 +677,11 @@ fn nearer_axis(sketch: &Sketch, segment: EntityId) -> Option<ConstraintKind> {
 fn holds(sketch: &Sketch, entity: SketchEntity) -> bool {
     match entity {
         SketchEntity::Point(id) => sketch.points().iter().any(|point| point.id == id),
-        SketchEntity::Segment(id) => sketch
+        SketchEntity::Curve(SketchCurve::Segment(id)) => sketch
             .segments()
             .iter()
             .any(|segment| segment.id == id && segment.from != segment.to),
-        SketchEntity::Arc(id) => sketch.arcs().iter().any(|arc| arc.id == id),
-        SketchEntity::Circle(id) => sketch.circles().iter().any(|circle| circle.id == id),
+        SketchEntity::Curve(curve) => sketch.holds_curve(curve),
     }
 }
 
@@ -695,7 +729,7 @@ mod tests {
         // The second slot admits either kind, and says so.
         assert_eq!(armed.wants(), Some(PickRequirement::PointOrCurve));
         assert_eq!(
-            armed.offer(SketchEntity::Segment(segment), &sketch),
+            armed.offer(SketchEntity::Curve(SketchCurve::Segment(segment)), &sketch),
             Offer::Complete
         );
         assert_eq!(
@@ -725,7 +759,7 @@ mod tests {
         let (sketch, _, _, segment) = one_segment();
         let mut armed = ArmedConstraint::new(ConstraintVerb::Coincident);
         assert_eq!(
-            armed.offer(SketchEntity::Segment(segment), &sketch),
+            armed.offer(SketchEntity::Curve(SketchCurve::Segment(segment)), &sketch),
             Offer::Refused("that is not a point")
         );
         assert_eq!(armed.wants(), Some(PickRequirement::Point));
@@ -738,7 +772,7 @@ mod tests {
         let mut armed = ArmedConstraint::new(ConstraintVerb::HorizontalOrVertical);
         assert_eq!(armed.prompt(), "pick a line");
         assert_eq!(
-            armed.offer(SketchEntity::Segment(segment), &sketch),
+            armed.offer(SketchEntity::Curve(SketchCurve::Segment(segment)), &sketch),
             Offer::Complete
         );
         assert_eq!(
@@ -756,7 +790,7 @@ mod tests {
         let mut armed = ArmedConstraint::new(ConstraintVerb::HorizontalOrVertical);
         assert_eq!(armed.wants(), Some(PickRequirement::Segment));
         assert_eq!(SlotKind::Segment.wanted(), "a line");
-        armed.offer(SketchEntity::Segment(segment), &sketch);
+        armed.offer(SketchEntity::Curve(SketchCurve::Segment(segment)), &sketch);
         assert_eq!(armed.wants(), None, "a filled gesture asks for nothing");
 
         let fix = ArmedConstraint::new(ConstraintVerb::Fix);
@@ -775,7 +809,7 @@ mod tests {
         );
         assert!(armed.picked().is_empty(), "nothing was taken");
         assert_eq!(
-            armed.offer(SketchEntity::Segment(segment), &sketch),
+            armed.offer(SketchEntity::Curve(SketchCurve::Segment(segment)), &sketch),
             Offer::Complete,
             "still armed, and the next pick lands"
         );
@@ -787,7 +821,7 @@ mod tests {
         let mut armed = ArmedConstraint::new(ConstraintVerb::Fix);
         assert_eq!(armed.prompt(), "pick a point");
         assert_eq!(
-            armed.offer(SketchEntity::Segment(segment), &sketch),
+            armed.offer(SketchEntity::Curve(SketchCurve::Segment(segment)), &sketch),
             Offer::Refused("that is not a point")
         );
         assert_eq!(
@@ -830,7 +864,7 @@ mod tests {
         sketch.delete_point_cascade(from);
         let mut armed = ArmedConstraint::new(ConstraintVerb::HorizontalOrVertical);
         assert_eq!(
-            armed.offer(SketchEntity::Segment(segment), &sketch),
+            armed.offer(SketchEntity::Curve(SketchCurve::Segment(segment)), &sketch),
             Offer::Refused("that geometry is gone")
         );
         let mut fixing = ArmedConstraint::new(ConstraintVerb::Fix);
@@ -913,7 +947,7 @@ mod tests {
 
             let mut armed = ArmedConstraint::new(ConstraintVerb::HorizontalOrVertical);
             assert_eq!(
-                armed.offer(SketchEntity::Segment(segment), &sketch),
+                armed.offer(SketchEntity::Curve(SketchCurve::Segment(segment)), &sketch),
                 Offer::Complete
             );
             let got = match armed.kind(&sketch) {
@@ -937,7 +971,7 @@ mod tests {
 
         let mut armed = ArmedConstraint::new(ConstraintVerb::HorizontalOrVertical);
         assert_eq!(
-            armed.offer(SketchEntity::Segment(segment), &sketch),
+            armed.offer(SketchEntity::Curve(SketchCurve::Segment(segment)), &sketch),
             Offer::Complete
         );
         assert_eq!(
@@ -966,29 +1000,53 @@ mod tests {
             .expect("circle");
         let mut tangent = ArmedConstraint::new(ConstraintVerb::Tangent);
         assert_eq!(
-            tangent.offer_at(SketchEntity::Segment(line), [0.0, 0.0], &sketch),
+            tangent.offer_at(
+                SketchEntity::Curve(SketchCurve::Segment(line)),
+                [0.0, 0.0],
+                &sketch
+            ),
             Offer::Taken
         );
         assert_eq!(
-            tangent.offer_at(SketchEntity::Arc(arc), [0.0, 0.0], &sketch),
+            tangent.offer_at(
+                SketchEntity::Curve(SketchCurve::Arc(arc)),
+                [0.0, 0.0],
+                &sketch
+            ),
             Offer::Complete
         );
         let mut lines = ArmedConstraint::new(ConstraintVerb::Tangent);
         assert_eq!(
-            lines.offer_at(SketchEntity::Segment(line), [0.0, 0.0], &sketch),
+            lines.offer_at(
+                SketchEntity::Curve(SketchCurve::Segment(line)),
+                [0.0, 0.0],
+                &sketch
+            ),
             Offer::Taken
         );
         assert_eq!(
-            lines.offer_at(SketchEntity::Segment(other_line), [0.0, 0.0], &sketch),
+            lines.offer_at(
+                SketchEntity::Curve(SketchCurve::Segment(other_line)),
+                [0.0, 0.0],
+                &sketch
+            ),
             Offer::Refused("two lines use Parallel — pick a curve")
         );
         let mut circle_pair = ArmedConstraint::new(ConstraintVerb::Tangent);
         assert_eq!(
-            circle_pair.offer_at(SketchEntity::Circle(circle), [5.0, 0.0], &sketch),
+            circle_pair.offer_at(
+                SketchEntity::Curve(SketchCurve::Circle(circle)),
+                [5.0, 0.0],
+                &sketch
+            ),
             Offer::Taken
         );
         assert_eq!(
-            circle_pair.offer_at(SketchEntity::Segment(line), [5.0, 0.0], &sketch),
+            circle_pair.offer_at(
+                SketchEntity::Curve(SketchCurve::Segment(line)),
+                [5.0, 0.0],
+                &sketch
+            ),
             Offer::Complete
         );
     }
@@ -1011,16 +1069,16 @@ mod tests {
         let mut armed = ArmedConstraint::new(ConstraintVerb::Concentric);
         assert_eq!(armed.wants(), Some(PickRequirement::CircularCurve));
         assert_eq!(
-            armed.offer(SketchEntity::Segment(segment), &sketch),
+            armed.offer(SketchEntity::Curve(SketchCurve::Segment(segment)), &sketch),
             Offer::Refused("pick an arc or circle — lines have no center")
         );
         assert!(armed.picked().is_empty());
         assert_eq!(
-            armed.offer(SketchEntity::Circle(circle), &sketch),
+            armed.offer(SketchEntity::Curve(SketchCurve::Circle(circle)), &sketch),
             Offer::Taken
         );
         assert_eq!(
-            armed.offer(SketchEntity::Arc(arc), &sketch),
+            armed.offer(SketchEntity::Curve(SketchCurve::Arc(arc)), &sketch),
             Offer::Complete
         );
         assert_eq!(
@@ -1067,15 +1125,15 @@ mod tests {
             armed.kind_at_context(&sketch, context).expect("branch")
         };
         let one = complete(
-            SketchEntity::Segment(line),
+            SketchEntity::Curve(SketchCurve::Segment(line)),
             [5.0, 0.0],
-            SketchEntity::Circle(circle),
+            SketchEntity::Curve(SketchCurve::Circle(circle)),
             [5.0, 0.0],
         );
         let two = complete(
-            SketchEntity::Circle(circle),
+            SketchEntity::Curve(SketchCurve::Circle(circle)),
             [5.0, 0.0],
-            SketchEntity::Segment(line),
+            SketchEntity::Curve(SketchCurve::Segment(line)),
             [5.0, 0.0],
         );
         assert_eq!(one, two);
@@ -1114,30 +1172,46 @@ mod tests {
         let mut armed = ArmedConstraint::new(ConstraintVerb::Symmetry);
         assert_eq!(armed.wants(), Some(PickRequirement::Curve));
         assert_eq!(
-            armed.offer(SketchEntity::Segment(first_segment), &sketch),
+            armed.offer(
+                SketchEntity::Curve(SketchCurve::Segment(first_segment)),
+                &sketch
+            ),
             Offer::Taken
         );
-        assert_eq!(armed.wants(), Some(PickRequirement::Segment));
+        // The second slot narrowed to the first pick's own kind, and says so in the prompt.
+        let like_the_first = PickRequirement::MatchingCurve(SketchCurve::Segment(first_segment));
+        assert_eq!(armed.wants(), Some(like_the_first));
+        assert_eq!(like_the_first.wanted(), "another line");
         assert_eq!(
-            armed.offer(SketchEntity::Arc(arc), &sketch),
-            Offer::Refused("that is not a line")
+            armed.offer(SketchEntity::Curve(SketchCurve::Arc(arc)), &sketch),
+            Offer::Refused("pick another line")
         );
-        assert_eq!(armed.picked(), &[SketchEntity::Segment(first_segment)]);
         assert_eq!(
-            armed.offer(SketchEntity::Segment(second_segment), &sketch),
+            armed.picked(),
+            &[SketchEntity::Curve(SketchCurve::Segment(first_segment))]
+        );
+        assert_eq!(
+            armed.offer(
+                SketchEntity::Curve(SketchCurve::Segment(second_segment)),
+                &sketch
+            ),
             Offer::Taken
         );
+        // The third slot is the mirror axis, which is a line whatever the subjects were.
         assert_eq!(armed.wants(), Some(PickRequirement::Segment));
         assert_eq!(
-            armed.offer(SketchEntity::Segment(first_segment), &sketch),
+            armed.offer(
+                SketchEntity::Curve(SketchCurve::Segment(first_segment)),
+                &sketch
+            ),
             Offer::Refused("already picked")
         );
         assert_eq!(
-            armed.offer(SketchEntity::Circle(circle), &sketch),
+            armed.offer(SketchEntity::Curve(SketchCurve::Circle(circle)), &sketch),
             Offer::Refused("that is not a line")
         );
         assert_eq!(
-            armed.offer(SketchEntity::Segment(axis), &sketch),
+            armed.offer(SketchEntity::Curve(SketchCurve::Segment(axis)), &sketch),
             Offer::Complete
         );
         assert!(matches!(
@@ -1152,36 +1226,104 @@ mod tests {
 
     #[test]
     fn symmetry_dynamic_requirement_covers_arcs_circles_and_malformed_restore() {
-        let arc = ArmedConstraint::from_parts(ConstraintVerb::Symmetry, vec![SketchEntity::Arc(1)]);
-        assert_eq!(arc.wants(), Some(PickRequirement::Arc));
-        let circle =
-            ArmedConstraint::from_parts(ConstraintVerb::Symmetry, vec![SketchEntity::Circle(2)]);
-        assert_eq!(circle.wants(), Some(PickRequirement::Circle));
+        let arc = ArmedConstraint::from_parts(
+            ConstraintVerb::Symmetry,
+            vec![SketchEntity::Curve(SketchCurve::Arc(1))],
+        );
+        assert_eq!(
+            arc.wants(),
+            Some(PickRequirement::MatchingCurve(SketchCurve::Arc(1)))
+        );
+        assert_eq!(arc.wants().expect("waiting").wanted(), "another arc");
+        let circle = ArmedConstraint::from_parts(
+            ConstraintVerb::Symmetry,
+            vec![SketchEntity::Curve(SketchCurve::Circle(2))],
+        );
+        assert_eq!(
+            circle.wants(),
+            Some(PickRequirement::MatchingCurve(SketchCurve::Circle(2)))
+        );
         let malformed = ArmedConstraint::from_parts(
             ConstraintVerb::Symmetry,
-            vec![SketchEntity::Arc(1), SketchEntity::Circle(2)],
+            vec![
+                SketchEntity::Curve(SketchCurve::Arc(1)),
+                SketchEntity::Curve(SketchCurve::Circle(2)),
+            ],
         );
         assert!(malformed.picked().is_empty());
         assert_eq!(malformed.wants(), Some(PickRequirement::Curve));
         let complete = ArmedConstraint::from_parts(
             ConstraintVerb::Symmetry,
             vec![
-                SketchEntity::Segment(1),
-                SketchEntity::Segment(2),
-                SketchEntity::Segment(3),
+                SketchEntity::Curve(SketchCurve::Segment(1)),
+                SketchEntity::Curve(SketchCurve::Segment(2)),
+                SketchEntity::Curve(SketchCurve::Segment(3)),
             ],
         );
         assert!(complete.picked().is_empty());
         let overfull = ArmedConstraint::from_parts(
             ConstraintVerb::Symmetry,
             vec![
-                SketchEntity::Circle(1),
-                SketchEntity::Circle(2),
-                SketchEntity::Segment(3),
+                SketchEntity::Curve(SketchCurve::Circle(1)),
+                SketchEntity::Curve(SketchCurve::Circle(2)),
+                SketchEntity::Curve(SketchCurve::Segment(3)),
                 SketchEntity::Point(4),
             ],
         );
         assert!(overfull.picked().is_empty());
+    }
+
+    /// An aggregate is a real curve with a real identity, and the slots still turn it away: no
+    /// relation can read a spline or an ellipse as a whole shape, so taking the pick would arm a
+    /// gesture that completes and then cannot be applied. The refusal lands at the click, where the
+    /// tool is still waiting for a curve it can hold.
+    #[test]
+    fn a_curve_slot_refuses_an_aggregate_the_relations_cannot_read() {
+        let mut sketch = Sketch::empty(PlaneAxis::Z);
+        let from = sketch.add_free_point(SketchPoint::new(0, 0));
+        let to = sketch.add_free_point(SketchPoint::new(10, 0));
+        let line = sketch.connect(from, to).expect("line");
+        let ellipse = sketch
+            .add_ellipse(
+                SketchPoint::new(0, 20),
+                SketchPoint::new(10, 20),
+                SketchPoint::new(0, 24),
+            )
+            .expect("ellipse");
+        let aggregate = SketchEntity::Curve(SketchCurve::Ellipse(ellipse));
+        assert!(
+            holds(&sketch, aggregate),
+            "the drawing does hold it — this is not a staleness refusal"
+        );
+
+        let mut tangent = ArmedConstraint::new(ConstraintVerb::Tangent);
+        assert_eq!(
+            tangent.offer_at(aggregate, [0.0, 0.0], &sketch),
+            Offer::Refused("that is not a curve a constraint can hold")
+        );
+        assert!(
+            tangent.picked().is_empty(),
+            "and the gesture is still armed"
+        );
+
+        let mut concentric = ArmedConstraint::new(ConstraintVerb::Concentric);
+        assert_eq!(
+            concentric.offer(aggregate, &sketch),
+            Offer::Refused("pick an arc or circle — lines have no center"),
+            "an ellipse has a center and is still not a constant radius about one"
+        );
+
+        let mut coincident = ArmedConstraint::new(ConstraintVerb::Coincident);
+        coincident.offer(SketchEntity::Point(from), &sketch);
+        assert_eq!(
+            coincident.offer(aggregate, &sketch),
+            Offer::Refused("that is not a point or a curve")
+        );
+        assert_eq!(
+            coincident.offer(SketchEntity::Curve(SketchCurve::Segment(line)), &sketch),
+            Offer::Complete,
+            "still armed, and a curve it can hold lands"
+        );
     }
 
     /// The badge reports the ANSWER, not the question: a line asserted plumb carries the plain
@@ -1195,7 +1337,7 @@ mod tests {
 
         let mut armed = ArmedConstraint::new(ConstraintVerb::HorizontalOrVertical);
         assert_eq!(
-            armed.offer(SketchEntity::Segment(segment), &sketch),
+            armed.offer(SketchEntity::Curve(SketchCurve::Segment(segment)), &sketch),
             Offer::Complete
         );
         let kind = armed.kind(&sketch).expect("complete");

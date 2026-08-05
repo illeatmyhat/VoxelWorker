@@ -4237,21 +4237,7 @@ impl WindowedState {
             Some(candidate) => candidate,
             // A miss reports the active requirement so the gesture remains observable.
             None => {
-                self.panel_state.sketch_constraint_refusal = Some(match slot {
-                    ui::panel::PickRequirement::Point => "nothing under the cursor — pick a point",
-                    ui::panel::PickRequirement::Segment => "nothing under the cursor — pick a line",
-                    ui::panel::PickRequirement::Curve => "nothing under the cursor — pick a curve",
-                    ui::panel::PickRequirement::CircularCurve => {
-                        "nothing under the cursor — pick an arc or circle"
-                    }
-                    ui::panel::PickRequirement::Arc => "nothing under the cursor — pick an arc",
-                    ui::panel::PickRequirement::Circle => {
-                        "nothing under the cursor — pick a circle"
-                    }
-                    ui::panel::PickRequirement::PointOrCurve => {
-                        "nothing under the cursor — pick a point or a curve"
-                    }
-                });
+                self.panel_state.sketch_constraint_refusal = Some(slot.nothing_under_the_cursor());
                 return;
             }
         };
@@ -4386,7 +4372,7 @@ impl WindowedState {
             self.nearest_sketch_circle(cursor_x, cursor_y)
                 .map(|(id, distance)| (SketchEdgeHit::Circle(id), distance)),
         )
-        .and_then(sketch_entity_from_curve_hit)
+        .map(|hit| ui::panel::SketchEntity::Curve(sketch_curve_from_hit(hit)))
     }
 
     /// The derived region under the physical-px cursor (#100), or `None`. The SMALLEST containing
@@ -6915,8 +6901,14 @@ fn nearest_sketch_edge_for_requirement(
 ) -> Option<SketchEdgeHit> {
     match requirement {
         ui::panel::PickRequirement::Segment => segment.map(|(hit, _)| hit),
-        ui::panel::PickRequirement::Arc => arc.map(|(hit, _)| hit),
-        ui::panel::PickRequirement::Circle => circle.map(|(hit, _)| hit),
+        // The narrowed second slot filters by KIND rather than by an arm per curve kind, so a
+        // curve kind added to the document needs nothing here and cannot silently fall through to
+        // the general comparison.
+        ui::panel::PickRequirement::MatchingCurve(like) => {
+            nearest_sketch_edge_from_candidates([segment, arc, circle].map(|candidate| {
+                candidate.filter(|(hit, _)| sketch_curve_from_hit(*hit).same_kind_as(like))
+            }))
+        }
         ui::panel::PickRequirement::Curve | ui::panel::PickRequirement::PointOrCurve => {
             nearest_sketch_edge_from_candidates([segment, arc, circle])
         }
@@ -7045,34 +7037,25 @@ fn selection_target(
     sketch: document::scene::NodeId,
     entity: ui::panel::SketchEntity,
 ) -> ui::panel::SelectionTarget {
+    use document::sketch::SketchCurve;
     match entity {
         ui::panel::SketchEntity::Point(id) => {
             ui::panel::SelectionTarget::SketchPoint { sketch, entity: id }
         }
-        ui::panel::SketchEntity::Segment(id) => {
+        ui::panel::SketchEntity::Curve(SketchCurve::Segment(id)) => {
             ui::panel::SelectionTarget::SketchSegment { sketch, entity: id }
         }
-        ui::panel::SketchEntity::Arc(id) => {
+        ui::panel::SketchEntity::Curve(SketchCurve::Arc(id)) => {
             ui::panel::SelectionTarget::SketchArc { sketch, entity: id }
         }
-        ui::panel::SketchEntity::Circle(id) => {
+        ui::panel::SketchEntity::Curve(SketchCurve::Circle(id)) => {
             ui::panel::SelectionTarget::SketchCircle { sketch, entity: id }
         }
-    }
-}
-
-/// Preserve every authored curve identity when a Tangent curve slot resolves its edge hit.
-///
-/// `None` for a higher-order aggregate. `SketchEntity` names only the three primitive kinds, and
-/// no constraint verb accepts an aggregate yet, so admitting one would need a second way to spell
-/// a curve that the pick slots compare by equality — the divergence would be silent. The
-/// requirement filter never offers one either; this arm states the same refusal at the type.
-fn sketch_entity_from_curve_hit(hit: SketchEdgeHit) -> Option<ui::panel::SketchEntity> {
-    match hit {
-        SketchEdgeHit::Segment(id) => Some(ui::panel::SketchEntity::Segment(id)),
-        SketchEdgeHit::Arc(id) => Some(ui::panel::SketchEntity::Arc(id)),
-        SketchEdgeHit::Circle(id) => Some(ui::panel::SketchEntity::Circle(id)),
-        SketchEdgeHit::HigherCurve(_) => None,
+        // No verb takes an aggregate — the pick slots refuse one — but the selection has a place
+        // for it, so a pick that ever does reach here lights up rather than vanishing.
+        ui::panel::SketchEntity::Curve(curve) => {
+            ui::panel::SelectionTarget::SketchHigherCurve { sketch, curve }
+        }
     }
 }
 
@@ -7324,7 +7307,7 @@ mod tests {
         pointer_left_the_press, polygon_double_area, reset_failed_sketch_constraint_completion,
         reset_refused_sketch_constraint_completion, segment_touches_rect, segments_intersect,
         select_sketch_constraint_refusal_culprits, sketch_constraint_badge_at,
-        sketch_entity_from_curve_hit, sketch_profile_edit_transaction, symmetry_badge_anchor,
+        sketch_curve_from_hit, sketch_profile_edit_transaction, symmetry_badge_anchor,
         tangent_badge_anchor, SketchEdgeHit,
     };
     use document::sketch::{
@@ -7557,14 +7540,14 @@ mod tests {
                 SketchEdgeHit::Segment(1),
             ),
             (
-                ui::panel::PickRequirement::Arc,
+                ui::panel::PickRequirement::MatchingCurve(document::sketch::SketchCurve::Arc(9)),
                 Some((SketchEdgeHit::Segment(1), 1.0)),
                 Some((SketchEdgeHit::Arc(2), 3.0)),
                 Some((SketchEdgeHit::Circle(3), 2.0)),
                 SketchEdgeHit::Arc(2),
             ),
             (
-                ui::panel::PickRequirement::Circle,
+                ui::panel::PickRequirement::MatchingCurve(document::sketch::SketchCurve::Circle(9)),
                 Some((SketchEdgeHit::Segment(1), 1.0)),
                 Some((SketchEdgeHit::Arc(2), 2.0)),
                 Some((SketchEdgeHit::Circle(3), 3.0)),
@@ -7587,29 +7570,38 @@ mod tests {
         let segment = sketch.connect(from, to).expect("segment");
         let mut armed = ui::panel::ArmedConstraint::from_parts(
             ui::panel::ConstraintVerb::Symmetry,
-            vec![ui::panel::SketchEntity::Segment(segment)],
+            vec![ui::panel::SketchEntity::Curve(
+                document::sketch::SketchCurve::Segment(segment),
+            )],
         );
-        assert_eq!(armed.wants(), Some(ui::panel::PickRequirement::Segment));
+        assert_eq!(
+            armed.wants(),
+            Some(ui::panel::PickRequirement::MatchingCurve(
+                document::sketch::SketchCurve::Segment(segment)
+            ))
+        );
         sketch.delete_segment(segment);
         assert!(armed.restart_if_invalid(&sketch));
         assert!(armed.picked().is_empty());
         assert_eq!(armed.wants(), Some(ui::panel::PickRequirement::Curve));
     }
 
+    /// Every edge hit keeps the author's own curve identity, the aggregate included. The shell has
+    /// exactly one spelling of a curve and does not decide which kinds a constraint may name —
+    /// that is the slot's answer, given ahead of the click.
     #[test]
-    fn tangent_curve_pick_keeps_each_real_edge_identity() {
-        assert_eq!(
-            sketch_entity_from_curve_hit(SketchEdgeHit::Segment(11)),
-            Some(ui::panel::SketchEntity::Segment(11))
-        );
-        assert_eq!(
-            sketch_entity_from_curve_hit(SketchEdgeHit::Arc(12)),
-            Some(ui::panel::SketchEntity::Arc(12))
-        );
-        assert_eq!(
-            sketch_entity_from_curve_hit(SketchEdgeHit::Circle(13)),
-            Some(ui::panel::SketchEntity::Circle(13))
-        );
+    fn a_curve_hit_keeps_the_authors_identity_for_every_kind() {
+        for (hit, curve) in [
+            (SketchEdgeHit::Segment(11), SketchCurve::Segment(11)),
+            (SketchEdgeHit::Arc(12), SketchCurve::Arc(12)),
+            (SketchEdgeHit::Circle(13), SketchCurve::Circle(13)),
+            (
+                SketchEdgeHit::HigherCurve(SketchCurve::Ellipse(14)),
+                SketchCurve::Ellipse(14),
+            ),
+        ] {
+            assert_eq!(sketch_curve_from_hit(hit), curve);
+        }
     }
 
     /// A lever answers as the ONE fit point it belongs to, so a cursor on one handle cannot mean
@@ -7672,16 +7664,6 @@ mod tests {
         assert!(
             !pointer_left_the_press(None, Some((999.0, 999.0))),
             "no press to measure from is no drag"
-        );
-    }
-
-    /// A constraint slot has no way to spell an aggregate, so the pick declines rather than
-    /// inventing a second spelling of a curve the slots compare by equality.
-    #[test]
-    fn tangent_curve_pick_declines_a_higher_order_aggregate() {
-        assert_eq!(
-            sketch_entity_from_curve_hit(SketchEdgeHit::HigherCurve(SketchCurve::Ellipse(14))),
-            None
         );
     }
 
@@ -7935,12 +7917,16 @@ mod tests {
         let (sketch, segment, circle) = tangent_ready_sketch();
         let mut armed = ui::panel::ArmedConstraint::new(ui::panel::ConstraintVerb::Tangent);
         assert_eq!(
-            armed.offer_at(ui::panel::SketchEntity::Circle(circle), [5.0, 0.0], &sketch),
+            armed.offer_at(
+                ui::panel::SketchEntity::Curve(document::sketch::SketchCurve::Circle(circle)),
+                [5.0, 0.0],
+                &sketch
+            ),
             ui::panel::Offer::Taken
         );
         assert_eq!(
             armed.offer_at(
-                ui::panel::SketchEntity::Segment(segment),
+                ui::panel::SketchEntity::Curve(document::sketch::SketchCurve::Segment(segment)),
                 [5.0, 0.0],
                 &sketch
             ),
@@ -7993,11 +7979,17 @@ mod tests {
             .expect("second");
         let mut armed = ui::panel::ArmedConstraint::new(ui::panel::ConstraintVerb::Concentric);
         assert_eq!(
-            armed.offer(ui::panel::SketchEntity::Circle(second), &sketch),
+            armed.offer(
+                ui::panel::SketchEntity::Curve(document::sketch::SketchCurve::Circle(second)),
+                &sketch
+            ),
             ui::panel::Offer::Taken
         );
         assert_eq!(
-            armed.offer(ui::panel::SketchEntity::Circle(first), &sketch),
+            armed.offer(
+                ui::panel::SketchEntity::Curve(document::sketch::SketchCurve::Circle(first)),
+                &sketch
+            ),
             ui::panel::Offer::Complete
         );
         let kind = armed.kind_at_context(&sketch, context()).expect("complete");
@@ -8063,15 +8055,24 @@ mod tests {
         let second = sketch.connect(b0, b1).expect("second");
         let mut armed = ui::panel::ArmedConstraint::new(ui::panel::ConstraintVerb::Symmetry);
         assert_eq!(
-            armed.offer(ui::panel::SketchEntity::Segment(second), &sketch),
+            armed.offer(
+                ui::panel::SketchEntity::Curve(document::sketch::SketchCurve::Segment(second)),
+                &sketch
+            ),
             ui::panel::Offer::Taken
         );
         assert_eq!(
-            armed.offer(ui::panel::SketchEntity::Segment(first), &sketch),
+            armed.offer(
+                ui::panel::SketchEntity::Curve(document::sketch::SketchCurve::Segment(first)),
+                &sketch
+            ),
             ui::panel::Offer::Taken
         );
         assert_eq!(
-            armed.offer(ui::panel::SketchEntity::Segment(axis), &sketch),
+            armed.offer(
+                ui::panel::SketchEntity::Curve(document::sketch::SketchCurve::Segment(axis)),
+                &sketch
+            ),
             ui::panel::Offer::Complete
         );
         let kind = armed.kind_at_context(&sketch, context()).expect("branch");
@@ -8122,14 +8123,18 @@ mod tests {
         let mut attempted = ui::panel::ArmedConstraint::new(ui::panel::ConstraintVerb::Tangent);
         assert_eq!(
             attempted.offer_at(
-                ui::panel::SketchEntity::Segment(segment),
+                ui::panel::SketchEntity::Curve(document::sketch::SketchCurve::Segment(segment)),
                 [f64::NAN, 0.0],
                 &sketch
             ),
             ui::panel::Offer::Taken
         );
         assert_eq!(
-            attempted.offer_at(ui::panel::SketchEntity::Circle(circle), [5.0, 0.0], &sketch),
+            attempted.offer_at(
+                ui::panel::SketchEntity::Curve(document::sketch::SketchCurve::Circle(circle)),
+                [5.0, 0.0],
+                &sketch
+            ),
             ui::panel::Offer::Complete
         );
         assert_eq!(
@@ -8167,14 +8172,18 @@ mod tests {
         let mut attempted = ui::panel::ArmedConstraint::new(ui::panel::ConstraintVerb::Tangent);
         assert_eq!(
             attempted.offer_at(
-                ui::panel::SketchEntity::Segment(segment),
+                ui::panel::SketchEntity::Curve(document::sketch::SketchCurve::Segment(segment)),
                 [5.0, 0.0],
                 &sketch
             ),
             ui::panel::Offer::Taken
         );
         assert_eq!(
-            attempted.offer_at(ui::panel::SketchEntity::Circle(circle), [5.0, 0.0], &sketch),
+            attempted.offer_at(
+                ui::panel::SketchEntity::Curve(document::sketch::SketchCurve::Circle(circle)),
+                [5.0, 0.0],
+                &sketch
+            ),
             ui::panel::Offer::Complete
         );
         let owner = document::scene::NodeId(80);

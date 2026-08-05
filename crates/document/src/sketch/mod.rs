@@ -1766,6 +1766,9 @@ impl Sketch {
                     arc: None,
                 }))
             }
+            // The aggregates, which have no one center, radius, or direction to report. This arm
+            // is what [`SketchCurve::carries_relation_geometry`] states ahead of the click, so a
+            // gesture can refuse an aggregate instead of taking it and failing to apply.
             SketchCurve::Bezier(_)
             | SketchCurve::Ellipse(_)
             | SketchCurve::Conic(_)
@@ -2561,18 +2564,14 @@ impl Sketch {
         to: [f64; 2],
         context: parametric::EvaluationContext,
     ) -> Result<bool, SketchEvaluationError> {
-        if self.curve_points_exist(curve).is_none() {
+        if !self.holds_curve(curve) {
             return Ok(false);
         }
-        // Only three forms can be HELD by relation mathematics, and a curve the grip cannot be
-        // pinned to would simply not move. That is a gap in what the solver can say, not a decision
-        // about what the gesture means, so the meaning is kept and the drawing carries the curve
-        // bodily instead — the answer the grip would have produced for a shape with nothing else
-        // holding it.
-        if !matches!(
-            curve,
-            SketchCurve::Segment(_) | SketchCurve::Arc(_) | SketchCurve::Circle(_)
-        ) {
+        // A curve the grip cannot be pinned to would simply not move. That is a gap in what the
+        // solver can say, not a decision about what the gesture means, so the meaning is kept and
+        // the drawing carries the curve bodily instead — the answer the grip would have produced
+        // for a shape with nothing else holding it.
+        if !curve.carries_relation_geometry() {
             return self.translate_curve(curve, [to[0] - grabbed[0], to[1] - grabbed[1]], context);
         }
         let grip = self.add_free_point(SketchPoint::from_continuous(grabbed[0], grabbed[1]));
@@ -2611,8 +2610,13 @@ impl Sketch {
     }
 
     /// Whether `curve` is a curve this drawing actually holds.
-    fn curve_points_exist(&self, curve: SketchCurve) -> Option<()> {
-        let known = match curve {
+    ///
+    /// The identity is stable but not a guarantee: a pick, a persisted gesture, or a stored
+    /// relation can outlive the curve it names, and the answer to "is it still there" is one
+    /// lookup per store rather than something a caller should assemble.
+    #[must_use]
+    pub fn holds_curve(&self, curve: SketchCurve) -> bool {
+        match curve {
             SketchCurve::Segment(id) => self.segments.iter().any(|segment| segment.id == id),
             SketchCurve::Arc(id) => self.arcs.iter().any(|arc| arc.id == id),
             SketchCurve::Circle(id) => self.circles.iter().any(|circle| circle.id == id),
@@ -2620,8 +2624,7 @@ impl Sketch {
             SketchCurve::Ellipse(id) => self.ellipses.iter().any(|ellipse| ellipse.id == id),
             SketchCurve::Conic(id) => self.conics.iter().any(|conic| conic.id == id),
             SketchCurve::Spline(id) => self.splines.iter().any(|spline| spline.id == id),
-        };
-        known.then_some(())
+        }
     }
 
     /// Slide a whole curve by `by`, carrying every point it stands on, and settle around it.

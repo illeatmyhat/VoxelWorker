@@ -3373,3 +3373,78 @@ fn concentric_arc_center_resweep_is_atomic() {
         .expect("ordinary refusal"));
     assert_eq!(serde_json::to_value(&sketch).expect("after"), before);
 }
+
+/// The kind-level answer and the geometry-level one are the same fact, so they are held to each
+/// other rather than kept in step by hand.
+///
+/// A gesture refuses an aggregate BEFORE the click lands, using
+/// [`SketchCurve::carries_relation_geometry`]; the relations refuse it at solve time by having no
+/// geometry to read. If those two ever disagreed, one direction would take a pick it could not
+/// apply and the other would turn away a curve that works.
+#[test]
+fn a_curve_kind_carries_relation_geometry_exactly_when_the_drawing_can_produce_it() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let tail = sketch.add_free_point(SketchPoint::new(0, 0));
+    let head = sketch.add_free_point(SketchPoint::new(10, 0));
+    let every_kind = [
+        SketchCurve::Segment(sketch.connect(tail, head).expect("a segment")),
+        SketchCurve::Arc(
+            sketch
+                .connect_arc(tail, head, AngleMeasurement::from_degrees(90))
+                .expect("an arc"),
+        ),
+        SketchCurve::Circle(
+            sketch
+                .add_circle(SketchPoint::new(0, 20), SketchLength::new(4))
+                .expect("a circle"),
+        ),
+        SketchCurve::Bezier(
+            sketch
+                .add_cubic_bezier([
+                    SketchPoint::new(0, 30),
+                    SketchPoint::new(4, 34),
+                    SketchPoint::new(8, 34),
+                    SketchPoint::new(12, 30),
+                ])
+                .expect("a bezier"),
+        ),
+        SketchCurve::Ellipse(
+            sketch
+                .add_ellipse(
+                    SketchPoint::new(0, 40),
+                    SketchPoint::new(10, 40),
+                    SketchPoint::new(0, 44),
+                )
+                .expect("an ellipse"),
+        ),
+        SketchCurve::Conic(
+            sketch
+                .add_conic(
+                    SketchPoint::new(0, 50),
+                    SketchPoint::new(10, 50),
+                    SketchPoint::new(5, 55),
+                    0.5,
+                )
+                .expect("a conic"),
+        ),
+        SketchCurve::Spline(
+            sketch
+                .add_fit_point_spline(
+                    &[
+                        SketchPoint::new(0, 60),
+                        SketchPoint::new(5, 64),
+                        SketchPoint::new(10, 60),
+                    ],
+                    false,
+                )
+                .expect("a spline"),
+        ),
+    ];
+    for curve in every_kind {
+        assert_eq!(
+            curve.carries_relation_geometry(),
+            sketch.curve_geometry(curve, ctx(16)).is_some(),
+            "the two answers disagree for {curve:?}"
+        );
+    }
+}

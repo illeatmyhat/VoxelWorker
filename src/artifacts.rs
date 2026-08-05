@@ -212,12 +212,15 @@ enum ConstraintVerbConfig {
     Curvature,
 }
 
+/// A picked entity, persisted.
+///
+/// The curve arm stores the document's own [`SketchCurve`](document::sketch::SketchCurve), which
+/// already persists — the shim exists because `ui` carries no serde, not because a curve wants a
+/// second spelling. A curve kind added to the document therefore round-trips with no edit here.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
 enum SketchEntityConfig {
     Point(document::sketch::EntityId),
-    Segment(document::sketch::EntityId),
-    Arc(document::sketch::EntityId),
-    Circle(document::sketch::EntityId),
+    Curve(document::sketch::SketchCurve),
 }
 
 impl ArmedConstraintConfig {
@@ -248,9 +251,7 @@ impl ArmedConstraintConfig {
                     .iter()
                     .map(|entity| match *entity {
                         ui::panel::SketchEntity::Point(id) => SketchEntityConfig::Point(id),
-                        ui::panel::SketchEntity::Segment(id) => SketchEntityConfig::Segment(id),
-                        ui::panel::SketchEntity::Arc(id) => SketchEntityConfig::Arc(id),
-                        ui::panel::SketchEntity::Circle(id) => SketchEntityConfig::Circle(id),
+                        ui::panel::SketchEntity::Curve(curve) => SketchEntityConfig::Curve(curve),
                     })
                     .collect()
             },
@@ -280,9 +281,7 @@ impl ArmedConstraintConfig {
             .iter()
             .map(|entity| match *entity {
                 SketchEntityConfig::Point(id) => ui::panel::SketchEntity::Point(id),
-                SketchEntityConfig::Segment(id) => ui::panel::SketchEntity::Segment(id),
-                SketchEntityConfig::Arc(id) => ui::panel::SketchEntity::Arc(id),
-                SketchEntityConfig::Circle(id) => ui::panel::SketchEntity::Circle(id),
+                SketchEntityConfig::Curve(curve) => ui::panel::SketchEntity::Curve(curve),
             })
             .collect();
         ui::panel::ArmedConstraint::from_parts(verb, picked)
@@ -1393,7 +1392,7 @@ mod tests {
         let mut armed = ui::panel::ArmedConstraint::new(ui::panel::ConstraintVerb::Tangent);
         assert_eq!(
             armed.offer_at(
-                ui::panel::SketchEntity::Segment(segment),
+                ui::panel::SketchEntity::Curve(document::sketch::SketchCurve::Segment(segment)),
                 [4.25, 0.0],
                 &sketch
             ),
@@ -1428,14 +1427,21 @@ mod tests {
     fn concentric_artifact_restores_ordinary_circular_picks() {
         let armed = ui::panel::ArmedConstraint::from_parts(
             ui::panel::ConstraintVerb::Concentric,
-            vec![ui::panel::SketchEntity::Arc(17)],
+            vec![ui::panel::SketchEntity::Curve(
+                document::sketch::SketchCurve::Arc(17),
+            )],
         );
         let config = ArmedConstraintConfig::capture(&armed);
         let text = serde_json::to_string(&config).expect("serialize");
         assert!(text.contains("Concentric") && text.contains("Arc"));
         let restored = config.restore();
         assert_eq!(restored.verb(), ui::panel::ConstraintVerb::Concentric);
-        assert_eq!(restored.picked(), &[ui::panel::SketchEntity::Arc(17)]);
+        assert_eq!(
+            restored.picked(),
+            &[ui::panel::SketchEntity::Curve(
+                document::sketch::SketchCurve::Arc(17)
+            )]
+        );
         assert_eq!(
             restored.wants(),
             Some(ui::panel::PickRequirement::CircularCurve)
@@ -1444,20 +1450,15 @@ mod tests {
 
     #[test]
     fn symmetry_artifact_restores_its_dynamic_exact_curve_requirement() {
-        for (pick, expected) in [
-            (
-                ui::panel::SketchEntity::Segment(17),
-                ui::panel::PickRequirement::Segment,
-            ),
-            (
-                ui::panel::SketchEntity::Arc(18),
-                ui::panel::PickRequirement::Arc,
-            ),
-            (
-                ui::panel::SketchEntity::Circle(19),
-                ui::panel::PickRequirement::Circle,
-            ),
+        for curve in [
+            document::sketch::SketchCurve::Segment(17),
+            document::sketch::SketchCurve::Arc(18),
+            document::sketch::SketchCurve::Circle(19),
         ] {
+            // The restored slot narrows to the KIND the first pick was, and the pick is the
+            // document's own identity on both sides of the round trip.
+            let pick = ui::panel::SketchEntity::Curve(curve);
+            let expected = ui::panel::PickRequirement::MatchingCurve(curve);
             let armed = ui::panel::ArmedConstraint::from_parts(
                 ui::panel::ConstraintVerb::Symmetry,
                 vec![pick],
@@ -1471,7 +1472,10 @@ mod tests {
 
         let malformed = ArmedConstraintConfig {
             verb: ConstraintVerbConfig::Symmetry,
-            picked: vec![SketchEntityConfig::Arc(1), SketchEntityConfig::Circle(2)],
+            picked: vec![
+                SketchEntityConfig::Curve(document::sketch::SketchCurve::Arc(1)),
+                SketchEntityConfig::Curve(document::sketch::SketchCurve::Circle(2)),
+            ],
         };
         let restored = malformed.restore();
         assert!(restored.picked().is_empty());
@@ -1480,9 +1484,9 @@ mod tests {
         let complete = ArmedConstraintConfig {
             verb: ConstraintVerbConfig::Symmetry,
             picked: vec![
-                SketchEntityConfig::Segment(1),
-                SketchEntityConfig::Segment(2),
-                SketchEntityConfig::Segment(3),
+                SketchEntityConfig::Curve(document::sketch::SketchCurve::Segment(1)),
+                SketchEntityConfig::Curve(document::sketch::SketchCurve::Segment(2)),
+                SketchEntityConfig::Curve(document::sketch::SketchCurve::Segment(3)),
             ],
         };
         assert!(complete.restore().picked().is_empty());
