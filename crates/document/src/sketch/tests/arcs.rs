@@ -434,14 +434,29 @@ fn an_arc_reifies_its_center_as_a_selectable_point() {
     assert!(sketch.faces(ctx(16)).is_empty());
 }
 
+/// Dragging the center MOVES THE ARC, all three points by the one displacement.
+///
+/// The center is the place the curve turns about, so taking hold of it is a statement about the
+/// curve and not about that one dot — Fusion says the same of the simplest case, "if you drag the
+/// center point you will change the position of the arc like in a circle". Under the old derived
+/// model a center had one freedom, how far out along the chord's bisector it stood, and a drag of
+/// it authored the SWEEP;
+/// [ADR 0038](../../../../../docs/adr/0038-a-point-is-placed-never-computed.md) ended that, and
+/// what is left is an ordinary point at the middle of a rigid set.
 #[test]
-fn dragging_a_center_changes_the_radius_and_nothing_else() {
+fn dragging_a_center_carries_the_whole_arc() {
     let (mut sketch, from, to, arc) = half_turn();
     let center = center_of(&sketch, arc).id;
+    let sweep_of = |sketch: &Sketch| {
+        sketch
+            .arc_form_of(arc)
+            .expect("three points that draw an arc")
+            .sweep_degrees
+    };
+    let before = sweep_of(&sketch);
 
-    // The half turn's center sits ON the chord, its arc bulging DOWN to axis1 = -2. Pushing the
-    // center up, away from the bulge, makes a shallower arc: apothem 2 with half-chord 2 halves
-    // the sweep to 90°.
+    // Two voxels up, and nothing else said. The half turn's center sits ON the chord, so this is
+    // the very drag that used to halve the sweep to 90.
     assert!(sketch
         .move_point(center, SketchPoint::new(2, 2), ctx(16))
         .expect("evaluation context"));
@@ -455,49 +470,65 @@ fn dragging_a_center_changes_the_radius_and_nothing_else() {
             .at
             .in_plane()
     };
-    assert_near(position(from), [0.0, 0.0]);
-    assert_near(position(to), [4.0, 0.0]);
+    assert_near(position(from), [0.0, 2.0]);
+    assert_near(position(to), [4.0, 2.0]);
     assert_near(center_of(&sketch, arc).at.in_plane(), [2.0, 2.0]);
-    let sweep = sketch
-        .arc_form_of(arc)
-        .expect("three points that draw an arc")
-        .sweep_degrees;
+    let after = sweep_of(&sketch);
     assert!(
-        (sweep - 90.0).abs() < 1.0e-3,
-        "the sweep follows the center: {sweep}"
+        (after - before).abs() < 1.0e-3,
+        "a translation is not a reshape: {before} became {after}"
     );
 }
 
-/// A center has ONE degree of freedom — the chord's perpendicular bisector. A drag with a
-/// component along the chord projects onto that line rather than shearing the arc.
+/// A center drag has TWO freedoms now, not one, so it lands where it was put.
+///
+/// The old rule projected a center onto the chord's perpendicular bisector, because that line was
+/// the whole of what a derived center could say. A carried arc has nothing to project: the
+/// along-chord component is a real displacement of the shape.
 #[test]
-fn a_center_drag_projects_onto_the_bisector() {
-    let (mut sketch, _from, _to, arc) = half_turn();
+fn a_center_lands_where_it_is_put_and_takes_the_arc_with_it() {
+    let (mut sketch, from, to, arc) = half_turn();
     let center = center_of(&sketch, arc).id;
-    // The chord runs along axis 0, so its bisector is the vertical through the midpoint: the
-    // axis-0 component of this drag is discarded and only the -2 lands.
     assert!(sketch
         .move_point(center, SketchPoint::new(9, -2), ctx(16))
         .expect("evaluation context"));
-    assert_near(center_of(&sketch, arc).at.in_plane(), [2.0, -2.0]);
+
+    let position = |id| {
+        sketch
+            .points()
+            .iter()
+            .find(|point| point.id == id)
+            .expect("the point")
+            .at
+            .in_plane()
+    };
+    // Seven along the chord and two across it, and every point of the arc goes the same way.
+    assert_near(center_of(&sketch, arc).at.in_plane(), [9.0, -2.0]);
+    assert_near(position(from), [7.0, -2.0]);
+    assert_near(position(to), [11.0, -2.0]);
 }
 
-/// Dragging the center INTO the bulge flips minor to major without reversing the arc: the sweep
-/// keeps its sign and grows past 180°.
+/// Dragging the center INTO the bulge no longer flips minor to major — it carries the arc down
+/// past its own ends, sweep and all. Changing the sweep is a drag of an END or of the rim, which
+/// are the gestures that say something about the curve's shape rather than about its place.
 #[test]
-fn a_center_dragged_into_the_bulge_makes_the_major_arc() {
+fn a_center_dragged_into_the_bulge_carries_the_arc_rather_than_flipping_it() {
     let (mut sketch, _from, _to, arc) = half_turn();
     let center = center_of(&sketch, arc).id;
+    let sweep_of = |sketch: &Sketch| {
+        sketch
+            .arc_form_of(arc)
+            .expect("three points that draw an arc")
+            .sweep_degrees
+    };
+    let before = sweep_of(&sketch);
     assert!(sketch
         .move_point(center, SketchPoint::new(2, -2), ctx(16))
         .expect("evaluation context"));
-    let sweep = sketch
-        .arc_form_of(arc)
-        .expect("three points that draw an arc")
-        .sweep_degrees;
+    let after = sweep_of(&sketch);
     assert!(
-        (sweep - 270.0).abs() < 1.0e-3,
-        "apothem -2 with half-chord 2 is the 270 major arc, still positive: {sweep}"
+        (after - before).abs() < 1.0e-3,
+        "the arc travelled into its own bulge and stayed the same arc: {before} became {after}"
     );
     assert_near(center_of(&sketch, arc).at.in_plane(), [2.0, -2.0]);
 }

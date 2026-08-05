@@ -1874,9 +1874,11 @@ fn loaded_off_domain_tangent_keeps_solve_and_drag_atomic() {
 }
 
 #[test]
-/// Dragging an unconstrained arc's center moves that one point: the turn between the three points
-/// changes because the center did, and endpoints and unrelated circles are untouched.
-fn dragging_an_arc_center_moves_only_that_point() {
+/// Dragging an unconstrained arc's center moves the ARC and nothing beyond it: its two ends come
+/// along by the same displacement, the turn between the three points is unchanged, and an
+/// unrelated circle across the plane is byte-exact. A rigid set reaches as far as the shape and
+/// no further.
+fn dragging_an_arc_center_carries_its_arc_and_nothing_else() {
     let (mut sketch, tail, head, center, _) = arc_with_center();
     sketch
         .add_circle(SketchPoint::new(50, 20), SketchLength::new(7))
@@ -1894,6 +1896,7 @@ fn dragging_an_arc_center_moves_only_that_point() {
         .copied()
         .expect("head");
     let before_circles = sketch.circles().to_vec();
+    let before_center = position(&sketch, center);
     let arc = sketch.arcs()[0].id;
     let sweep_of = |sketch: &Sketch| {
         sketch
@@ -1906,20 +1909,21 @@ fn dragging_an_arc_center_moves_only_that_point() {
     assert!(sketch
         .move_point(center, SketchPoint::new(10, 20), ctx(16))
         .expect("a center is an ordinary point to drag"));
+    let by = [10.0 - before_center[0], 20.0 - before_center[1]];
     assert!(
-        (sweep_of(&sketch) - before_sweep).abs() > 1.0e-6,
-        "the sweep followed the center"
+        (sweep_of(&sketch) - before_sweep).abs() < 1.0e-6,
+        "the arc travelled without reshaping"
     );
-    assert_eq!(
-        sketch.points().iter().find(|point| point.id == tail),
-        Some(&before_tail),
-        "tail is byte-exact"
-    );
-    assert_eq!(
-        sketch.points().iter().find(|point| point.id == head),
-        Some(&before_head),
-        "head is byte-exact"
-    );
+    let carried = |was: &Point, is: EntityId| {
+        let at = position(&sketch, is);
+        let stood = was.at.in_plane();
+        assert!(
+            (at[0] - stood[0] - by[0]).abs() < 1.0e-6 && (at[1] - stood[1] - by[1]).abs() < 1.0e-6,
+            "{at:?} is not {stood:?} carried by {by:?}"
+        );
+    };
+    carried(&before_tail, tail);
+    carried(&before_head, head);
     assert_eq!(
         sketch.circles(),
         before_circles.as_slice(),

@@ -53,8 +53,8 @@ pub use slot::{
 };
 pub use solve::{
     concentric_center, Analysis, ArcId, BuildError, CircleId, ConstraintId, CurrentValidation,
-    Diagnostics, DragOutcome, ParameterId, ParameterKind, ParameterValue, PointId, Problem,
-    ProblemBuilder, Relation, RequestError, SegmentId, Settled, SketchCurve, Solution,
+    Diagnostics, DragOutcome, Hand, HandRole, ParameterId, ParameterKind, ParameterValue, PointId,
+    Problem, ProblemBuilder, Relation, RequestError, SegmentId, Settled, SketchCurve, Solution,
     TangentContactFailure, TrialAdd, TrialRejection,
 };
 pub use spline::{control_point_spline, fit_point_spline, SplineCandidate, SplineCandidateError};

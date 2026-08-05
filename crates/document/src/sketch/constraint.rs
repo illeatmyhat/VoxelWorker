@@ -19,7 +19,8 @@
 )]
 
 use super::{
-    Arc, Circle, CircleRadius, EntityId, Point, Segment, Sketch, SketchLength, SketchPoint, Spline,
+    Arc, Circle, CircleRadius, EntityId, Hand, Point, Segment, Sketch, SketchLength, SketchPoint,
+    Spline,
 };
 use parametric::sketch::{
     ArcId, BuildError, CircleId, ConstraintId, PointId, Problem, ProblemBuilder, Relation,
@@ -798,19 +799,30 @@ impl PreparedProblem {
     /// Pull one or more points at once. See [`parametric::sketch::Problem::drag_together`].
     pub(super) fn drag_together(
         &self,
-        hands: &[(EntityId, [f64; 2])],
+        hands: &[Hand],
         was: &[(EntityId, [f64; 2])],
     ) -> Result<parametric::sketch::DragOutcome, parametric::sketch::RequestError> {
-        let local = |set: &[(EntityId, [f64; 2])]| {
-            set.iter()
-                .map(|(held, at)| {
-                    self.point(*held)
-                        .map(|point| (point, *at))
-                        .ok_or(parametric::sketch::RequestError::UnknownPoint)
-                })
-                .collect::<Result<Vec<_>, _>>()
-        };
-        self.problem.drag_together(&local(hands)?, &local(was)?)
+        let pulling = hands
+            .iter()
+            .map(|hand| {
+                self.point(hand.point)
+                    .map(|point| parametric::sketch::Hand {
+                        point,
+                        to: hand.to,
+                        role: hand.role,
+                    })
+                    .ok_or(parametric::sketch::RequestError::UnknownPoint)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let stood = was
+            .iter()
+            .map(|(held, at)| {
+                self.point(*held)
+                    .map(|point| (point, *at))
+                    .ok_or(parametric::sketch::RequestError::UnknownPoint)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        self.problem.drag_together(&pulling, &stood)
     }
 
     /// An arc takes no part here. Its shape is its three placed points (ADR 0038), and those

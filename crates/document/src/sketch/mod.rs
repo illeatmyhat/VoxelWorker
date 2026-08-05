@@ -81,6 +81,7 @@ pub use solid::SketchSolid;
 pub use substrate::geom2d::LoopRole;
 pub use transform::{SketchTransformEntity, SketchTransformRefusal};
 
+use parametric::sketch::HandRole;
 use parametric::units::{AngleMeasurement, Measurement};
 use std::num::NonZeroU32;
 
@@ -303,6 +304,42 @@ fn nudges_a_drag_is_delivered_in(grabbed: [f64; 2], to: [f64; 2]) -> Vec<([f64; 
 /// and a drag of it would report a wild displacement out of a rounding difference.
 const DEGENERATE_CURVE_VOXELS: f64 = 1.0e-9;
 
+/// One point a drag asserts, on the document's own ids, and what it is doing there.
+///
+/// The document says the gesture rather than leaving the solver to work it out from the numbers:
+/// [`parametric::sketch::HandRole`] carries why. This is the same shape as
+/// [`parametric::sketch::Hand`] and is mapped onto it at the solver seam, where entity ids become
+/// the solver's own point ids.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct Hand {
+    /// The point being asserted.
+    pub point: EntityId,
+    /// Where the gesture puts it, in plane coordinates.
+    pub to: [f64; 2],
+    /// What it is doing there.
+    pub role: HandRole,
+}
+
+impl Hand {
+    /// A point riding the gesture: the rest of a rigid set, moving by the same motion.
+    fn carried(point: EntityId, to: [f64; 2]) -> Self {
+        Self {
+            point,
+            to,
+            role: HandRole::Carried,
+        }
+    }
+
+    /// A point held where it already stands, which is how a reshape names what it turns about.
+    fn pin(point: EntityId, at: [f64; 2]) -> Self {
+        Self {
+            point,
+            to: at,
+            role: HandRole::Pin,
+        }
+    }
+}
+
 /// What a body drag of a curve asks of the drawing: where the curve's own points are PUT before
 /// the solve runs, and where they are PULLED while it does.
 ///
@@ -312,7 +349,7 @@ const DEGENERATE_CURVE_VOXELS: f64 = 1.0e-9;
 #[derive(Debug, Clone, PartialEq)]
 struct BodyDrag {
     seeded: Vec<(EntityId, [f64; 2])>,
-    pulled: Vec<(EntityId, [f64; 2])>,
+    pulled: Vec<Hand>,
 }
 
 /// Why a regular polygon could not be appended atomically.
@@ -2576,11 +2613,11 @@ impl Sketch {
             // Where they stood, read before they are written down. See `settle_under_the_hands`.
             let was: Vec<(EntityId, [f64; 2])> = hands
                 .iter()
-                .filter_map(|(point, _)| Some((*point, sketch.point_in_plane(*point)?)))
+                .filter_map(|hand| Some((hand.point, sketch.point_in_plane(hand.point)?)))
                 .collect();
-            for (point, to) in &hands {
-                if let Some(index) = sketch.point_index(*point) {
-                    sketch.points[index].at = SketchPoint::from_continuous(to[0], to[1]);
+            for hand in &hands {
+                if let Some(index) = sketch.point_index(hand.point) {
+                    sketch.points[index].at = SketchPoint::from_continuous(hand.to[0], hand.to[1]);
                 }
             }
             sketch.sync_derived_points();
@@ -2680,10 +2717,14 @@ impl Sketch {
         // The center is held, not moved, so naming a DERIVED point here is sound where dragging one
         // would not be: it asks the solve to keep the center where it computes to, which the ends
         // and the sweep between them are free to arrange.
-        let mut hands = vec![(grip, to)];
+        let mut hands = vec![Hand {
+            point: grip,
+            to,
+            role: HandRole::Lead,
+        }];
         hands.extend(
             self.center_point_of(curve)
-                .and_then(|center| Some((center, self.point_in_plane(center)?))),
+                .and_then(|center| Some(Hand::pin(center, self.point_in_plane(center)?))),
         );
         // Minted BEFORE the rollback point, so a refused drag restores a drawing that still has the
         // grip in it and the same two lines take it away either way.
@@ -2802,11 +2843,11 @@ impl Sketch {
         // without moving them, and measured, it did: a rail slid along its own sweep threw a point
         // twenty units sideways and failed a tangency outright. A pull states the same wish and
         // lets everything standing on the center come along.
-        let mut pulled: Vec<(EntityId, [f64; 2])> = seeded
+        let mut pulled: Vec<Hand> = seeded
             .iter()
-            .map(|(point, at)| (*point, [at[0] + along[0], at[1] + along[1]]))
+            .map(|(point, at)| Hand::carried(*point, [at[0] + along[0], at[1] + along[1]]))
             .collect();
-        pulled.extend(hub.map(|(id, at)| (id, [at[0] + along[0], at[1] + along[1]])));
+        pulled.extend(hub.map(|(id, at)| Hand::carried(id, [at[0] + along[0], at[1] + along[1]])));
         (!seeded.is_empty()).then_some(BodyDrag { seeded, pulled })
     }
 
@@ -2955,7 +2996,7 @@ impl Sketch {
             .into_iter()
             .filter_map(|point| {
                 let stood = self.point_in_plane(point)?;
-                Some((point, [stood[0] + by[0], stood[1] + by[1]]))
+                Some(Hand::carried(point, [stood[0] + by[0], stood[1] + by[1]]))
             })
             .collect();
         if hands.is_empty() {
@@ -2965,11 +3006,11 @@ impl Sketch {
             // Where they stood, read before they are written down. See `settle_under_the_hands`.
             let was: Vec<(EntityId, [f64; 2])> = hands
                 .iter()
-                .filter_map(|(point, _)| Some((*point, sketch.point_in_plane(*point)?)))
+                .filter_map(|hand| Some((hand.point, sketch.point_in_plane(hand.point)?)))
                 .collect();
-            for (point, to) in &hands {
-                if let Some(index) = sketch.point_index(*point) {
-                    sketch.points[index].at = SketchPoint::from_continuous(to[0], to[1]);
+            for hand in &hands {
+                if let Some(index) = sketch.point_index(hand.point) {
+                    sketch.points[index].at = SketchPoint::from_continuous(hand.to[0], hand.to[1]);
                 }
             }
             sketch.sync_derived_points();
@@ -3071,9 +3112,9 @@ impl Sketch {
         // distorted around the one point that led.
         let before = self.points.clone();
         let hands = self.hands_moving_with(id, at);
-        for (point, to) in &hands {
-            if let Some(index) = self.point_index(*point) {
-                self.points[index].at = SketchPoint::from_continuous(to[0], to[1]);
+        for hand in &hands {
+            if let Some(index) = self.point_index(hand.point) {
+                self.points[index].at = SketchPoint::from_continuous(hand.to[0], hand.to[1]);
             }
         }
         // The DRAG's own displacement carries the handles, not just the settle's. A solve carries
@@ -3085,11 +3126,11 @@ impl Sketch {
         self.sync_derived_points();
         let was: Vec<(EntityId, [f64; 2])> = hands
             .iter()
-            .filter_map(|(point, _)| {
+            .filter_map(|hand| {
                 before
                     .iter()
-                    .find(|stood| stood.id == *point)
-                    .map(|stood| (*point, stood.at.in_plane()))
+                    .find(|stood| stood.id == hand.point)
+                    .map(|stood| (hand.point, stood.at.in_plane()))
             })
             .collect();
         self.settle_under_the_hands(&hands, &was, context)
@@ -3136,8 +3177,12 @@ impl Sketch {
     ///
     /// This is a drag policy, not a relation. A relation that made the slot rigid would take those
     /// freedoms away for good, and they are the ones the other handles exist to author.
-    fn hands_moving_with(&self, id: EntityId, at: SketchPoint) -> Vec<(EntityId, [f64; 2])> {
-        let mut hands = vec![(id, at.in_plane())];
+    fn hands_moving_with(&self, id: EntityId, at: SketchPoint) -> Vec<Hand> {
+        let mut hands = vec![Hand {
+            point: id,
+            to: at.in_plane(),
+            role: HandRole::Lead,
+        }];
         let Some(index) = self.point_index(id) else {
             return hands;
         };
@@ -3146,7 +3191,11 @@ impl Sketch {
         let delta = [now[0] - was[0], now[1] - was[1]];
         if let Some(pivot) = self.pivot_a_reshape_turns_about(id) {
             if let Some(index) = self.point_index(pivot) {
-                hands.push((pivot, self.points[index].at.in_plane()));
+                hands.push(Hand {
+                    point: pivot,
+                    to: self.points[index].at.in_plane(),
+                    role: HandRole::Pin,
+                });
             }
         }
         for carried in self.rest_of_the_shape_held_by(id) {
@@ -3154,7 +3203,11 @@ impl Sketch {
                 continue;
             };
             let stood = self.points[index].at.in_plane();
-            hands.push((carried, [stood[0] + delta[0], stood[1] + delta[1]]));
+            hands.push(Hand {
+                point: carried,
+                to: [stood[0] + delta[0], stood[1] + delta[1]],
+                role: HandRole::Carried,
+            });
         }
         hands
     }
@@ -3171,11 +3224,7 @@ impl Sketch {
     ///
     /// Only the curves an author can hold as a WHOLE — a segment, an arc. The higher curves carry
     /// their shape in control points, so there is no single offset that means anything for them.
-    fn hands_moving_a_curve(
-        &self,
-        curve: SketchCurve,
-        at: [f64; 2],
-    ) -> Option<Vec<(EntityId, [f64; 2])>> {
+    fn hands_moving_a_curve(&self, curve: SketchCurve, at: [f64; 2]) -> Option<Vec<Hand>> {
         // Below this the direction the offset is measured along stops being meaningful, and the
         // drag would report a wild displacement from a rounding difference.
         const DEGENERATE_SPAN_VOXELS: f64 = 1.0e-9;
@@ -3197,7 +3246,10 @@ impl Sketch {
                         offset.mul_add(outward[1], from[1]),
                     ]
                 };
-                Some(vec![(segment.from, slid(tail)), (segment.to, slid(head))])
+                Some(vec![
+                    Hand::carried(segment.from, slid(tail)),
+                    Hand::carried(segment.to, slid(head)),
+                ])
             }
             SketchCurve::Arc(id) => {
                 let arc = self.arcs.iter().find(|arc| arc.id == id)?;
@@ -3218,7 +3270,10 @@ impl Sketch {
                         grown.mul_add(from[1] - center[1], center[1]),
                     ]
                 };
-                Some(vec![(arc.from, swelled(tail)), (arc.to, swelled(head))])
+                Some(vec![
+                    Hand::carried(arc.from, swelled(tail)),
+                    Hand::carried(arc.to, swelled(head)),
+                ])
             }
             SketchCurve::Circle(_)
             | SketchCurve::Bezier(_)
@@ -3271,12 +3326,8 @@ impl Sketch {
     /// this needs to know which curve the hands came from. An Overall Slot is authored by its far
     /// ends, so its centerline runs out past both cap centers and holds them on it that way — the
     /// ends of the curve are not the spine points, and identity alone never sees them.
-    fn handles_a_widening_must_hold(
-        &self,
-        curve: SketchCurve,
-        hands: &[(EntityId, [f64; 2])],
-    ) -> Vec<(EntityId, [f64; 2])> {
-        let held: Vec<EntityId> = hands.iter().map(|(point, _)| *point).collect();
+    fn handles_a_widening_must_hold(&self, curve: SketchCurve, hands: &[Hand]) -> Vec<Hand> {
+        let held: Vec<EntityId> = hands.iter().map(|hand| hand.point).collect();
         let carried = |point: EntityId| {
             held.contains(&point)
                 || self.constraints.iter().any(|constraint| {
@@ -3291,7 +3342,7 @@ impl Sketch {
             .iter()
             .filter(|point| !carried(**point))
             .filter(|point| self.is_arc_center(**point))
-            .filter_map(|point| Some((*point, self.point_in_plane(*point)?)))
+            .filter_map(|point| Some(Hand::pin(*point, self.point_in_plane(*point)?)))
             .collect()
     }
 
@@ -3301,27 +3352,41 @@ impl Sketch {
             .map(|index| self.points[index].at.in_plane())
     }
 
-    /// Every OTHER point of the shape whose center is `held`, or nothing if `held` is not one.
+    /// Every OTHER point a center carries when it is dragged — its RIGID SET.
     ///
-    /// A point earns this by standing coincident with a center that names a whole shape — which is
-    /// what a slot's center is, and what a corner, an endpoint, or the center of a single end cap
-    /// never is. From the curves turning about it the shape is walked out through the relations
-    /// that hold it together, and every point they stand on comes with it.
+    /// A center is rigid with the curves it centers. That is the whole rule, and it is the rule
+    /// because a center is not a corner: moving a corner is a statement about that corner, while
+    /// moving the place a curve turns about is a statement about the curve. Fusion says the same
+    /// thing of the simplest case — "if you drag the center point you will change the position of
+    /// the arc like in a circle" — and D-Cubed, the solver underneath it, has a name for the
+    /// general case: a RIGID SET, "collections of geometries which 2D DCM solves as if they are
+    /// constrained relative to each other", declared rather than inferred from the numbers.
     ///
-    /// The whole shape rather than only its handles, because that is what makes the answer exact:
-    /// carry all of it by one displacement and the standing system is satisfied to begin with, so
-    /// the settle has nothing left to trade off and no chance to spend the move on a freedom the
-    /// author did not offer. A shape held to geometry OUTSIDE it moves alone and the drag is
-    /// refused, which is the honest outcome — translating a slot is not permission to drag
-    /// whatever it was attached to.
+    /// How far the set reaches is the one question left, and the drawing answers it. Where the
+    /// center names a WHOLE shape — a slot's hub, about which both rails and the spine turn — the
+    /// set is the shape, walked out through the relations holding it together. Where it names one
+    /// curve of a bigger thing — a slot's cap, a lone arc — the set is that curve and its own
+    /// points, and no further: a cap center carries its two corners so the cap sweeps as one piece
+    /// instead of running ahead of the corners it is supposed to be the middle of, and a lone arc
+    /// carries the two ends whose sweep it defines.
+    ///
+    /// Carrying the whole set is what makes the answer exact rather than merely close: displace all
+    /// of it at once and the standing system is satisfied to begin with, so the settle has nothing
+    /// left to trade off and no chance to spend the move on a freedom the author did not offer. A
+    /// shape held to geometry OUTSIDE it moves alone and the drag is refused, which is the honest
+    /// outcome — translating a slot is not permission to drag whatever it was attached to.
     fn rest_of_the_shape_held_by(&self, held: EntityId) -> Vec<EntityId> {
         let seeds = self.curves_centered_on(held);
-        if seeds.is_empty() || !self.names_a_whole_shape(&seeds) {
+        if seeds.is_empty() {
             return Vec::new();
         }
+        let reach = if self.names_a_whole_shape(&seeds) {
+            self.shape_holding(seeds)
+        } else {
+            seeds
+        };
         let mut carried: Vec<EntityId> = Vec::new();
-        let mut pending: Vec<EntityId> = self
-            .shape_holding(seeds)
+        let mut pending: Vec<EntityId> = reach
             .into_iter()
             .flat_map(|curve| self.points_of(curve))
             .collect();
@@ -3662,19 +3727,19 @@ impl Sketch {
     /// pulled from a whole rail being moved.
     fn settle_under_the_hands(
         &mut self,
-        hands: &[(EntityId, [f64; 2])],
+        hands: &[Hand],
         was: &[(EntityId, [f64; 2])],
         context: parametric::EvaluationContext,
     ) -> Result<bool, SketchEvaluationError> {
         let was: Vec<(EntityId, [f64; 2])> = hands
             .iter()
-            .filter_map(|(point, _)| {
+            .filter_map(|hand| {
                 let stood = was
                     .iter()
-                    .find(|(named, _)| named == point)
+                    .find(|(named, _)| *named == hand.point)
                     .map(|(_, at)| *at)
-                    .or_else(|| self.point_in_plane(*point))?;
-                Some((*point, stood))
+                    .or_else(|| self.point_in_plane(hand.point))?;
+                Some((hand.point, stood))
             })
             .collect();
         // Only the part of the drawing the hands can reach takes part. What the rest of the plane
@@ -3682,7 +3747,7 @@ impl Sketch {
         // prices a solve by how many free coordinates and drawn edges it carries, and its dense
         // algebra over them grows faster than the drawing does. Measured on eight unrelated arc
         // slots, one drag cost 177ms whole-drawing against 1ms for the slot actually held.
-        let held: Vec<EntityId> = hands.iter().map(|(point, _)| *point).collect();
+        let held: Vec<EntityId> = hands.iter().map(|hand| hand.point).collect();
         let reach = self.what_a_drag_of_these_can_reach(&held);
         let standing: Vec<Constraint> = self
             .constraints
@@ -3695,9 +3760,9 @@ impl Sketch {
         // gesture on the floor: measured, a bare arc dragged sideways did not move at all, because
         // no relation touched it and so no solve ran to carry the pull.
         if standing.is_empty() {
-            for (point, at) in hands {
-                if let Some(index) = self.point_index(*point) {
-                    self.points[index].at = SketchPoint::from_continuous(at[0], at[1]);
+            for hand in hands {
+                if let Some(index) = self.point_index(hand.point) {
+                    self.points[index].at = SketchPoint::from_continuous(hand.to[0], hand.to[1]);
                 }
             }
             self.sync_derived_points();

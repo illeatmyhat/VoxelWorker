@@ -1626,6 +1626,19 @@ fn both_arc_slot_grammars_carry_by_the_middle_and_sweep_by_an_end() {
                 let moved = (now[0] - stood[0]).hypot(now[1] - stood[1]);
                 assert!(moved < 1.0e-4, "{grammar} {label}: p{held} moved {moved}");
             }
+            // And the slot does not FATTEN as it sweeps. The width is the freedom a slot keeps on
+            // purpose, so it is the one thing a sweep can spend without breaking a relation, and
+            // it used to: the cap center ran ahead of its own two corners and the cap stretched to
+            // stay attached, about 5% per six-voxel pull. Carrying a cap as a rigid set — the
+            // center and the corners it is the middle of, moving as one — leaves nothing to
+            // stretch, and the rails come out exact.
+            let rails = rails(&swept);
+            for (rail, want) in rails.iter().zip([4.0, 4.0, 36.0, 40.0, 44.0]) {
+                assert!(
+                    (rail - want).abs() < 1.0e-4,
+                    "{grammar} {label} swept its rails to {rails:?}"
+                );
+            }
         }
     }
 }

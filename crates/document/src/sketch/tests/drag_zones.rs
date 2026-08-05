@@ -79,7 +79,7 @@ fn drag_settle_zones_by_population() {
 
         // 3. The reach fixpoint plus the standing-constraint filter — both scan the whole
         //    constraint list, and `constraint_stands_within` scans `reach` per reference.
-        let held: Vec<_> = hands.iter().map(|(point, _)| *point).collect();
+        let held: Vec<_> = hands.iter().map(|hand| hand.point).collect();
         let started = Instant::now();
         let reach = sketch.what_a_drag_of_these_can_reach(&held);
         let standing: Vec<_> = sketch

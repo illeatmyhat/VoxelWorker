@@ -2451,11 +2451,58 @@ struct ScalarHold {
     at: f64,
 }
 
+/// What a hand in a drag's set is DOING, said by the caller rather than worked out here.
+///
+/// A gesture arrives with more hands than the author has fingers, and they do not all mean the
+/// same thing. Told apart by their numbers alone the three are indistinguishable at the moment a
+/// drag opens — every one of them is a point being asserted somewhere — and every rule that tried
+/// to tell them apart afterwards needed a tolerance to do it, because a pin is exact only in exact
+/// arithmetic. Commercial solvers do not guess either: D-Cubed, the solver under Fusion and
+/// `SolidWorks`, takes a RIGID SET — "collections of geometries which 2D DCM solves as if they are
+/// constrained relative to each other" — and `SolveSpace`'s interface names dragging a point and
+/// dragging a whole entity as two gestures, not one gesture with an inferred meaning.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HandRole {
+    /// The point the author has hold of. There is at most one.
+    Lead,
+    /// A point the lead carries: the rest of a rigid set, moving by the same motion.
+    Carried,
+    /// A point held STILL for the duration, which is how a reshape names what it turns about.
+    Pin,
+}
+
+/// One point a drag asserts, and why.
+#[derive(Debug, Clone, Copy)]
+pub struct Hand {
+    /// The point being asserted.
+    pub point: PointId,
+    /// Where the gesture puts it.
+    pub to: [f64; 2],
+    /// What it is doing there.
+    pub role: HandRole,
+}
+
+impl Hand {
+    /// The point the author has hold of, where the set names one.
+    fn lead_of(hands: &[Self]) -> Option<(usize, Self)> {
+        let mut found = None;
+        for (index, hand) in hands.iter().enumerate() {
+            if hand.role == HandRole::Lead {
+                if found.is_some() {
+                    return None;
+                }
+                found = Some((index, *hand));
+            }
+        }
+        found
+    }
+}
+
 /// A hand pulled onto a quantity its own curve already had — see [`Problem::snapped`].
 #[derive(Debug, Clone)]
 struct Snap {
     /// The hand, moved onto the circle the quantity draws.
-    hands: Vec<(PointId, [f64; 2])>,
+    hands: Vec<Hand>,
     /// How far around the point the quantity is measured from the hand is asking to go, in
     /// radians.
     turn: f64,
@@ -3493,7 +3540,14 @@ impl Problem {
     ///
     /// Returns an error if the held point is not local to this problem.
     pub fn drag(&self, held: PointId, at: [f64; 2]) -> Result<DragOutcome, RequestError> {
-        self.drag_together(&[(held, at)], &[])
+        self.drag_together(
+            &[Hand {
+                point: held,
+                to: at,
+                role: HandRole::Lead,
+            }],
+            &[],
+        )
     }
 
     /// How far off a quantity may be, as a share of how far the hand travelled, and still be
@@ -3502,16 +3556,6 @@ impl Problem {
     /// Read as an angle it is a cone about the direction that keeps the quantity: a hand moving
     /// within about fifteen degrees of it is understood to be moving ALONG it.
     const SNAP_CONE: f64 = 0.25;
-    /// How still a hand has to be, as a fraction of the busiest hand's travel, to count as a pin
-    /// rather than a mover.
-    ///
-    /// A pin is asked for the place it already stands, so in exact arithmetic it does not move at
-    /// all. A settle answers to a tolerance instead, and a walked drag hands each step the drawing
-    /// the last one actually reached — so by the second step the pin is a few ulps off its target
-    /// and a test for "travelled at all" reads it as a second mover. That is what switched the snap
-    /// off after one frame of a nine-frame sweep, leaving the walk to deliver the raw cursor.
-    const STILL: f64 = 1.0e-3;
-
     /// How far a walked drag turns in one step, and the most steps it will ever walk.
     const TURN_PER_FRAME: f64 = std::f64::consts::PI / 180.0;
     const MOST_FRAMES: u32 = 16;
@@ -3562,51 +3606,7 @@ impl Problem {
             })
     }
 
-    /// The one hand that is actually MOVING, and where it came from, where there is exactly one.
-    ///
-    /// A gesture arrives with more hands than the author has fingers. A reshape names the place it
-    /// turns about as a hand of its own, standing exactly where it already stood, so that the
-    /// drawing is held there rather than sliding out from under the cursor. Those pins are the
-    /// drawing being kept still — the opposite of a carry — so every rule that asks "is this one
-    /// vertex being reshaped" has to count the hand that MOVED, not the hands that were named.
-    /// Counting names instead is what switched the snap and the stays off for a slot's end handle,
-    /// which is a two-hand gesture and always was.
-    fn moving_hand(
-        &self,
-        hands: &[(PointId, [f64; 2])],
-        was: &[(PointId, [f64; 2])],
-        positions: &[[f64; 2]],
-    ) -> Option<(usize, PointId, [f64; 2], [f64; 2])> {
-        let mut travels = Vec::with_capacity(hands.len());
-        for (held, now) in hands {
-            let stood = self.stood_of(*held, was, positions)?;
-            let travel = (now[0] - stood[0]).hypot(now[1] - stood[1]);
-            if !travel.is_finite() {
-                return None;
-            }
-            travels.push((stood, travel));
-        }
-        let largest = travels
-            .iter()
-            .map(|(_, travel)| *travel)
-            .fold(0.0_f64, f64::max);
-        if largest <= 0.0 {
-            return None;
-        }
-        let mut moving = None;
-        for (index, ((held, now), (stood, travel))) in hands.iter().zip(&travels).enumerate() {
-            if *travel <= largest * Self::STILL {
-                continue;
-            }
-            if moving.is_some() {
-                return None;
-            }
-            moving = Some((index, *held, *stood, *now));
-        }
-        moving
-    }
-
-    /// Pull the moving hand onto a quantity its own curve already had, when it moves along one.
+    /// Pull the LEAD hand onto a quantity its own curve already had, when it moves along one.
     ///
     /// Every curve names a distance — a segment its length, an arc its radius — and a preference
     /// asks for that distance back. But a hand is an assertion and a preference is not, so when the
@@ -3627,15 +3627,20 @@ impl Problem {
     /// one the hand is actually moving along.
     fn snapped(
         &self,
-        hands: &[(PointId, [f64; 2])],
+        hands: &[Hand],
         was: &[(PointId, [f64; 2])],
         positions: &[[f64; 2]],
     ) -> Option<Snap> {
-        // Only a lone finger. Several MOVING hands are a carry, which already has its answer,
-        // and they would each want a different circle.
-        let (index, held, stood, now) = self.moving_hand(hands, was, positions)?;
+        // The quantity being kept is the LEAD's, because the lead is the point the author has hold
+        // of. A carried hand rides whatever the lead does, and a pin is not moving at all.
+        let (_, lead) = Hand::lead_of(hands)?;
+        let (held, now) = (lead.point, lead.to);
         let stood_at = |point: PointId| self.stood_of(point, was, positions);
+        let stood = stood_at(held)?;
         let travel = (now[0] - stood[0]).hypot(now[1] - stood[1]);
+        if !travel.is_finite() || travel <= 0.0 {
+            return None;
+        }
         // A curve ending where this point stands offers the circle it would keep: what it
         // measures from, and how far the point stood from it.
         let together = self.standing_together(held);
@@ -3671,11 +3676,42 @@ impl Problem {
         let (about, scale, _) = snap?;
         let arm = |at: [f64; 2]| [at[0] - about[0], at[1] - about[1]];
         let (from, to) = (arm(stood), arm(now));
-        // The moving hand is replaced; the pins are handed back untouched, because they are what
-        // holds the drawing still and dropping them would give the gesture away.
+        // The snap is a TURN of the whole rigid set, not a correction to one point of it. Moving
+        // the lead onto the circle and leaving what it carries where a straight cursor delta put
+        // them tears the set apart every step: on a slot swept by one end, the cap's center ran
+        // ahead of its own two corners and the cap had to stretch to stay attached, which is a
+        // slot that fattens as it sweeps. Pins are handed back untouched — they are what holds the
+        // drawing still, and turning them would give the gesture away.
+        //
+        // Written as a similarity about the pivot: the same complex multiply that takes `stood` to
+        // the snapped lead takes every carried point with it, so the set keeps its shape exactly.
+        let lead_now = [about[0] + to[0] * scale, about[1] + to[1] * scale];
+        let (from_arm, onto_arm) = (arm(stood), arm(lead_now));
+        let denominator = from_arm[0].mul_add(from_arm[0], from_arm[1] * from_arm[1]);
+        let similarity = if denominator > 0.0 {
+            [
+                onto_arm[0].mul_add(from_arm[0], onto_arm[1] * from_arm[1]) / denominator,
+                onto_arm[1].mul_add(from_arm[0], -(onto_arm[0] * from_arm[1])) / denominator,
+            ]
+        } else {
+            [1.0, 0.0]
+        };
         let mut snapped = hands.to_vec();
-        if let Some(hand) = snapped.get_mut(index) {
-            *hand = (held, [about[0] + to[0] * scale, about[1] + to[1] * scale]);
+        for hand in &mut snapped {
+            match hand.role {
+                HandRole::Lead => hand.to = lead_now,
+                HandRole::Carried => {
+                    let Some(rode) = stood_at(hand.point) else {
+                        continue;
+                    };
+                    let arm = arm(rode);
+                    hand.to = [
+                        about[0] + similarity[0].mul_add(arm[0], -(similarity[1] * arm[1])),
+                        about[1] + similarity[1].mul_add(arm[0], similarity[0] * arm[1]),
+                    ];
+                }
+                HandRole::Pin => {}
+            }
         }
         Some(Snap {
             hands: snapped,
@@ -3704,11 +3740,11 @@ impl Problem {
     /// Returns an error if any held point is not local to this problem.
     pub fn drag_together(
         &self,
-        hands: &[(PointId, [f64; 2])],
+        hands: &[Hand],
         was: &[(PointId, [f64; 2])],
     ) -> Result<DragOutcome, RequestError> {
-        for (held, _) in hands.iter().copied() {
-            if held.owner != self.owner || held.index >= self.points.len() {
+        for hand in hands {
+            if hand.point.owner != self.owner || hand.point.index >= self.points.len() {
                 return Err(RequestError::UnknownPoint);
             }
         }
@@ -3729,7 +3765,7 @@ impl Problem {
         // A hand on a handle is a hand on the vertex it stands on — see [`Problem::standing_together`].
         let in_hand: Vec<PointId> = hands
             .iter()
-            .flat_map(|(held, _)| self.standing_together(*held))
+            .flat_map(|hand| self.standing_together(hand.point))
             .collect();
         let grabbed = |point: PointId| in_hand.contains(&point);
         // Concentric arcs are one rail family, and a preference prices an arc by its CHORD, which
@@ -3780,17 +3816,15 @@ impl Problem {
         let mut report = None;
         for frame in 1..=frames {
             let share = f64::from(frame) / f64::from(frames);
-            let target: Vec<(PointId, [f64; 2])> = hands
+            let target: Vec<Hand> = hands
                 .iter()
                 .zip(&origin)
-                .map(|((held, to), (_, from))| {
-                    (
-                        *held,
-                        [
-                            from[0] + (to[0] - from[0]) * share,
-                            from[1] + (to[1] - from[1]) * share,
-                        ],
-                    )
+                .map(|(hand, (_, from))| Hand {
+                    to: [
+                        from[0] + (hand.to[0] - from[0]) * share,
+                        from[1] + (hand.to[1] - from[1]) * share,
+                    ],
+                    ..*hand
                 })
                 .collect();
             // The drawing as the walk has left it. A frame reads its preference off what is in
@@ -3850,20 +3884,20 @@ impl Problem {
     /// snapped drag pays for it, and only when it turns far enough to have to.
     fn walk_of(
         &self,
-        hands: &[(PointId, [f64; 2])],
+        hands: &[Hand],
         was: &[(PointId, [f64; 2])],
         positions: &[[f64; 2]],
     ) -> (Vec<(PointId, [f64; 2])>, u32) {
         let origin: Vec<(PointId, [f64; 2])> = hands
             .iter()
-            .map(|(held, _)| {
+            .map(|hand| {
                 let at = was
                     .iter()
-                    .find(|(named, _)| named == held)
+                    .find(|(named, _)| *named == hand.point)
                     .map(|(_, at)| *at)
-                    .or_else(|| positions.get(held.index).copied())
+                    .or_else(|| positions.get(hand.point.index).copied())
                     .unwrap_or_default();
-                (*held, at)
+                (hand.point, at)
             })
             .collect();
         let frames = self
@@ -3893,42 +3927,34 @@ impl Problem {
     /// the drawing have their say. See [`Problem::drag_together`] for why there are three.
     fn drag_one_frame(
         &self,
-        hands: &[(PointId, [f64; 2])],
+        hands: &[Hand],
         was: &[(PointId, [f64; 2])],
         opening: &[[f64; 2]],
         loosened: &[SketchCurve],
         positions: &mut Vec<[f64; 2]>,
         scalar_coordinates: &mut Vec<f64>,
     ) -> Result<Option<SolveReport>, RequestError> {
-        // Whose gesture this is, asked before the snap and independently of it: a vertex pulled
-        // ACROSS its quantity is still a vertex being reshaped, and the drawing still has to hold
-        // still around it — otherwise the whole slot slides over to meet the cursor and nothing
-        // gets wider.
-        let reshaping = self
-            .moving_hand(hands, was, positions)
-            .is_some_and(|(_, held, _, _)| {
-                let together = self.standing_together(held);
-                let ends_here = |point: PointId| together.contains(&point);
-                self.segments
-                    .iter()
-                    .any(|segment| ends_here(segment.from) || ends_here(segment.to))
-                    || self
-                        .arc_centers
-                        .iter()
-                        .any(|arc| ends_here(arc.from) || ends_here(arc.to))
-            });
+        // Whose gesture this is, said by the caller rather than measured here. A reshape names
+        // what it turns ABOUT, so a set with a pin in it is one — and the drawing has to hold
+        // still around the moving vertex, or the whole slot slides over to meet the cursor and
+        // nothing gets wider. Asked of the roles and not of the numbers, this survives the snap
+        // and does not need a stillness tolerance to decide that a settled pin is still a pin.
+        let reshaping = hands.iter().any(|hand| hand.role == HandRole::Pin);
         let snap = self.snapped(hands, was, positions);
         let hands = snap.as_ref().map_or(hands, |snap| snap.hands.as_slice());
         // The hand is written into the guess as well as asserted, so the pass starts from the
         // drawing the author is looking at rather than from the one they left behind.
-        for (held, at) in hands.iter().copied() {
-            if let Some(slot) = positions.get_mut(held.index) {
-                *slot = at;
+        for hand in hands {
+            if let Some(slot) = positions.get_mut(hand.point.index) {
+                *slot = hand.to;
             }
         }
         let mut pulled = self.clone();
-        for (held, at) in hands.iter().copied() {
-            let pull = Relation::Fix { point: held, at };
+        for hand in hands {
+            let pull = Relation::Fix {
+                point: hand.point,
+                at: hand.to,
+            };
             pulled = pulled.with_candidate(
                 pull,
                 self.resolve(pull).map_err(RequestError::InvalidRelation)?,

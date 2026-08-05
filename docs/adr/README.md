@@ -73,6 +73,7 @@ can be skipped entirely; one superseded *in part* cannot.
 | [0039](0039-a-preference-is-measured-before-the-hand.md) | A preference is measured before the hand | Accepted. Amends 0038's solver consequence: an arc names its radius |
 | [0040](0040-a-drag-snaps-to-the-quantity-it-moves-along.md) | A drag snaps to the quantity it moves along | Accepted. Closes 0039's open consequence: an arc endpoint sweeps |
 | [0041](0041-a-gesture-is-read-from-where-it-started.md) | A gesture is read from where it started | Accepted. Slot spine handles deleted; count the hand that MOVED; a walk and its preference both measure from the opening |
+| [0042](0042-a-gesture-states-its-own-rigid-set.md) | A gesture states its own rigid set | Accepted. Hands carry a Lead/Carried/Pin role instead of being told apart by their travel; a center is rigid with the curves it centers, so an arc drags whole |
 
 ## Records that quote documents no longer in the repo
 
