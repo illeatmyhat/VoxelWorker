@@ -70,6 +70,7 @@ can be skipped entirely; one superseded *in part* cannot.
 | [0036](0036-parametric-sketch-solver-ownership.md) | Parametric owns continuous sketch solving | Accepted |
 | [0037](0037-curve-intrinsic-authority-and-evaluation-context.md) | Curve-intrinsic authority and density-aware evaluation | Accepted; the `ArcSweep` half **amended** by 0038 |
 | [0038](0038-a-point-is-placed-never-computed.md) | A point is placed, never computed | Accepted; being built. Amends 0037 for arcs |
+| [0039](0039-a-preference-is-measured-before-the-hand.md) | A preference is measured before the hand | Accepted. Amends 0038's solver consequence: an arc names its radius |
 
 ## Records that quote documents no longer in the repo
 
