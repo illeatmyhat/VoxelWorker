@@ -2625,12 +2625,20 @@ impl Sketch {
                 // displacement, and that is measured from where the drawing currently stands. Then
                 // put the whole set where it is going, so a carried shape starts the settle already
                 // standing rather than distorted around the one point that led.
+                let before = self.points.clone();
                 let hands = self.hands_moving_with(id, at);
                 for (point, to) in &hands {
                     if let Some(index) = self.point_index(*point) {
                         self.points[index].at = SketchPoint::from_continuous(to[0], to[1]);
                     }
                 }
+                // The DRAG's own displacement carries the handles, not just the settle's. A solve
+                // carries them too, but it measures from here — after the hands have landed — so
+                // on a drawing with no standing relation there is no solve at all and the handle
+                // would simply be left behind, its offset re-aimed by a gesture that never
+                // mentioned it. That is the same re-aiming the solve path guards against, arriving
+                // one step earlier.
+                self.carry_authored_handles(&before);
                 self.sync_derived_points();
                 self.settle_under_the_hands(&hands, context)
             }

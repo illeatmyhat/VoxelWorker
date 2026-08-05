@@ -601,6 +601,17 @@ enum SketchGrab {
         curve: document::sketch::SketchCurve,
         from: Option<document::sketch::SketchPoint>,
     },
+    /// A tangent lever's STICK, which translates the fit point it belongs to by however far the
+    /// cursor has come since the press — carrying both arms with it.
+    ///
+    /// Relative for the same reason [`Translate`](Self::Translate) is, and by the same `from`
+    /// memory: the stick is a line, so "the point goes where the cursor is" would jump the point
+    /// out to wherever along the stick the author happened to press. Worse, it would fire on a
+    /// mere CLICK, which asks for nothing but a selection.
+    TranslateLever {
+        fit: document::sketch::EntityId,
+        from: Option<document::sketch::SketchPoint>,
+    },
 }
 
 impl SketchGrab {
@@ -608,7 +619,9 @@ impl SketchGrab {
     const fn point(self) -> Option<document::sketch::EntityId> {
         match self {
             Self::Point(id) => Some(id),
-            Self::Curve(_) | Self::Translate { .. } => None,
+            // The lever's fit point is not reported as the held handle: the overlay would draw the
+            // dot in its dragged state for a gesture the author is running on the stick.
+            Self::Curve(_) | Self::Translate { .. } | Self::TranslateLever { .. } => None,
         }
     }
 }

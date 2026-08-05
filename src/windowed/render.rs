@@ -1125,6 +1125,40 @@ impl WindowedState {
             // where the gesture started and moves nothing. Every frame after measures from it,
             // and since the preview is rebuilt from the pre-drag producer each time, the sum
             // never compounds.
+            // Measured from the press, and the preview is rebuilt from the pre-drag producer each
+            // frame, so the displacement is applied to where the point STOOD rather than summed
+            // frame over frame. A click never reaches the `Some` arm at all.
+            SketchGrab::TranslateLever { fit, from } => match from {
+                Some(from) => {
+                    let (from, now) = (from.in_plane(), snapped.in_plane());
+                    let stood = preview
+                        .sketch
+                        .points()
+                        .iter()
+                        .find(|point| point.id == fit)
+                        .map(|point| point.at.in_plane());
+                    match stood {
+                        Some(stood) => preview.sketch.move_point(
+                            fit,
+                            document::sketch::SketchPoint::from_continuous(
+                                stood[0] + now[0] - from[0],
+                                stood[1] + now[1] - from[1],
+                            ),
+                            context,
+                        ),
+                        None => Ok(false),
+                    }
+                }
+                None => {
+                    if let Some(drag) = self.sketch_drag.as_mut() {
+                        drag.held = SketchGrab::TranslateLever {
+                            fit,
+                            from: Some(snapped),
+                        };
+                    }
+                    return IntentEffect::none();
+                }
+            },
             SketchGrab::Translate { curve, from } => match from {
                 Some(from) => {
                     let (from, now) = (from.in_plane(), snapped.in_plane());
@@ -4267,11 +4301,12 @@ impl WindowedState {
             .map(SketchGrab::Point)
             // A lever's stick moves the point it belongs to, never the spline it steers. The
             // handle rides along at the angle and length it was left at, which is exactly what a
-            // fit-point drag already does — so this is that same grab, reached for by the
-            // manipulator instead of by the dot.
+            // fit-point drag already does — so this is that same motion, reached for by the
+            // manipulator instead of by the dot, and measured as a displacement because a press
+            // anywhere along the stick must not teleport the point out to meet it.
             .or_else(|| {
                 self.tangent_lever_at(cursor_x, cursor_y)
-                    .map(SketchGrab::Point)
+                    .map(|fit| SketchGrab::TranslateLever { fit, from: None })
             })
             .or_else(|| self.grabbable_sketch_curve_at(cursor_x, cursor_y))?;
         let node = self.panel_state.scene.node_by_id(target)?;

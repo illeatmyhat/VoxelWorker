@@ -1125,6 +1125,59 @@ fn a_joint_that_slides_around_the_circle_does_not_drag_its_lever_off_the_answer(
     );
 }
 
+/// Dragging a fit point carries its whole lever, on a drawing with no relations at all.
+///
+/// A handle names an OFFSET from the point it stands off. Nothing in the stores says so — to
+/// everything downstream it is two loose coordinates — so a gesture that moves the anchor and not
+/// the handle silently re-aims the tangent. The solve path already guarded that, but it measures
+/// from after the hands have landed, and an unconstrained drawing has no solve to measure: the
+/// forward arm simply stayed where it was while the mirror swung to the far side of the new
+/// position.
+#[test]
+fn dragging_a_fit_point_carries_its_whole_lever() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    sketch
+        .add_fit_point_spline(
+            &[
+                SketchPoint::new(0, 0),
+                SketchPoint::new(4, 4),
+                SketchPoint::new(8, 0),
+            ],
+            false,
+        )
+        .expect("a spline");
+    assert!(
+        sketch.constraints().is_empty(),
+        "the case under test is the one with no solve to lean on"
+    );
+    let spline = sketch.splines()[0].clone();
+    let fit = spline.points[1];
+    let handle = *spline.tangents.get(&fit).expect("a lever");
+    let stands = |sketch: &Sketch, id| sketch.point_in_plane(id).expect("it stands");
+    let was_fit = stands(&sketch, fit);
+    let was_forward = stands(&sketch, handle.forward);
+    let was_backward = stands(&sketch, handle.backward);
+
+    sketch
+        .move_point(fit, SketchPoint::new(4, 7), ctx(16))
+        .expect("the point moves");
+
+    let at = |id| stands(&sketch, id);
+    let delta = [at(fit)[0] - was_fit[0], at(fit)[1] - was_fit[1]];
+    assert_eq!(delta, [0.0, 3.0], "the point went where it was sent");
+    for (arm, was) in [
+        (handle.forward, was_forward),
+        (handle.backward, was_backward),
+    ] {
+        let now = at(arm);
+        assert!(
+            (now[0] - was[0] - delta[0]).abs() < 1.0e-9
+                && (now[1] - was[1] - delta[1]).abs() < 1.0e-9,
+            "the arm should ride along, not be left behind: {was:?} -> {now:?}"
+        );
+    }
+}
+
 /// Curvature is refused where there is no joint: mid-spline, on a closed spline, and where the two
 /// simply do not meet.
 #[test]
