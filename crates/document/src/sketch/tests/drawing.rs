@@ -1245,3 +1245,94 @@ fn a_center_rectangle_keeps_its_center_across_an_unrelated_deletion() {
         "the center is held by its Midpoint assertions, not by a curve"
     );
 }
+
+/// A dot marks what the ink cannot say. A joined corner says it already; a loose end does not.
+#[test]
+fn a_joined_corner_needs_no_dot_and_a_loose_end_does() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let left = sketch.add_free_point(SketchPoint::new(0, 0));
+    let corner = sketch.add_free_point(SketchPoint::new(4, 0));
+    let right = sketch.add_free_point(SketchPoint::new(4, 4));
+    sketch.connect(left, corner).expect("a line");
+    sketch.connect(corner, right).expect("a second line off it");
+
+    assert!(
+        !sketch.point_draws_at_rest(corner),
+        "two ends meet here and the corner is already visible as a corner"
+    );
+    assert!(
+        sketch.point_draws_at_rest(left) && sketch.point_draws_at_rest(right),
+        "a loose end is the one thing the ink cannot report"
+    );
+}
+
+/// Two ends that merely COINCIDE are two loose ends, and both say so.
+///
+/// This is the case the rule exists for: joined and unjoined look identical, and which one it is
+/// decides whether the profile ever closes into a region.
+#[test]
+fn a_seam_that_only_looks_joined_draws_both_of_its_ends() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let left = sketch.add_free_point(SketchPoint::new(0, 0));
+    let first_end = sketch.add_free_point(SketchPoint::new(4, 0));
+    let second_end = sketch.add_free_point(SketchPoint::new(4, 0));
+    let right = sketch.add_free_point(SketchPoint::new(8, 0));
+    sketch.connect(left, first_end).expect("a line");
+    sketch
+        .connect(second_end, right)
+        .expect("a line starting where it ended");
+
+    assert!(
+        sketch.point_draws_at_rest(first_end) && sketch.point_draws_at_rest(second_end),
+        "the seam is open, and two dots on one place is exactly how that reads"
+    );
+}
+
+/// A center has no ink on it, so the dot is the only evidence it is there — even though a curve
+/// names it, which a corner's two segments also do.
+#[test]
+fn a_center_draws_where_a_corner_does_not() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    sketch
+        .add_circle(SketchPoint::new(0, 0), SketchLength::new(5))
+        .expect("a circle");
+    let center = sketch.circles()[0].center;
+
+    let a = sketch.add_free_point(SketchPoint::new(20, 0));
+    let corner = sketch.add_free_point(SketchPoint::new(24, 0));
+    let b = sketch.add_free_point(SketchPoint::new(24, 4));
+    sketch.connect(a, corner).expect("a line");
+    sketch.connect(corner, b).expect("a second line off it");
+
+    assert!(
+        sketch.point_draws_at_rest(center),
+        "a circle names its center, but nothing is DRAWN there"
+    );
+    assert!(
+        !sketch.point_draws_at_rest(corner),
+        "two segments name this one too, and they draw right through it"
+    );
+}
+
+/// A spline's ink shows its shape and says nothing about which points made it.
+#[test]
+fn a_fit_point_draws_because_the_curve_through_it_does_not_reveal_it() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    sketch
+        .add_fit_point_spline(
+            &[
+                SketchPoint::new(0, 0),
+                SketchPoint::new(4, 4),
+                SketchPoint::new(8, 0),
+            ],
+            false,
+        )
+        .expect("a spline");
+    let spline = sketch.splines()[0].clone();
+    for fit in &spline.points {
+        assert!(
+            sketch.point_draws_at_rest(*fit),
+            "a run through five points and a run through seven are one picture"
+        );
+    }
+}

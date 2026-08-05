@@ -948,13 +948,17 @@ impl EntityRole {
 ///
 /// This is NOT [`EntityRole`], though a point once carried that type and the confusion cost four
 /// bugs. A role is a linetype: how a curve draws and whether the region counts it as a boundary. A
-/// point has no linetype — every point draws identically, which the author ratified — and no point
-/// bounds anything on its own. What a point has instead is a question no curve has to answer: when
-/// the last thing referring to it goes away, is it still there?
+/// point has no linetype and no point bounds anything on its own. What a point has instead is a
+/// question no curve has to answer: when the last thing referring to it goes away, is it still
+/// there?
 ///
 /// It is also not the same question as [`is_derived_point`](Sketch::is_derived_point), which asks
 /// who OWNS a position. An ellipse's width handle is anchored and authored at once: the author
 /// placed it, nothing re-derives it, and it still has no business surviving its ellipse.
+///
+/// And it is not [`point_draws_at_rest`](Sketch::point_draws_at_rest), which asks whether the dot
+/// is worth the ink. Three axes, three answers: a rectangle's corner is Freestanding, authored, and
+/// silent, because two segment ends already mark it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum PointLifetime {
     /// The author placed it and it stays until the author deletes it, incident geometry or not.
@@ -2934,7 +2938,10 @@ impl Sketch {
     }
 
     /// Every point a curve stands on, its center included where it has one.
-    fn points_of(&self, curve: SketchCurve) -> Vec<EntityId> {
+    ///
+    /// Public for the overlay: a curve the author is touching shows the points it stands on, even
+    /// the ones [`point_draws_at_rest`](Self::point_draws_at_rest) keeps quiet.
+    pub fn points_of(&self, curve: SketchCurve) -> Vec<EntityId> {
         match curve {
             SketchCurve::Arc(id) => self
                 .arcs
@@ -4680,6 +4687,54 @@ impl Sketch {
     pub fn is_derived_point(&self, id: EntityId) -> bool {
         self.arcs.iter().any(|arc| arc.center == id)
             || self.conics.iter().any(|conic| conic.shoulder == id)
+    }
+
+    /// How many curve ENDS meet at `id`: where ink stops, not where a curve merely names the point.
+    ///
+    /// A center is not an end. Nothing is drawn at an arc's center, so two concentric arcs sharing
+    /// one do not "meet" there in any sense the author can see — which is the sense this counts in.
+    fn curve_ends_meeting(&self, id: EntityId) -> usize {
+        let segments = self
+            .segments
+            .iter()
+            .flat_map(|segment| [segment.from, segment.to]);
+        let arcs = self.arcs.iter().flat_map(|arc| [arc.from, arc.to]);
+        segments.chain(arcs).filter(|end| *end == id).count()
+    }
+
+    /// Whether the point is worth drawing when nothing is hovered and no element is active.
+    ///
+    /// # A dot is for what the ink cannot say
+    ///
+    /// Drawing every point at all times is noise, and noise is the thing that hides the one dot
+    /// that matters. So the question is not what KIND of point this is; it is whether the drawing
+    /// already shows what the point would show.
+    ///
+    /// Two or more ends meeting is the one case where it does. A corner where two lines join looks
+    /// exactly like a corner, and a dot on it adds nothing — the same is true of a break, a trim or
+    /// a fillet junction, which is why none of those needs a case here. Everything else earns its
+    /// mark:
+    ///
+    /// - **No end at all** — a center, a shoulder, a free point the author dropped. There is no ink
+    ///   on it, so the dot is the only evidence it exists.
+    /// - **One end** — a loose end. "This line stops here" and "this line joins something here" are
+    ///   the same picture, and the difference is exactly what decides whether the profile closes
+    ///   into a region. Two ends that merely COINCIDE draw two dots; genuinely joined, they draw
+    ///   none, and the author can see the seam without trying to fill it.
+    /// - **A fit or control point** — a spline's ink shows its shape and says nothing about its
+    ///   parameterization, so a run through five points and a run through seven are one picture.
+    ///
+    /// Tangent arms are not answered here. An arm belongs to its lever and is shown or hidden with
+    /// it, which is a question about the manipulator rather than about the drawing.
+    pub fn point_draws_at_rest(&self, id: EntityId) -> bool {
+        if self
+            .splines
+            .iter()
+            .any(|spline| spline.points.contains(&id))
+        {
+            return true;
+        }
+        self.curve_ends_meeting(id) < 2
     }
 
     /// Every point some authored relation reaches — named outright, or standing on a curve the
