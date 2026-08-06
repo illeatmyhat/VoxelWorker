@@ -625,3 +625,79 @@ fn sweeping_answer(base: &Sketch, held: EntityId, cursor: [f64; 2]) -> (Vec<f64>
         sweep,
     )
 }
+
+/// The two snap cones, in the degrees they actually come to.
+///
+/// `SNAP_CONE_KEEPING_A_SPAN` and `SNAP_CONE_KEEPING_A_RADIUS` are shares of how far the hand
+/// travelled, which says nothing on its own about what a gesture may look like and still be read as
+/// moving ALONG the quantity. This measures that, so the two numbers stop being opaque.
+///
+/// The angles shrink as the gesture lengthens, and that is not a defect: `across` is measured to
+/// the LOCUS, and a straight line tangent to a circle of radius R leaves it by about `travel²/2R`
+/// while the cone grows only linearly. A hand that follows the locus is held however far it goes;
+/// a hand that strikes out straight is let go the further it commits.
+///
+/// The bounds here are loose on purpose — they are a guard against the shares being changed without
+/// anyone noticing what it did, not a claim that these are the right angles.
+#[test]
+fn the_two_snap_cones_are_the_angles_they_are_measured_to_be() {
+    // A span of 40 from a pinned tail, and an arc of radius 40 about a hub. Both are grabbed at
+    // [40, 0] and both keep a locus that is the circle of radius 40, so the two shares are being
+    // asked exactly the same question.
+    let mut span = Sketch::empty(PlaneAxis::Z);
+    let tail = span.add_free_point(SketchPoint::new(0, 0));
+    let span_end = span.add_free_point(SketchPoint::new(40, 0));
+    span.connect(tail, span_end).expect("a segment");
+    span.add_constraint(
+        ConstraintKind::Fix {
+            point: tail,
+            at: SketchPoint::new(0, 0),
+        },
+        ctx(16),
+    )
+    .expect("the far end holds still");
+
+    let mut arc = Sketch::empty(PlaneAxis::Z);
+    let arc_end = arc.add_free_point(SketchPoint::new(40, 0));
+    let arc_far = arc.add_free_point(SketchPoint::new(0, 40));
+    arc.connect_arc(arc_end, arc_far, AngleMeasurement::from_degrees(90))
+        .expect("a quarter arc");
+
+    // (travel, the angle the span must still hold, the angle the radius must still hold)
+    for (travel, span_holds, radius_holds) in [(2.0, 6.0, 24.0), (10.0, 1.0, 19.0)] {
+        assert!(
+            holds_at(&span, span_end, travel, span_holds),
+            "a span stopped holding by {span_holds} degrees on a travel of {travel}"
+        );
+        assert!(
+            holds_at(&arc, arc_end, travel, radius_holds),
+            "a radius stopped holding by {radius_holds} degrees on a travel of {travel}"
+        );
+    }
+    // The ordering is the decision, not the numbers: a radius is held harder than a span because
+    // the drawing authors a radius by another gesture entirely.
+    assert!(
+        holds_at(&arc, arc_end, 30.0, 8.0) && !holds_at(&span, span_end, 30.0, 1.0),
+        "a radius must outlast a span on a long gesture"
+    );
+}
+
+/// Whether the grabbed end still lands EXACTLY on the circle of radius 40 after a straight gesture
+/// of `travel`, struck `degrees` off the tangent at [40, 0].
+fn holds_at(base: &Sketch, grabbed: EntityId, travel: f64, degrees: f64) -> bool {
+    let off = degrees.to_radians();
+    let mut probe = base.clone();
+    drop(probe.move_point(
+        grabbed,
+        SketchPoint::from_continuous(travel.mul_add(off.sin(), 40.0), travel * off.cos()),
+        ctx(16),
+    ));
+    probe
+        .points()
+        .iter()
+        .find(|point| point.id == grabbed)
+        .is_some_and(|point| {
+            let at = point.at.in_plane();
+            (at[0].hypot(at[1]) - 40.0).abs() < 1.0e-4
+        })
+}

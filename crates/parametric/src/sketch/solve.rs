@@ -3664,10 +3664,31 @@ impl Problem {
     /// The rim of the falloff for a hand keeping the SPAN it stands at the end of, as a share of
     /// how far the hand travelled.
     ///
-    /// Read as an angle it is a cone about the direction that keeps the quantity: a hand moving
-    /// within about fifteen degrees of it is understood to be moving ALONG it. Nothing switches
-    /// AT the rim — see [`Problem::snapped`] for why the correction has to arrive there already
-    /// faded to nothing rather than be dropped when it is crossed.
+    /// Read as an angle it is a cone about the direction that keeps the quantity, so a hand moving
+    /// nearly ALONG it is understood to be moving along it. Nothing switches AT the rim — see
+    /// [`Problem::snapped`] for why the correction has to arrive there already faded to nothing
+    /// rather than be dropped when it is crossed.
+    ///
+    /// **It is not a fixed number of degrees, and the number shrinks as the gesture lengthens.**
+    /// `across` is the distance from the cursor to the LOCUS, and a straight line tangent to a
+    /// circle of radius `R` leaves it quadratically — about `travel² / 2R` — while the cone grows
+    /// only linearly in travel. So a hand that FOLLOWS the locus is held however far it goes, and a
+    /// hand that strikes out in a straight line is let go the further it commits. Measured on a
+    /// span of 40 (`the_two_snap_cones_are_the_angles_they_are_measured_to_be`):
+    ///
+    /// | travel | held exactly within | pulled at all within |
+    /// | --- | --- | --- |
+    /// | 2 | 7.2° | 13.0° |
+    /// | 6 | 4.4° | 10.3° |
+    /// | 15 | — | 4.2° |
+    /// | 30 | — | — |
+    ///
+    /// That is narrow, and deliberately so only up to a point: 0.25 is CONSERVATIVE rather than
+    /// forced. Sweeping it against the whole suite, 0.40 is the largest value that keeps every
+    /// test green, 0.45 breaks `mirror_regenerates_after_source_moves_and_adds_no_authored_geometry`
+    /// and 0.60 additionally breaks the two length-authoring guards below. So there is room here
+    /// and nothing measured has claimed it — see the note in
+    /// [ADR 0044](../../../../docs/adr/0044-an-end-of-a-round-curve-holds-its-radius.md).
     const SNAP_CONE_KEEPING_A_SPAN: f64 = 0.25;
 
     /// The same rim for a hand keeping the RADIUS it stands at, which is three times as wide.
@@ -3685,6 +3706,15 @@ impl Problem {
     /// similarity and the drawing never has to be reconciled, so the free sweep stops being spent
     /// at random: measured on a curved slot, the far cap's wander across a cursor step of 0.005
     /// went from 2.7 to 2.8e-25.
+    ///
+    /// Measured against the span above, on the same radius of 40 and the same grabbed point, this
+    /// is the difference between a snap that survives a real gesture and one that does not:
+    ///
+    /// | travel | radius held exactly within | span held exactly within |
+    /// | --- | --- | --- |
+    /// | 2 | 25.5° | 7.2° |
+    /// | 10 | 20.5° | 1.6° |
+    /// | 30 | 8.7° | — |
     const SNAP_CONE_KEEPING_A_RADIUS: f64 = 0.75;
 
     /// The share of the cone over which the quantity holds EXACTLY, before it starts letting go.

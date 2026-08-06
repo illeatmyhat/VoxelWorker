@@ -187,3 +187,44 @@ of cursor error at every step:
 The center holds the origin to 1e-6 throughout. Guarded by
 `an_arc_keeps_its_circle_around_a_whole_turn`, which starts one step in: a hand that has not swept at
 all is pulling straight out, and that IS the author setting the radius, so the center must move.
+
+## Amendment, 2026-08-06 — what the two shares come to in degrees
+
+This record shipped `SNAP_CONE_KEEPING_A_SPAN = 0.25` against `SNAP_CONE_KEEPING_A_RADIUS = 0.75`
+with a reason for the ORDERING and nothing behind either number. The ordering still stands and the
+reason is unchanged. The numbers now have a measurement, and it says two things worth recording.
+
+**A cone is not a fixed number of degrees.** `across` is measured to the LOCUS, and a straight line
+tangent to a circle of radius R leaves it by about `travel² / 2R`, while the cone grows only
+linearly in travel. So the angle a gesture may be struck at and still be read as moving ALONG the
+quantity narrows the longer the gesture commits — and a hand that FOLLOWS the locus keeps `across`
+at zero and is held however far it goes. On a radius of 40, grabbing the same point either way:
+
+| travel | radius held exactly within | span held exactly within |
+| --- | --- | --- |
+| 2 | 25.5° | 7.2° |
+| 6 | 23.0° | 4.4° |
+| 10 | 20.5° | 1.6° |
+| 15 | 17.5° | — |
+| 30 | 8.7° | — |
+
+The span column is the finding. Past a travel of about 15 on a span of 40 there is no angle at all
+that holds the length exactly — a segment cannot be rotated about its far end by any real gesture
+without changing its length. That is the intended DIRECTION of the decision taken further than it
+was ever measured to go. The doc for the constant said "about fifteen degrees", which was never
+true of any gesture.
+
+**0.25 is conservative, not forced.** Sweeping the share against the whole suite:
+
+| share | what breaks |
+| --- | --- |
+| 0.25, 0.35, 0.40 | nothing |
+| 0.45, 0.48 | `mirror_regenerates_after_source_moves_and_adds_no_authored_geometry` |
+| 0.60, 0.75 | that, plus `a_level_segment_stays_level_when_an_end_is_dragged` and `an_achievable_drag_lands_exactly_on_the_cursor` |
+
+At 0.40 a span holds exactly within 12.5° on a small nudge and still 3.6° at a travel of 15. The
+value is left at 0.25 because widening it is a question about FEEL and the author has not had their
+hands on it; the measurement is recorded so the choice is a minute's work rather than a study.
+Guarded by `the_two_snap_cones_are_the_angles_they_are_measured_to_be`, whose bounds are loose on
+purpose — it exists so a change to either share cannot pass unnoticed, not to claim these are the
+right angles.
