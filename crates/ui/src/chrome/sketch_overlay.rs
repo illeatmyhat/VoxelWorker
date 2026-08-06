@@ -15,6 +15,12 @@ pub const SKETCH_HANDLE_HALF: f32 = 5.0;
 pub const SKETCH_HANDLE_GRAB_PAD: f32 = 5.0;
 /// How close (egui points) the cursor must come to an edge for the add-point tool to hover it.
 pub const SKETCH_SEGMENT_GRAB_PAD: f32 = 7.0;
+/// How far (egui points) a drag's snap may carry the drawing off the cursor.
+///
+/// Deliberately generous — the author asked for a generous limit, and the snap it bounds is one the
+/// drawing is entitled to keep. Roughly three fifths of it holds the quantity exactly and the rest
+/// is the falloff letting go, so this is the whole band, not the yank.
+pub const SKETCH_SNAP_REACH: f32 = 90.0;
 /// The half-extent (egui points) of the add-point insert-preview diamond.
 pub const SKETCH_INSERT_MARKER_HALF: f32 = 4.0;
 /// The side (egui points) of a constraint badge's glyph box. Constant on screen, like every

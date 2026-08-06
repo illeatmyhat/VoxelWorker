@@ -72,7 +72,7 @@ pub use modify::{
     ExtendPlacement, ExtendRefusal, FilletPlacement, FilletRefusal, OffsetPlacement, OffsetRefusal,
     TrimPlacement, TrimRefusal,
 };
-pub use parametric::sketch::{SolveOutcome, SolveReport};
+pub use parametric::sketch::{SnapReach, SolveOutcome, SolveReport};
 pub use parametric::{CircleRadius, CurveParameter, ResolvedLength};
 pub use pattern::{
     DerivedPatternCurve, SketchPattern, SketchPatternKind, SketchPatternRefusal, SketchVector,
@@ -2562,14 +2562,16 @@ impl Sketch {
 
     /// Move the point `id` to `at` and settle the drawing around it, reporting only whether the
     /// drawing stood. [`move_point_reporting_its_snap`](Self::move_point_reporting_its_snap) is
-    /// the same gesture for a caller that also wants to DRAW what the drag kept.
+    /// the same gesture for a caller that also wants to DRAW what the drag kept — and to say how
+    /// far the snap may carry the point, which a caller that cannot draw the ghost has no way of
+    /// telling the author about anyway.
     pub fn move_point(
         &mut self,
         id: EntityId,
         at: SketchPoint,
         context: parametric::EvaluationContext,
     ) -> Result<bool, SketchEvaluationError> {
-        self.move_point_reporting_its_snap(id, at, context)
+        self.move_point_reporting_its_snap(id, at, context, SnapReach::UNBOUNDED)
             .map(|answered| answered.moved)
     }
 
@@ -2585,11 +2587,15 @@ impl Sketch {
     /// pinned there — see [`settle_under_the_hands`](Self::settle_under_the_hands). A constraint
     /// that only held at the moment it was asserted is not a constraint; it has to survive the
     /// next drag, which is the first thing the author does to test it.
+    /// `snap_reach` is how far the snap may carry the point off `at`. The shell computes it from
+    /// its camera so the ceiling is a screen distance; a caller without one passes
+    /// [`SnapReach::UNBOUNDED`], which is the kernel's own behaviour.
     pub fn move_point_reporting_its_snap(
         &mut self,
         id: EntityId,
         at: SketchPoint,
         context: parametric::EvaluationContext,
+        snap_reach: SnapReach,
     ) -> Result<DragAnswer, SketchEvaluationError> {
         // Grabbing the BACK arm of a tangent lever steers the FRONT one. The two ends name one
         // quantity, so only one of them can be the thing that moves; the mirror is restored by
@@ -2613,7 +2619,7 @@ impl Sketch {
         if self.point_index(id).is_none() {
             return Ok(DragAnswer::stood(false));
         }
-        self.drag_or_leave_it_alone(|sketch| sketch.point_move_attempt(id, at, context))
+        self.drag_or_leave_it_alone(|sketch| sketch.point_move_attempt(id, at, context, snap_reach))
     }
 
     /// Move the whole CURVE `curve` so that it passes under `at`, and settle around it. Reports
@@ -2657,7 +2663,8 @@ impl Sketch {
                 }
             }
             sketch.sync_derived_points();
-            sketch.settle_under_the_hands(&hands, &was, context)
+            // No ceiling: a body drag names no lead hand, so there is no snap to bound.
+            sketch.settle_under_the_hands(&hands, &was, context, SnapReach::UNBOUNDED)
         })
         .map(|answered| answered.moved)
     }
@@ -2734,7 +2741,12 @@ impl Sketch {
                             }
                         }
                         sketch.sync_derived_points();
-                        answered = sketch.settle_under_the_hands(&asked.pulled, &[], context)?;
+                        answered = sketch.settle_under_the_hands(
+                            &asked.pulled,
+                            &[],
+                            context,
+                            SnapReach::UNBOUNDED,
+                        )?;
                         if !answered.moved {
                             break;
                         }
@@ -2774,7 +2786,9 @@ impl Sketch {
         // Minted BEFORE the rollback point, so a refused drag restores a drawing that still has the
         // grip in it and the same two lines take it away either way.
         let stood = self
-            .drag_or_leave_it_alone(|sketch| sketch.settle_under_the_hands(&hands, &[], context))
+            .drag_or_leave_it_alone(|sketch| {
+                sketch.settle_under_the_hands(&hands, &[], context, SnapReach::UNBOUNDED)
+            })
             .map(|answered| answered.moved);
         self.constraints
             .retain(|constraint| constraint.id != holding);
@@ -3060,7 +3074,7 @@ impl Sketch {
                 }
             }
             sketch.sync_derived_points();
-            sketch.settle_under_the_hands(&hands, &was, context)
+            sketch.settle_under_the_hands(&hands, &was, context, SnapReach::UNBOUNDED)
         })
         .map(|answered| answered.moved)
     }
@@ -3152,6 +3166,7 @@ impl Sketch {
         id: EntityId,
         at: SketchPoint,
         context: parametric::EvaluationContext,
+        snap_reach: SnapReach,
     ) -> Result<DragAnswer, SketchEvaluationError> {
         // Every point moves the same way now, an arc's center included: ADR 0038 left the
         // drawing with no point whose coordinates are somebody else's arithmetic, so there is no
@@ -3184,7 +3199,7 @@ impl Sketch {
                     .map(|stood| (hand.point, stood.at.in_plane()))
             })
             .collect();
-        self.settle_under_the_hands(&hands, &was, context)
+        self.settle_under_the_hands(&hands, &was, context, snap_reach)
     }
 
     /// Whether the standing constraint system is met by the drawing exactly as it stands, with
@@ -3781,6 +3796,7 @@ impl Sketch {
         hands: &[Hand],
         was: &[(EntityId, [f64; 2])],
         context: parametric::EvaluationContext,
+        snap_reach: SnapReach,
     ) -> Result<DragAnswer, SketchEvaluationError> {
         let was: Vec<(EntityId, [f64; 2])> = hands
             .iter()
@@ -3818,7 +3834,11 @@ impl Sketch {
             // also the one where an arc end followed the cursor freely.
             let snapped = constraint::prepare_scoped(self, &standing, Some(context), Some(&reach))
                 .ok()
-                .and_then(|prepared| prepared.snap_the_hands(hands, &was));
+                .and_then(|prepared| {
+                    prepared
+                        .holding_a_snap_within(snap_reach)
+                        .snap_the_hands(hands, &was)
+                });
             let (landing, kept) = match snapped {
                 Some((onto, kept)) => (onto, Some(kept)),
                 None => (hands.to_vec(), None),
@@ -3832,7 +3852,8 @@ impl Sketch {
             return Ok(DragAnswer { moved: true, kept });
         }
         let prepared = constraint::prepare_scoped(self, &standing, Some(context), Some(&reach))
-            .map_err(map_prepare_evaluation_error)?;
+            .map_err(map_prepare_evaluation_error)?
+            .holding_a_snap_within(snap_reach);
         let (settled, accepted) = match prepared.drag_together(hands, &was) {
             Ok(parametric::sketch::DragOutcome::Accepted(settled)) => (settled, true),
             Ok(parametric::sketch::DragOutcome::Rejected(settled)) => (settled, false),

@@ -1669,7 +1669,12 @@ fn a_snapped_drag_reports_the_circle_it_kept() {
     let end = spine_dot_near(&swept, [40.0, 0.0]);
     // Six voxels along the sweep and a fifteenth of that across it — well inside the cone.
     let kept = swept
-        .move_point_reporting_its_snap(end, SketchPoint::from_continuous(40.0, 6.0), ctx(16))
+        .move_point_reporting_its_snap(
+            end,
+            SketchPoint::from_continuous(40.0, 6.0),
+            ctx(16),
+            SnapReach::UNBOUNDED,
+        )
         .expect("answered")
         .kept
         .expect("a sweep along a radius keeps that radius");
@@ -1689,7 +1694,12 @@ fn a_snapped_drag_reports_the_circle_it_kept() {
     let mut grown = curved_slot();
     let end = spine_dot_near(&grown, [40.0, 0.0]);
     let answered = grown
-        .move_point_reporting_its_snap(end, SketchPoint::from_continuous(46.0, 0.0), ctx(16))
+        .move_point_reporting_its_snap(
+            end,
+            SketchPoint::from_continuous(46.0, 0.0),
+            ctx(16),
+            SnapReach::UNBOUNDED,
+        )
         .expect("answered");
     assert!(answered.moved);
     assert_eq!(

@@ -575,6 +575,7 @@ impl ProblemBuilder {
             parameters: self.parameters,
             circles: self.circles,
             constraints: Vec::new(),
+            snap_reach: SnapReach::UNBOUNDED,
         };
         let constraints = self
             .constraints
@@ -605,6 +606,10 @@ pub struct Problem {
     parameters: Vec<Parameter>,
     circles: Vec<Circle>,
     constraints: Vec<ConstraintEntry>,
+    /// How far a snap may carry a hand off the cursor. Not a property of the drawing — it is the
+    /// gesture's, and it lives here because the drag is what reads it. A problem walked frame by
+    /// frame is cloned from this one, so the ceiling travels with the walk.
+    snap_reach: SnapReach,
 }
 
 impl Problem {
@@ -2503,6 +2508,46 @@ impl Hand {
     }
 }
 
+/// The furthest a snap may carry a hand off the cursor, in the drawing's own units.
+///
+/// A cone that is a share of the hand's TRAVEL is already the same size on screen at every zoom:
+/// travel is read from the cursor, so a hundred-pixel gesture is a hundred-pixel gesture however
+/// much of the drawing that covers. What it is not is BOUNDED. A long sweep opens a wide cone, and
+/// a wide cone can hold the drawing a long way from where the author is pointing — with nothing to
+/// say how far, because the cone is an angle and an angle has no length. Every CAD tool that snaps
+/// puts a ceiling on that and states it in screen pixels, which is the unit the author's patience
+/// is actually measured in.
+///
+/// It is a ceiling and only a ceiling. [`SnapReach::UNBOUNDED`] is the kernel's own behaviour, so a
+/// caller that sets one can only ever narrow a snap, never invent one. It is worth being clear
+/// about what it does NOT do: measured over a sweep, capping the cone at a fixed length made a long
+/// gesture WORSE rather than steadier, and the instability it was first reached for was cured by
+/// holding the quantity instead (ADR 0043, ADR 0044). This bounds how far a snap may take the
+/// drawing. It does not make the drag smooth; that is already done.
+///
+/// The shell owns the number because only the shell has a camera. What arrives here is a length.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SnapReach(f64);
+
+impl SnapReach {
+    /// No ceiling: the cone is whatever the gesture opened.
+    pub const UNBOUNDED: Self = Self(f64::INFINITY);
+
+    /// A ceiling of `length` drawing units.
+    ///
+    /// A length that is not a positive, finite number is no ceiling at all rather than a snap that
+    /// can never reach — a caller whose camera math degenerated should lose the ceiling, not the
+    /// snap.
+    #[must_use]
+    pub fn of_length(length: f64) -> Self {
+        if length.is_finite() && length > 0.0 {
+            Self(length)
+        } else {
+            Self::UNBOUNDED
+        }
+    }
+}
+
 /// The quantity a drag was pulled onto, in enough detail to DRAW.
 ///
 /// A snap is invisible from the outside: the hand goes somewhere slightly other than where the
@@ -3785,7 +3830,10 @@ impl Problem {
             if !quantity.is_finite() || !reach.is_finite() || quantity <= 0.0 || reach <= 0.0 {
                 continue;
             }
-            let cone = share * travel;
+            // The cone the gesture opened, under whatever ceiling the caller set. Taking the
+            // smaller keeps the falloff continuous in both — it is still a cone, just a shorter
+            // one, and everything below reads the same.
+            let cone = (share * travel).min(self.snap_reach.0);
             let across = (reach - quantity).abs();
             if across >= cone {
                 continue;
@@ -3909,6 +3957,13 @@ impl Problem {
         let positions: Vec<[f64; 2]> = self.points.iter().map(|point| point.at).collect();
         let snap = self.snapped(hands, was, &positions)?;
         Some((snap.hands, snap.kept))
+    }
+
+    /// The same problem, with a ceiling on how far a snap may carry a hand — see [`SnapReach`].
+    #[must_use]
+    pub const fn holding_a_snap_within(mut self, reach: SnapReach) -> Self {
+        self.snap_reach = reach;
+        self
     }
 
     /// Pull SEVERAL local points toward their targets at once, then release and settle.

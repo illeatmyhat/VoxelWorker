@@ -1098,6 +1098,35 @@ impl WindowedState {
             self.panel_state.sketch_snap,
             self.panel_state.geometry.voxels_per_block,
         );
+        // The snap's ceiling, stated in screen points and converted here because only the shell has
+        // a camera. Measured by asking the SAME cursor-to-plane map one pixel right and one pixel
+        // down, so it is exact under perspective and on a tilted plane and cannot drift out of step
+        // with the map the drag itself used. The larger of the two steps: a foreshortened plane
+        // should err toward letting the snap hold rather than clipping it.
+        let snap_reach = self
+            .cursor_to_profile_coord(
+                cursor_x + 1.0,
+                cursor_y,
+                ray_unprojection,
+                viewport_px,
+                &handles,
+            )
+            .zip(self.cursor_to_profile_coord(
+                cursor_x,
+                cursor_y + 1.0,
+                ray_unprojection,
+                viewport_px,
+                &handles,
+            ))
+            .map_or(document::sketch::SnapReach::UNBOUNDED, |(right, down)| {
+                let step =
+                    |to: [f64; 2]| (to[0] - profile_coord[0]).hypot(to[1] - profile_coord[1]);
+                document::sketch::SnapReach::of_length(
+                    f64::from(ui::chrome::SKETCH_SNAP_REACH)
+                        * self.window.scale_factor()
+                        * step(right).max(step(down)),
+                )
+            });
 
         // Build the preview from the pre-drag producer with ONLY the dragged vertex moved, then
         // compensate the offset by the bbox-min shift so the rest of the profile holds still.
@@ -1119,7 +1148,7 @@ impl WindowedState {
         let moved = match held {
             SketchGrab::Point(id) if began => preview
                 .sketch
-                .move_point_reporting_its_snap(id, snapped, context)
+                .move_point_reporting_its_snap(id, snapped, context, snap_reach)
                 .map(|answered| {
                     // The ghost is the drag's, not the frame's: a step that did not snap says so
                     // by clearing it, so the circle appears and disappears with the hand rather

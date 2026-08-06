@@ -796,6 +796,13 @@ impl PreparedProblem {
             .map_err(TrialMapError::Request)
     }
 
+    /// The same prepared problem, holding a snap within `reach`.
+    /// See [`parametric::sketch::SnapReach`].
+    pub(super) fn holding_a_snap_within(mut self, reach: parametric::sketch::SnapReach) -> Self {
+        self.problem = self.problem.holding_a_snap_within(reach);
+        self
+    }
+
     /// Snap a drag's hands without solving.
     /// See [`parametric::sketch::Problem::snap_the_hands`].
     pub(super) fn snap_the_hands(

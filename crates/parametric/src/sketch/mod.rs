@@ -55,7 +55,7 @@ pub use solve::{
     concentric_center, Analysis, ArcId, BuildError, CircleId, ConstraintId, CurrentValidation,
     Diagnostics, DragOutcome, Hand, HandRole, KeptQuantity, ParameterId, ParameterKind,
     ParameterValue, PointId, Problem, ProblemBuilder, Relation, RequestError, SegmentId, Settled,
-    SketchCurve, Solution, TangentContactFailure, TrialAdd, TrialRejection,
+    SketchCurve, SnapReach, Solution, TangentContactFailure, TrialAdd, TrialRejection,
 };
 pub use spline::{control_point_spline, fit_point_spline, SplineCandidate, SplineCandidateError};
 pub use symmetry::{

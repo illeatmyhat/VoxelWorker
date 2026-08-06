@@ -215,7 +215,12 @@ fn a_bare_arcs_end_holds_its_radius_and_reports_it() {
         let out = 40.0 + f64::from(step);
         let mut drawn = arc.clone();
         let answered = drawn
-            .move_point_reporting_its_snap(from, SketchPoint::from_continuous(out, 6.0), ctx(16))
+            .move_point_reporting_its_snap(
+                from,
+                SketchPoint::from_continuous(out, 6.0),
+                ctx(16),
+                SnapReach::UNBOUNDED,
+            )
             .expect("answered");
         assert!(
             answered.kept.is_some(),
@@ -236,4 +241,100 @@ fn a_bare_arcs_end_holds_its_radius_and_reports_it() {
             "pulled {out} out, the end left its radius at {radius}"
         );
     }
+}
+
+/// The radius the slot's end lands on when the shell allows the snap `reach` drawing units.
+fn radius_under_a_ceiling(slot: &Sketch, end: EntityId, cursor: [f64; 2], reach: f64) -> f64 {
+    let mut sketch = slot.clone();
+    sketch
+        .move_point_reporting_its_snap(
+            end,
+            SketchPoint::from_continuous(cursor[0], cursor[1]),
+            ctx(16),
+            SnapReach::of_length(reach),
+        )
+        .expect("answered");
+    let at = sketch
+        .points()
+        .iter()
+        .find(|point| point.id == end)
+        .expect("the end")
+        .at
+        .in_plane();
+    at[0].hypot(at[1])
+}
+
+/// A snap reaches no further than the shell says it may.
+///
+/// The author asked for this twice — "screen pixel limits sound good", "I'd like a fairly generous
+/// limit" — and it is a ceiling, nothing more. The cone the gesture opens is an ANGLE, and an angle
+/// says nothing about how far the drawing may end up from the cursor; the ceiling is the length
+/// that angle is allowed to reach, stated by the one layer that knows how big a pixel is.
+///
+/// Tightening it narrows the snap smoothly all the way to nothing, which is the property that makes
+/// it safe to hand a number to: there is no width at which the drawing changes its mind.
+#[test]
+fn a_snap_reaches_no_further_than_the_shell_allows() {
+    let slot = curved_slot();
+    let end = spine_end(&slot, [40.0, 0.0]);
+    let cursor = [41.5, 6.0];
+    let radius = |reach| radius_under_a_ceiling(&slot, end, cursor, reach);
+    // Generous enough not to bite: the gesture's own cone is the narrower of the two.
+    assert!((radius(f64::INFINITY) - 40.0).abs() < 1.0e-6);
+    assert!((radius(4.0) - 40.0).abs() < 1.0e-6);
+    // Tight enough to bite, and it gives the radius up gradually rather than dropping it.
+    let ladder = [radius(3.0), radius(2.5), radius(2.0)];
+    let raw = radius(1.0);
+    assert!(
+        ladder.windows(2).all(|pair| pair[1] > pair[0] + 0.05),
+        "the ceiling let the radius go in a jump rather than a slope: {ladder:?}"
+    );
+    // Below the hand's own error the snap is not reached at all, so the cursor is the answer.
+    assert!(
+        (raw - 41.923).abs() < 1.0e-2 && raw - ladder[2] > 0.0,
+        "a ceiling under the hand's error still moved it, to {raw}"
+    );
+}
+
+/// A ceiling must not bring the spring back.
+///
+/// It is a threshold, and [ADR 0043](../../../../../docs/adr/0043-a-snap-lets-go-gradually.md) is
+/// the record of what a threshold did to this drag the last time there was one. It does not,
+/// because it narrows the cone rather than switching the snap off: the falloff still arrives at
+/// the rim already faded to nothing, only sooner. Measured at a ceiling tight enough to be the
+/// thing letting go, rocking the cursor a fiftieth of a unit swings the drawing 0.08 — against
+/// 3.79 for the hard cone this file was written to catch.
+#[test]
+fn a_ceiling_does_not_bring_the_spring_back() {
+    let slot = curved_slot();
+    let end = spine_end(&slot, [40.0, 0.0]);
+    let worst = (0..8)
+        .map(|step| [40.0 + if step % 2 == 0 { 1.68 } else { 1.70 }, 6.0])
+        .map(|cursor| {
+            let mut sketch = slot.clone();
+            sketch
+                .move_point_reporting_its_snap(
+                    end,
+                    SketchPoint::from_continuous(cursor[0], cursor[1]),
+                    ctx(16),
+                    SnapReach::of_length(2.0),
+                )
+                .expect("answered");
+            sketch
+                .points()
+                .iter()
+                .flat_map(|point| point.at.in_plane())
+                .collect::<Vec<f64>>()
+        })
+        .collect::<Vec<_>>()
+        .windows(2)
+        .map(|pair| match pair {
+            [was, now] => spread(was, now),
+            _ => 0.0,
+        })
+        .fold(0.0_f64, f64::max);
+    assert!(
+        worst < 0.25,
+        "a fiftieth of a unit of cursor swung the drawing {worst} under a ceiling"
+    );
 }

@@ -76,6 +76,7 @@ can be skipped entirely; one superseded *in part* cannot.
 | [0042](0042-a-gesture-states-its-own-rigid-set.md) | A gesture states its own rigid set | Accepted. Hands carry a Lead/Carried/Pin role instead of being told apart by their travel; a center is rigid with the curves it centers, so an arc drags whole |
 | [0043](0043-a-snap-lets-go-gradually.md) | A snap lets go gradually | Accepted. The cone becomes a plateau and a smoothstep, so nothing switches at its rim; the bigger instability is measured to be the drawing's free sweep, not the snap |
 | [0044](0044-an-end-of-a-round-curve-holds-its-radius.md) | An end of a round curve holds its radius | Accepted. The cone belongs to the quantity, not the drawing: a radius is held three times harder than a span because the body drag already authors it, which closes 0043's free-sweep wander |
+| [0045](0045-a-snap-reaches-only-as-far-as-the-shell-allows.md) | A snap reaches only as far as the shell allows | Accepted. `SnapReach` caps the cone at a length the shell converts from 90 screen points, because an angle cannot say how far from the cursor the drawing may end up; a ceiling, never an invention |
 
 ## Records that quote documents no longer in the repo
 
