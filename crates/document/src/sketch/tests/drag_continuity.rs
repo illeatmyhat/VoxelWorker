@@ -119,17 +119,55 @@ fn a_hand_near_its_own_quantity_still_holds_it_exactly() {
     );
 }
 
-/// What is NOT fixed, recorded as a measurement rather than a claim.
+/// The author's ask, in their words: "try making an arc slot endpoint roughly follow its radius".
 ///
-/// The far cap of a swept slot slides along its own arc by up to 2.7 for a cursor step of 0.005,
-/// while every radial coordinate in the same drawing stays smooth to five figures. It is the
-/// drawing's free sweep, spent differently for two nearly identical questions, and it dwarfs
-/// anything the snap does: measured at 39.25 gain well outside any cone, IDENTICALLY with the
-/// falloff and with the hard threshold it replaced, and unchanged by pinning the walk's step
-/// count. It is the [`SNAP_CONE`](parametric::sketch) work's sequel, not its leftovers — see
-/// ADR 0043. This test states the ceiling so that a fix can be recognized by watching it fail.
+/// An end of a round curve holds its radius EXACTLY across a generous cone, because the drawing
+/// authors a radius by another gesture entirely — dragging the arc's body. The only thing left for
+/// an end to mean is a sweep, so it may as well mean it without wobbling.
 #[test]
-fn the_free_sweep_of_a_slot_is_still_spent_arbitrarily() {
+fn an_arc_slot_end_follows_its_radius() {
+    let slot = curved_slot();
+    let end = spine_end(&slot, [40.0, 0.0]);
+    let far = spine_end(&slot, [0.0, 44.0]);
+    for step in 0..=5 {
+        let out = 40.0 + f64::from(step) * 0.5;
+        let mut sketch = slot.clone();
+        sketch
+            .move_point(end, SketchPoint::from_continuous(out, 6.0), ctx(16))
+            .expect("answered");
+        let at = |id| {
+            sketch
+                .points()
+                .iter()
+                .find(|point| point.id == id)
+                .expect("a point")
+                .at
+                .in_plane()
+        };
+        let (here, there) = (at(end), at(far));
+        assert!(
+            (here[0].hypot(here[1]) - 40.0).abs() < 1.0e-3,
+            "pulled {out} out, the end left its radius at {}",
+            here[0].hypot(here[1])
+        );
+        // Not "hardly moved" — did not move. The whole set travels as one similarity, so the far
+        // cap has nothing to reconcile and stays exactly where the author left it.
+        assert!(
+            (there[0].hypot(there[1]) - 44.0).abs() < 1.0e-3 && there[0].abs() < 1.0e-3,
+            "pulled {out} out, the far cap came along to {there:?}"
+        );
+    }
+}
+
+/// The drawing's free sweep is no longer spent at random.
+///
+/// [ADR 0043](../../../../../docs/adr/0043-a-snap-lets-go-gradually.md) measured the far cap of a
+/// swept slot sliding along its own arc by up to **2.7** for a cursor step of 0.005, and named it
+/// the bigger of the two instabilities — bigger than the snap threshold that decision removed.
+/// Holding the radius is what closed it: held exactly, the whole rigid set moves by one similarity
+/// and there is nothing left for the solve to reconcile by spending a freedom. Now 2.8e-25.
+#[test]
+fn the_free_sweep_of_a_slot_is_no_longer_spent_arbitrarily() {
     let slot = curved_slot();
     let end = spine_end(&slot, [40.0, 0.0]);
     let far = spine_end(&slot, [0.0, 44.0]);
@@ -155,8 +193,5 @@ fn the_free_sweep_of_a_slot_is_still_spent_arbitrarily() {
             _ => 0.0,
         })
         .fold(0.0_f64, f64::max);
-    assert!(
-        swing > 1.0,
-        "the free sweep stopped wandering ({swing}) — ADR 0043's sequel has landed, retire this"
-    );
+    assert!(swing < 0.01, "the free sweep wandered {swing}");
 }

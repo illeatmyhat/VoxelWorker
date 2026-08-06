@@ -3603,14 +3603,31 @@ impl Problem {
         )
     }
 
-    /// The rim of the falloff: how far off a quantity the hand may be, as a share of how far it
-    /// travelled, before the quantity stops pulling on it at all.
+    /// The rim of the falloff for a hand keeping the SPAN it stands at the end of, as a share of
+    /// how far the hand travelled.
     ///
     /// Read as an angle it is a cone about the direction that keeps the quantity: a hand moving
     /// within about fifteen degrees of it is understood to be moving ALONG it. Nothing switches
     /// AT the rim — see [`Problem::snapped`] for why the correction has to arrive there already
     /// faded to nothing rather than be dropped when it is crossed.
-    const SNAP_CONE: f64 = 0.25;
+    const SNAP_CONE_KEEPING_A_SPAN: f64 = 0.25;
+
+    /// The same rim for a hand keeping the RADIUS it stands at, which is three times as wide.
+    ///
+    /// The two are not the same question, because the drawing does not author them the same way.
+    /// A segment's length IS what dragging its end is for, so an end has to give the length up
+    /// readily or the gesture has no other door — `an_achievable_drag_lands_exactly_on_the_cursor`
+    /// and `a_level_segment_stays_level_when_an_end_is_dragged` both say so, and both fail if a
+    /// span is held this hard. An arc's radius has its own door: dragging the arc's BODY applies a
+    /// signed offset along each end's own outward direction, which is a change of radius and
+    /// nothing else. So an end of a round curve is free to hold its radius hard, and should,
+    /// because the only thing left for that gesture to mean is a SWEEP.
+    ///
+    /// Holding it is worth more than it looks. Held exactly, the whole rigid set moves by one
+    /// similarity and the drawing never has to be reconciled, so the free sweep stops being spent
+    /// at random: measured on a curved slot, the far cap's wander across a cursor step of 0.005
+    /// went from 2.7 to 2.8e-25.
+    const SNAP_CONE_KEEPING_A_RADIUS: f64 = 0.75;
 
     /// The share of the cone over which the quantity holds EXACTLY, before it starts letting go.
     ///
@@ -3714,6 +3731,34 @@ impl Problem {
     /// The rule is the same for every curve, so a slot is nothing but its parts: at a rail's cap
     /// the point belongs to both an arc and a segment, and the cone picks between them by which
     /// one the hand is actually moving along.
+    /// Every quantity the drawing offers a hand standing at `held`: the point it is measured
+    /// from, and the cone that KIND of quantity is held in.
+    ///
+    /// A curve ending where the hand stands offers the circle it would keep. Which cone comes with
+    /// it is a question about the authoring grammar rather than the geometry — see
+    /// [`Problem::SNAP_CONE_KEEPING_A_RADIUS`] for why a radius is held three times harder than a
+    /// span.
+    fn quantities_a_hand_could_keep(&self, held: PointId) -> Vec<(PointId, f64)> {
+        let together = self.standing_together(held);
+        let ends_here = |point: PointId| together.contains(&point);
+        let far = |from: PointId, to: PointId| ends_here(from).then_some(to);
+        self.segments
+            .iter()
+            .filter_map(|segment| {
+                far(segment.from, segment.to).or_else(|| far(segment.to, segment.from))
+            })
+            .map(|pivot| (pivot, Self::SNAP_CONE_KEEPING_A_SPAN))
+            .chain(
+                self.arc_centers
+                    .iter()
+                    .filter_map(|arc| {
+                        (ends_here(arc.from) || ends_here(arc.to)).then_some(arc.center)
+                    })
+                    .map(|pivot| (pivot, Self::SNAP_CONE_KEEPING_A_RADIUS)),
+            )
+            .collect()
+    }
+
     fn snapped(
         &self,
         hands: &[Hand],
@@ -3730,22 +3775,8 @@ impl Problem {
         if !travel.is_finite() || travel <= 0.0 {
             return None;
         }
-        // A curve ending where this point stands offers the circle it would keep: what it
-        // measures from, and how far the point stood from it.
-        let together = self.standing_together(held);
-        let ends_here = |point: PointId| together.contains(&point);
-        let far = |from: PointId, to: PointId| ends_here(from).then_some(to);
-        let circles = self
-            .segments
-            .iter()
-            .filter_map(|segment| {
-                far(segment.from, segment.to).or_else(|| far(segment.to, segment.from))
-            })
-            .chain(self.arc_centers.iter().filter_map(|arc| {
-                (ends_here(arc.from) || ends_here(arc.to)).then_some(arc.center)
-            }));
         let mut snap: Option<Nearest> = None;
-        for pivot in circles {
+        for (pivot, share) in self.quantities_a_hand_could_keep(held) {
             let Some(about) = stood_at(pivot) else {
                 continue;
             };
@@ -3754,7 +3785,7 @@ impl Problem {
             if !quantity.is_finite() || !reach.is_finite() || quantity <= 0.0 || reach <= 0.0 {
                 continue;
             }
-            let cone = Self::SNAP_CONE * travel;
+            let cone = share * travel;
             let across = (reach - quantity).abs();
             if across >= cone {
                 continue;

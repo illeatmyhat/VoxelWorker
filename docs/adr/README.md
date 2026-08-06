@@ -75,6 +75,7 @@ can be skipped entirely; one superseded *in part* cannot.
 | [0041](0041-a-gesture-is-read-from-where-it-started.md) | A gesture is read from where it started | Accepted. Slot spine handles deleted; count the hand that MOVED; a walk and its preference both measure from the opening |
 | [0042](0042-a-gesture-states-its-own-rigid-set.md) | A gesture states its own rigid set | Accepted. Hands carry a Lead/Carried/Pin role instead of being told apart by their travel; a center is rigid with the curves it centers, so an arc drags whole |
 | [0043](0043-a-snap-lets-go-gradually.md) | A snap lets go gradually | Accepted. The cone becomes a plateau and a smoothstep, so nothing switches at its rim; the bigger instability is measured to be the drawing's free sweep, not the snap |
+| [0044](0044-an-end-of-a-round-curve-holds-its-radius.md) | An end of a round curve holds its radius | Accepted. The cone belongs to the quantity, not the drawing: a radius is held three times harder than a span because the body drag already authors it, which closes 0043's free-sweep wander |
 
 ## Records that quote documents no longer in the repo
 
