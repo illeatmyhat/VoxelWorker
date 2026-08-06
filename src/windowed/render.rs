@@ -3821,25 +3821,36 @@ impl WindowedState {
     }
 
     /// The [`SelectionTarget`](ui::panel::SelectionTarget) under the cursor
-    /// (physical px) inside `sketch`, or `None` over empty space. Vertices take priority over
-    /// segments, as everywhere. The ONE place a sketch target is minted, which is what makes
-    /// the shell's admission `debug_assert` hold by construction.
+    /// (physical px) inside `sketch`, or `None` over empty space. The order is dot, then badge,
+    /// then lever, then edge — vertices take priority over segments as everywhere, and the badge's
+    /// place in it is argued at the branch. The ONE place a sketch target is minted, which is what
+    /// makes the shell's admission `debug_assert` hold by construction.
     fn sketch_entity_target_at(
         &self,
         sketch: document::scene::NodeId,
         cursor_x: f64,
         cursor_y: f64,
     ) -> Option<ui::panel::SelectionTarget> {
-        // A badge beats the geometry under it, because it is drawn over it: badges paint last,
-        // in the foreground layer, so anything else winning here would mean picking something the
-        // cursor cannot see.
-        if let Some(entity) = self.sketch_constraint_at(cursor_x, cursor_y) {
-            return Some(ui::panel::SelectionTarget::SketchConstraint { sketch, entity });
-        }
+        // A DOT beats a badge, and everything else loses to one.
+        //
+        // Badges paint last, so the rule was that a badge wins whatever it covers — but an
+        // unpicked badge draws its glyph and nothing else, no plate and no fill, so a 32-point box
+        // is mostly see-through and a dot inside it is fully visible. Handing that pixel to the
+        // badge picks something the cursor is demonstrably NOT on top of, which is the failure the
+        // paint-order rule was written to prevent, in the other direction.
+        //
+        // A dot is allowed to take the bite because a dot is BOUNDED: 20 points across, out of a
+        // box of 32, and a badge floats 30 points off the point it names — so a badge never loses
+        // ground to its own anchor beyond a sliver at one corner, and stays reachable everywhere
+        // else. A lever's stick and an edge are not bounded; they would run clean across a badge
+        // and cut it in two, so they stay below it.
         if let Some(index) = self.sketch_vertex_at(cursor_x, cursor_y) {
             if let Some(&entity) = self.sketch_point_ids.get(index) {
                 return Some(ui::panel::SelectionTarget::SketchPoint { sketch, entity });
             }
+        }
+        if let Some(entity) = self.sketch_constraint_at(cursor_x, cursor_y) {
+            return Some(ui::panel::SelectionTarget::SketchConstraint { sketch, entity });
         }
         // A lever answers as its fit point, and beats the curve underneath it — it is drawn over
         // that curve precisely because it is the thing being reached for.

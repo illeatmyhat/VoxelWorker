@@ -77,7 +77,7 @@ can be skipped entirely; one superseded *in part* cannot.
 | [0043](0043-a-snap-lets-go-gradually.md) | A snap lets go gradually | Accepted. The cone becomes a plateau and a smoothstep, so nothing switches at its rim; the bigger instability is measured to be the drawing's free sweep, not the snap |
 | [0044](0044-an-end-of-a-round-curve-holds-its-radius.md) | An end of a round curve holds its radius | Accepted. The cone belongs to the quantity, not the drawing: a radius is held three times harder than a span because the body drag already authors it, which closes 0043's free-sweep wander |
 | [0045](0045-a-snap-reaches-only-as-far-as-the-shell-allows.md) | A snap reaches only as far as the shell allows | Accepted. `SnapReach` caps the cone at a length the shell converts from 90 screen points, because an angle cannot say how far from the cursor the drawing may end up; a ceiling, never an invention |
-| [0046](0046-a-badge-takes-a-click-never-a-drag.md) | A badge takes a click, never a drag | Accepted. Amends 0035 decision 3: a constraint badge beats the geometry under it for a pick, but refusing the whole press there made that geometry undraggable |
+| [0046](0046-a-badge-takes-a-click-never-a-drag.md) | A badge takes a click, never a drag | Accepted. Amends 0035 decision 3 twice: refusing the whole press over a badge made the geometry under it undraggable, and an unpicked badge draws only a glyph, so a dot inside its box outranks it. Order is dot, badge, lever, edge |
 
 ## Records that quote documents no longer in the repo
 

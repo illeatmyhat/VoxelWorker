@@ -74,3 +74,36 @@ window scale factor. What is checkable — that a badge is not positional, and t
 — is already guarded in `crates/ui/src/panel/selection.rs`. The change itself was verified by
 reading the two paths it depends on: that the click arms independently, and that an unmoved drag
 commits nothing.
+
+## Amendment, same day — a dot takes the click too
+
+The author, on the shipped fix: *"Based on the way the billboards are layered though, I'd expect the
+point to hit test above the badge."*
+
+Correct, and it exposes a false premise in the rule this record started from. "A badge beats the
+geometry under it, because it is drawn over it" reads the paint order and stops there. **An unpicked
+badge draws its glyph and nothing else** — no plate, no fill; the plate exists only for a badge
+already picked. So the 32-point box is not a 32-point mark. It is sparse line art in a mostly
+transparent square, and a vertex dot inside it is fully visible, drawn under it and not covered by
+it. Handing that pixel to the badge picks something the cursor is demonstrably not on top of, which
+is the same failure the paint-order rule was written to prevent, arriving from the other side.
+
+**A dot beats a badge. A lever's stick and an edge still lose to one.**
+
+The line is not drawn by which mark is nearer or which paints later. It is drawn by whether the
+winner is BOUNDED, because what a pick order must protect is that everything on screen stays
+reachable *somewhere*:
+
+- A dot's grab is 20 points across in a 32-point box, and a badge floats 30 points off the point it
+  names. So a badge never loses ground to its own anchor except a sliver at one corner when the
+  offset runs diagonally, and it keeps essentially all of its box. A dot takes a bite; it cannot
+  take the badge.
+- A lever's stick and a curve are unbounded. Their grab ribbons — 14 points wide — run clean across
+  a badge and cut it in two. A rule that let them win would make badges genuinely hard to hit
+  wherever a drawing is dense, which is exactly where badges matter.
+
+So the order is **dot, badge, lever, edge**, and the badge sits between the compact mark and the
+long ones on purpose.
+
+This also improves the armed-constraint pick, which feeds off the same hit-test: reaching for a
+point to constrain no longer catches a neighbouring badge instead.
