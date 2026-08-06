@@ -7,6 +7,8 @@
 //! spring. These measure the map rather than a particular answer.
 
 use super::*;
+use crate::sketch::tests::constraints::{add_test_segment, position};
+use std::f64::consts::TAU;
 
 /// Where the whole drawing ends up for one cursor position, as a flat list of coordinates.
 fn answer(base: &Sketch, held: EntityId, cursor: [f64; 2]) -> Vec<f64> {
@@ -481,4 +483,145 @@ fn an_arc_keeps_its_circle_around_a_whole_turn() {
             -f64::from(step) * 15.0
         );
     }
+}
+
+/// Two arcs held symmetric, carried through the configuration where each one CLOSES on itself.
+///
+/// An arc has no stored sweep: the endpoint order is the direction, and how far it turns is read
+/// back as the counter-clockwise angle from tail to head, which lives in `(0, 2π]`. That reading
+/// necessarily JUMPS by a whole turn as the head crosses the tail — a hair short of closing is a
+/// hair short of `2π`, and a hair past is a hair past zero. `Relation::Symmetry` on a pair of arcs
+/// subtracts one such reading from the other, which is the one place in the solver where the jump
+/// could reach a residual and yank the drawing.
+///
+/// It does not, and the reason is worth stating: **a symmetric pair crosses together.** The
+/// endpoints are held reflected, so both arcs close in the same frame, both readings jump in the
+/// same frame, and their difference never sees it. The measured crossing step is ordinary — 0.272
+/// against a walk whose steps run 0.13 to 0.29 — so the jump is invisible where it would matter.
+///
+/// This also says what NOT to do about it. Wrapping the difference into `(-π, π]` would make the
+/// residual continuous, and would be wrong: it would call a sliver of an arc equal to one that
+/// turns nearly the whole way round, which is the difference the row exists to see.
+#[test]
+fn a_symmetric_arc_pair_crosses_a_whole_turn_without_a_jump() {
+    let (sketch, head, hub, tail_at, head_at) = symmetric_arcs_near_closing();
+    let radius = (head_at[0] - hub[0]).hypot(head_at[1] - hub[1]);
+    let from = (head_at[1] - hub[1]).atan2(head_at[0] - hub[0]);
+    // The counter-clockwise way round from the head to the tail, which is the last sliver of turn
+    // the arc has left before it closes.
+    let turn = ((tail_at[1] - hub[1]).atan2(tail_at[0] - hub[0]) - from).rem_euclid(TAU);
+
+    let steps = 60;
+    let mut swings = Vec::new();
+    let mut crossed = None;
+    let (mut last_flat, mut last_sweep) = (None::<Vec<f64>>, f64::NAN);
+    for step in 0..=steps {
+        // Ride the arc's own circle, a little PAST the tail, so the walk is carried through the
+        // closing configuration rather than around it.
+        let bearing = (turn * f64::from(step) / f64::from(steps)).mul_add(1.02, from);
+        let (flat, sweep) = sweeping_answer(
+            &sketch,
+            head,
+            [
+                radius.mul_add(bearing.cos(), hub[0]),
+                radius.mul_add(bearing.sin(), hub[1]),
+            ],
+        );
+        if let Some(last) = last_flat {
+            let swing = spread(&last, &flat);
+            if last_sweep > 300.0 && sweep < 60.0 {
+                crossed = Some(swing);
+            }
+            swings.push(swing);
+        }
+        (last_flat, last_sweep) = (Some(flat), sweep);
+    }
+
+    let crossing = crossed.expect("the walk carried the arc through a whole turn");
+    let elsewhere = swings
+        .iter()
+        .copied()
+        .filter(|swing| (*swing - crossing).abs() > f64::EPSILON)
+        .fold(0.0_f64, f64::max);
+    assert!(
+        crossing <= elsewhere * 2.0,
+        "the closing frame cost {crossing}, against {elsewhere} for the widest step elsewhere"
+    );
+    assert!(
+        elsewhere < 0.5,
+        "the walk itself should be smooth throughout, and its widest step was {elsewhere}"
+    );
+}
+
+/// Two arcs, each turning 340 degrees, held symmetric about the plane's vertical axis, with the
+/// first one's TAIL and HUB pinned so the only thing a hand on its head can change is how far it
+/// turns. Answers the head, the hub, and where the tail and head stand.
+fn symmetric_arcs_near_closing() -> (Sketch, EntityId, [f64; 2], [f64; 2], [f64; 2]) {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let (_, _, axis) = add_test_segment(&mut sketch, [0, -40], [0, 40]);
+    let first_tail = sketch.add_free_point(SketchPoint::new(-14, 0));
+    let first_head = sketch.add_free_point(SketchPoint::new(-8, 0));
+    let first = sketch
+        .connect_arc(first_tail, first_head, AngleMeasurement::from_degrees(340))
+        .expect("an arc a hair short of closing");
+    let second_tail = sketch.add_free_point(SketchPoint::new(8, 0));
+    let second_head = sketch.add_free_point(SketchPoint::new(14, 0));
+    let second = sketch
+        .connect_arc(
+            second_tail,
+            second_head,
+            AngleMeasurement::from_degrees(340),
+        )
+        .expect("its partner");
+    sketch
+        .add_constraint(
+            ConstraintKind::symmetry(
+                SketchCurve::Arc(first),
+                SketchCurve::Arc(second),
+                axis,
+                SymmetryBranch::Direct,
+            ),
+            ctx(16),
+        )
+        .expect("the pair is symmetric");
+    for point in [sketch.arcs()[0].from, sketch.arcs()[0].center] {
+        let at = position(&sketch, point);
+        sketch
+            .add_constraint(
+                ConstraintKind::Fix {
+                    point,
+                    at: SketchPoint::from_continuous(at[0], at[1]),
+                },
+                ctx(16),
+            )
+            .expect("the tail and the hub hold still");
+    }
+    let hub = position(&sketch, sketch.arcs()[0].center);
+    let tail_at = position(&sketch, sketch.arcs()[0].from);
+    let head_at = position(&sketch, sketch.arcs()[0].to);
+    (sketch, first_head, hub, tail_at, head_at)
+}
+
+/// Where the drawing ends up for one cursor position, and how far the first arc turns to get
+/// there. Unlike [`answer`] it tolerates a frame that moves nothing: a walk that carries an arc
+/// through closing passes configurations the solve may legitimately decline, and a declined frame
+/// is a frame that did not move, which is the smoothest answer there is.
+fn sweeping_answer(base: &Sketch, held: EntityId, cursor: [f64; 2]) -> (Vec<f64>, f64) {
+    let mut sketch = base.clone();
+    drop(sketch.move_point(
+        held,
+        SketchPoint::from_continuous(cursor[0], cursor[1]),
+        ctx(16),
+    ));
+    let sweep = sketch
+        .arc_form_of(sketch.arcs()[0].id)
+        .map_or(f64::NAN, |form| form.sweep_degrees);
+    (
+        sketch
+            .points()
+            .iter()
+            .flat_map(|point| point.at.in_plane())
+            .collect(),
+        sweep,
+    )
 }

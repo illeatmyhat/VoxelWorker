@@ -12,7 +12,7 @@ fn slanted() -> (Sketch, EntityId, EntityId, EntityId) {
     (sketch, tail, head, segment)
 }
 
-fn position(sketch: &Sketch, id: EntityId) -> [f64; 2] {
+pub(super) fn position(sketch: &Sketch, id: EntityId) -> [f64; 2] {
     sketch
         .points()
         .iter()
@@ -2527,7 +2527,7 @@ fn concentric_center_rejects_unsatisfied_or_non_circular_pairs() {
         .is_none());
 }
 
-fn add_test_segment(
+pub(super) fn add_test_segment(
     sketch: &mut Sketch,
     from: [i64; 2],
     to: [i64; 2],

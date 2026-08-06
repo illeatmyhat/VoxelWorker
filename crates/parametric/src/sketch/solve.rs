@@ -2849,13 +2849,26 @@ fn curve_geometry(
     }
 }
 
-/// The counter-clockwise turn from `from` to `to` about `center`, in radians, within `(0, 2π)`.
+/// The counter-clockwise turn from `from` to `to` about `center`, in radians, within `(0, 2π]`.
 ///
 /// An arc has no stored sweep and no stored direction (ADR 0038): the endpoint ORDER is the
 /// direction, so this is the whole of what "how far does it turn" means. A degenerate
 /// configuration — an end sitting on the center, or the two ends at one angle — reports a full
-/// turn's worth of nothing rather than a negative or wrapped value, which keeps every consumer's
-/// arithmetic continuous as the drawing passes through it.
+/// turn rather than a negative or wrapped value; only a non-finite input answers zero.
+///
+/// **This JUMPS by a whole turn as the head crosses the tail, and it has to.** A hair short of
+/// closing is a hair short of `2π`; a hair past is a hair past zero. That is not a rounding
+/// artifact to be smoothed away, it is the two arcs actually being different — a sliver and a
+/// curve that goes nearly the whole way round share their endpoints and share nothing else. The
+/// range is half-open at the closed configuration for the same reason: `2π` is the left limit, and
+/// something has to be reported there.
+///
+/// The one consumer that could feel it is `Relation::Symmetry` on a pair of arcs, which subtracts
+/// two of these readings. It is safe because **a symmetric pair crosses together**: the endpoints
+/// are held reflected, so both arcs close in the same frame and the difference never sees the jump.
+/// Measured in `a_symmetric_arc_pair_crosses_a_whole_turn_without_a_jump`, where the closing frame
+/// costs 0.272 against a walk whose steps run 0.13 to 0.29. Wrapping the difference into `(-π, π]`
+/// would make that row continuous and WRONG — it would call the sliver equal to the near-circle.
 fn counter_clockwise_sweep(center: [f64; 2], from: [f64; 2], to: [f64; 2]) -> f64 {
     let start = (from[1] - center[1]).atan2(from[0] - center[0]);
     let end = (to[1] - center[1]).atan2(to[0] - center[0]);

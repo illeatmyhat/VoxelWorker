@@ -204,6 +204,13 @@ pub(super) fn residuals(
                 along,
                 &mut result.rows,
             );
+            // Read straight, not wrapped. Each sweep jumps by a whole turn as its own arc closes
+            // on itself, and the temptation is to wrap the difference so the row stays continuous
+            // — but a sliver and a curve that goes nearly the whole way round share their
+            // endpoints and are not the same arc, and this row is the only thing that can tell
+            // them apart. It is safe because a symmetric pair CROSSES TOGETHER: the endpoints are
+            // held reflected, so both readings jump in the same frame and the difference never
+            // sees it.
             result.rows[4] = first.sweep_radians - second.sweep_radians;
         }
         (
