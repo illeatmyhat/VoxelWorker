@@ -796,6 +796,49 @@ impl PreparedProblem {
             .map_err(TrialMapError::Request)
     }
 
+    /// Snap a drag's hands without solving.
+    /// See [`parametric::sketch::Problem::snap_the_hands`].
+    pub(super) fn snap_the_hands(
+        &self,
+        hands: &[Hand],
+        was: &[(EntityId, [f64; 2])],
+    ) -> Option<(Vec<Hand>, parametric::sketch::KeptQuantity)> {
+        let pulling: Vec<parametric::sketch::Hand> = hands
+            .iter()
+            .map(|hand| {
+                self.point(hand.point)
+                    .map(|point| parametric::sketch::Hand {
+                        point,
+                        to: hand.to,
+                        role: hand.role,
+                    })
+            })
+            .collect::<Option<Vec<_>>>()?;
+        let stood: Vec<(parametric::sketch::PointId, [f64; 2])> = was
+            .iter()
+            .map(|(held, at)| self.point(*held).map(|point| (point, *at)))
+            .collect::<Option<Vec<_>>>()?;
+        let (snapped, kept) = self.problem.snap_the_hands(&pulling, &stood)?;
+        // Back into the document's names. A hand whose point does not map is dropped rather than
+        // guessed at, which leaves it where the caller put it.
+        let named: Vec<Hand> = snapped
+            .iter()
+            .filter_map(|hand| {
+                let id = self
+                    .points
+                    .iter()
+                    .find(|(_, local)| *local == hand.point)
+                    .map(|(id, _)| *id)?;
+                Some(Hand {
+                    point: id,
+                    to: hand.to,
+                    role: hand.role,
+                })
+            })
+            .collect();
+        Some((named, kept))
+    }
+
     /// Pull one or more points at once. See [`parametric::sketch::Problem::drag_together`].
     pub(super) fn drag_together(
         &self,

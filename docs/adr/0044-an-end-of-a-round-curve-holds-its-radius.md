@@ -86,6 +86,20 @@ and it holds only in pass one, which seeds. That reading would have led to weigh
 has. The fix instead makes the question easier, which is what planegcs does by starting from the
 current geometry and what D-Cubed does by taking rigid sets. Least motion stays emergent.
 
+**Reaching every arc-like end, which this decision at first did not.** The author used the result
+and reported the gap: "the circle ghost and snapping should apply to any arc-like endpoint". A drag
+whose reachable part has NO standing relation short-circuits in `settle_under_the_hands` — nothing
+to trade the pull against means the hands are the answer — and the snap was skipped along with the
+solve. So the simplest arc there is, drawn on an empty plane, was the one place an end followed the
+cursor freely and no ghost ever appeared: radius 40.4, 41.4, 42.4, 43.4 as the hand went out.
+
+A snap is geometry, not a relation. `Problem::snap_the_hands` answers it without solving anything,
+and the short-circuit asks for it before writing the hands down. A bare arc's end now holds ~40
+across the same pull and reports its quantity, so the ghost draws. It holds *roughly* rather than
+exactly because that arc's center is derived from its two ends, so it shifts with them and the
+radius is measured against a center that has itself moved — which is what the author asked for in
+the first place: **roughly** follow its radius.
+
 **Still not done.** A fixed snap tolerance in screen pixels — the author asked for a generous one —
 remains unbuilt. It needs a length computed by the shell from the camera and passed down, since
 `parametric` has no camera. ADR 0043's measurements say it bounds the correction rather than curing

@@ -3811,13 +3811,25 @@ impl Sketch {
         // gesture on the floor: measured, a bare arc dragged sideways did not move at all, because
         // no relation touched it and so no solve ran to carry the pull.
         if standing.is_empty() {
-            for hand in hands {
+            // A snap still applies. It is geometry, not a relation: a bare arc's end stands a
+            // radius from its own center whether or not anything is asserted about it, and the
+            // author asked for exactly this — "the circle ghost and snapping should apply to any
+            // arc-like endpoint". Before it, the one drawing simple enough to skip the solve was
+            // also the one where an arc end followed the cursor freely.
+            let snapped = constraint::prepare_scoped(self, &standing, Some(context), Some(&reach))
+                .ok()
+                .and_then(|prepared| prepared.snap_the_hands(hands, &was));
+            let (landing, kept) = match snapped {
+                Some((onto, kept)) => (onto, Some(kept)),
+                None => (hands.to_vec(), None),
+            };
+            for hand in &landing {
                 if let Some(index) = self.point_index(hand.point) {
                     self.points[index].at = SketchPoint::from_continuous(hand.to[0], hand.to[1]);
                 }
             }
             self.sync_derived_points();
-            return Ok(DragAnswer::stood(true));
+            return Ok(DragAnswer { moved: true, kept });
         }
         let prepared = constraint::prepare_scoped(self, &standing, Some(context), Some(&reach))
             .map_err(map_prepare_evaluation_error)?;

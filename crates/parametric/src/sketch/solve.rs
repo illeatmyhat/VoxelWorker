@@ -3885,6 +3885,32 @@ impl Problem {
         })
     }
 
+    /// The hands moved onto the quantity a drag would keep, and that quantity — with no solve.
+    ///
+    /// A snap is a property of the drawing's GEOMETRY, not of its constraints. A bare arc's end
+    /// still stands a radius away from its own center whether or not anything is asserted about
+    /// it, and it is still true that the only thing dragging that end can mean is a sweep.
+    ///
+    /// This exists because the caller short-circuits a drag with nothing standing — no relation to
+    /// trade the pull against means the hands ARE the answer — and that path skipped the snap
+    /// along with the solve. The shape most obviously "arc-like" was therefore the one place an
+    /// end never held its radius and never drew its ghost.
+    pub fn snap_the_hands(
+        &self,
+        hands: &[Hand],
+        was: &[(PointId, [f64; 2])],
+    ) -> Option<(Vec<Hand>, KeptQuantity)> {
+        if hands
+            .iter()
+            .any(|hand| hand.point.owner != self.owner || hand.point.index >= self.points.len())
+        {
+            return None;
+        }
+        let positions: Vec<[f64; 2]> = self.points.iter().map(|point| point.at).collect();
+        let snap = self.snapped(hands, was, &positions)?;
+        Some((snap.hands, snap.kept))
+    }
+
     /// Pull SEVERAL local points toward their targets at once, then release and settle.
     ///
     /// One hand asks the drawing to do whatever it likes as long as this point ends up here, and

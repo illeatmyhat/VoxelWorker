@@ -195,3 +195,45 @@ fn the_free_sweep_of_a_slot_is_no_longer_spent_arbitrarily() {
         .fold(0.0_f64, f64::max);
     assert!(swing < 0.01, "the free sweep wandered {swing}");
 }
+
+/// A drawing with NOTHING asserted about it still snaps.
+///
+/// The author found this by using it: "the circle ghost and snapping should apply to any arc-like
+/// endpoint". A drag with no standing relation short-circuits — nothing to trade the pull against
+/// means the hands are the answer — and the snap used to be skipped along with the solve. So the
+/// simplest arc in the world, drawn on an empty plane, was the one place an end followed the
+/// cursor freely and no ghost ever appeared. Measured before: radius 40.4, 41.4, 42.4, 43.4 as the
+/// hand went out, with no quantity reported at all.
+#[test]
+fn a_bare_arcs_end_holds_its_radius_and_reports_it() {
+    let mut arc = Sketch::empty(PlaneAxis::Z);
+    let from = arc.add_free_point(SketchPoint::new(40, 0));
+    let to = arc.add_free_point(SketchPoint::new(0, 40));
+    arc.connect_arc(from, to, AngleMeasurement::from_degrees(90))
+        .expect("an arc");
+    for step in 0..=3 {
+        let out = 40.0 + f64::from(step);
+        let mut drawn = arc.clone();
+        let answered = drawn
+            .move_point_reporting_its_snap(from, SketchPoint::from_continuous(out, 6.0), ctx(16))
+            .expect("answered");
+        assert!(
+            answered.kept.is_some(),
+            "pulled {out} out, no quantity was reported for the ghost to draw"
+        );
+        let at = drawn
+            .points()
+            .iter()
+            .find(|point| point.id == from)
+            .expect("the end")
+            .at
+            .in_plane();
+        let radius = at[0].hypot(at[1]);
+        // Roughly, not exactly: this arc's center is derived from its ends, so it moves with them
+        // and the radius is measured against a center that has itself shifted a little.
+        assert!(
+            (radius - 40.0).abs() < 1.0,
+            "pulled {out} out, the end left its radius at {radius}"
+        );
+    }
+}
