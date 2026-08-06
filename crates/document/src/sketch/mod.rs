@@ -3189,7 +3189,22 @@ impl Sketch {
         // its offset re-aimed by a gesture that never mentioned it. That is the same re-aiming the
         // solve path guards against, arriving one step earlier.
         self.carry_authored_handles(&before);
-        self.sync_derived_points();
+        // The tangent arms only. Seating the arc centers here would seat them on the RAW CURSOR,
+        // and the cursor is scaffolding — the snap has not had its say yet, and what it lands is
+        // what the author asked for.
+        //
+        // The seat is a projection, so it is lossy in exactly the case that matters. A center off
+        // the new bisector is pushed back ALONG the chord, and as an arc's two ends close up that
+        // chord shortens until the bisector is nearly parallel to the push: measured on an arc
+        // swept to within a chord of 10, three units of cursor error threw the center eleven units,
+        // from the origin out to [-10.98, 1.51]. Projecting THAT onto the corrected bisector after
+        // the snap cannot get the origin back, so the arc came out at radius 37 instead of 40 and
+        // the author watched it deform — "towards the end of the full 360, it tends to deform and
+        // the radius won't stay consistent; the center point ends up moving".
+        //
+        // Left alone, the authored center is already on the bisector once the snap has held the
+        // radius, and the seat at the end of the settle moves it not at all.
+        self.sync_tangent_arms();
         // The WHOLE drawing as the gesture found it, not only the points under the hand. The
         // pivot a snap measures to is rarely a hand, and by here the hands are written down and the
         // arc centers re-seated on top of them — so a pivot read from the drawing as it now stands

@@ -397,15 +397,88 @@ fn the_ghost_names_the_circle_the_arc_is_on() {
             kept.about,
             kept.radius
         );
-        // And the arc is ON it. Roughly: the center keeps its one real freedom — how far out along
-        // the chord's bisector it stands — so a swept end trades a little radius for reaching the
-        // cursor. Before this it was out by 2.2.
+        // And the arc is ON it — exactly, once the center is no longer seated on the raw cursor
+        // (`an_arc_keeps_its_circle_around_a_whole_turn`). Before either fix it was out by 2.2.
         assert!(
-            (hub[0] - kept.about[0]).hypot(hub[1] - kept.about[1]) < 0.2
-                && (radius - kept.radius).abs() < 0.2,
+            (hub[0] - kept.about[0]).hypot(hub[1] - kept.about[1]) < 1.0e-6
+                && (radius - kept.radius).abs() < 1.0e-6,
             "pulled {out} out, the ghost said {:?} r {} and the arc is at {hub:?} r {radius}",
             kept.about,
             kept.radius
+        );
+    }
+}
+
+/// An arc keeps its circle all the way round, including where its two ends nearly meet.
+///
+/// The author, after the ghost was fixed: "towards the end of the full 360, it tends to deform and
+/// the radius won't stay consistent; the center point ends up moving." The hand was landing on its
+/// radius correctly the whole time — it was the arc that ran away from it.
+///
+/// [`Sketch::seat_arc_centers`] was being run on the drawing bent by the RAW CURSOR, before the
+/// snap had had its say. The seat is a projection back onto the chord's bisector, and it is lossy
+/// in exactly the case that matters: as the ends close up the chord shortens until the bisector is
+/// nearly parallel to the push, so a small cursor error throws the center a long way and no later
+/// projection can bring it back. Measured at a chord of 10, three units of cursor threw the center
+/// eleven, and the arc came out at radius 37.09 about `[-0.38, 2.91]`.
+///
+/// Swept a whole turn, three units of cursor error at every step, before and after:
+///
+/// | chord | was | now |
+/// | --- | --- | --- |
+/// | 30.6 | 39.687 | 40.0000 |
+/// | 20.7 | 39.259 | 40.0000 |
+/// | 10.4 | 37.093 | 40.0000 |
+/// | 0.0 | 1.500 | 40.0000 |
+#[test]
+fn an_arc_keeps_its_circle_around_a_whole_turn() {
+    let mut arc = Sketch::empty(PlaneAxis::Z);
+    let from = arc.add_free_point(SketchPoint::new(40, 0));
+    let to = arc.add_free_point(SketchPoint::new(0, 40));
+    let made = arc
+        .connect_arc(from, to, AngleMeasurement::from_degrees(90))
+        .expect("an arc");
+    let center = arc
+        .arcs()
+        .iter()
+        .find(|arc| arc.id == made)
+        .expect("the arc")
+        .center;
+    // From one step off the start — a hand that has not swept at all is pulling straight out, which
+    // is the author SETTING the radius and must move the center.
+    for step in 1..24 {
+        let radians = (-f64::from(step) * 15.0).to_radians();
+        // Three units proud of the circle: sloppy, the way a real hand is.
+        let cursor = [43.0 * radians.cos(), 43.0 * radians.sin()];
+        let mut drawn = arc.clone();
+        drawn
+            .move_point_reporting_its_snap(
+                from,
+                SketchPoint::from_continuous(cursor[0], cursor[1]),
+                ctx(16),
+                SnapReach::UNBOUNDED,
+            )
+            .expect("answered");
+        let at = |id| {
+            drawn
+                .points()
+                .iter()
+                .find(|point| point.id == id)
+                .expect("a point")
+                .at
+                .in_plane()
+        };
+        let (hub, end) = (at(center), at(from));
+        let radius = (end[0] - hub[0]).hypot(end[1] - hub[1]);
+        assert!(
+            hub[0].hypot(hub[1]) < 1.0e-6,
+            "swept to {}, the center moved to {hub:?}",
+            -f64::from(step) * 15.0
+        );
+        assert!(
+            (radius - 40.0).abs() < 1.0e-6,
+            "swept to {}, the radius went to {radius}",
+            -f64::from(step) * 15.0
         );
     }
 }

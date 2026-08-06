@@ -149,3 +149,41 @@ Guarded by `the_ghost_names_the_circle_the_arc_is_on`. It also fixes something n
 `Rigidity::Preferred`'s `opening` is documented as "the drawing as the gesture FOUND it" and was
 being handed the same narrowed record, so every non-hand point it priced was priced off the bent
 drawing.
+
+**An arc deformed near a whole turn, because its center was seated on the raw cursor.** With the
+ghost fixed, the author swept an end the long way round: *"towards the end of the full 360, it tends
+to deform and the radius won't stay consistent; the center point ends up moving."*
+
+The hand was landing on its radius correctly the whole time. It was the arc that ran away from it.
+`Sketch::point_move_attempt` writes the raw cursor into the drawing before the settle and then calls
+`sync_derived_points`, which seats every arc center back onto its chord's bisector. The seat is a
+projection, and a projection is lossy in exactly the case that matters here: as an arc's two ends
+close up the chord shortens until the bisector is nearly parallel to the correction, so a small
+cursor error throws the center a long way, and projecting THAT onto the corrected bisector after the
+snap cannot recover where it started.
+
+| stage, at a chord of 10 with the cursor three units proud | the end | the center |
+| --- | --- | --- |
+| as the gesture found it | `[40, 0]` | `[0, 0]` |
+| the raw cursor written down | `[-11.13, 41.53]` | `[0, 0]` |
+| seated on the raw cursor | `[-11.13, 41.53]` | **`[-10.98, 1.51]`** |
+| the snap lands the end on its radius | `[-10.35, 38.64]` | `[-0.38, 2.91]` |
+
+Three units of cursor threw the center eleven, and the arc came out at radius 37.09 instead of 40.
+
+**The cursor is scaffolding, and nothing should be derived from it.** The pre-settle sync now carries
+the tangent arms only; the arc centers are seated once, at the end of the settle, from the position
+the author actually gave them. Left alone the authored center is already on the bisector as soon as
+the snap has held the radius, so the seat moves it not at all. Swept a whole turn with three units
+of cursor error at every step:
+
+| chord between the ends | radius before | radius now |
+| --- | --- | --- |
+| 30.6 | 39.687 | **40.0000** |
+| 20.7 | 39.259 | **40.0000** |
+| 10.4 | 37.093 | **40.0000** |
+| 0.0 | 1.500 | **40.0000** |
+
+The center holds the origin to 1e-6 throughout. Guarded by
+`an_arc_keeps_its_circle_around_a_whole_turn`, which starts one step in: a hand that has not swept at
+all is pulling straight out, and that IS the author setting the radius, so the center must move.
