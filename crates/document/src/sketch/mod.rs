@@ -3190,14 +3190,13 @@ impl Sketch {
         // solve path guards against, arriving one step earlier.
         self.carry_authored_handles(&before);
         self.sync_derived_points();
-        let was: Vec<(EntityId, [f64; 2])> = hands
+        // The WHOLE drawing as the gesture found it, not only the points under the hand. The
+        // pivot a snap measures to is rarely a hand, and by here the hands are written down and the
+        // arc centers re-seated on top of them — so a pivot read from the drawing as it now stands
+        // is a pivot the gesture has already moved. This is the only record of where it was.
+        let was: Vec<(EntityId, [f64; 2])> = before
             .iter()
-            .filter_map(|hand| {
-                before
-                    .iter()
-                    .find(|stood| stood.id == hand.point)
-                    .map(|stood| (hand.point, stood.at.in_plane()))
-            })
+            .map(|stood| (stood.id, stood.at.in_plane()))
             .collect();
         self.settle_under_the_hands(&hands, &was, context, snap_reach)
     }
@@ -3798,17 +3797,27 @@ impl Sketch {
         context: parametric::EvaluationContext,
         snap_reach: SnapReach,
     ) -> Result<DragAnswer, SketchEvaluationError> {
-        let was: Vec<(EntityId, [f64; 2])> = hands
-            .iter()
-            .filter_map(|hand| {
-                let stood = was
-                    .iter()
-                    .find(|(named, _)| *named == hand.point)
-                    .map(|(_, at)| *at)
-                    .or_else(|| self.point_in_plane(hand.point))?;
-                Some((hand.point, stood))
-            })
-            .collect();
+        // Everything the caller recorded, not just the hands.
+        //
+        // A snap measures its quantity to a PIVOT — an arc's center, a segment's far end — and the
+        // pivot is usually not a hand. Narrowed to the hands, the kernel had to fall back to where
+        // the pivot stands NOW, and by then the caller has written the raw cursor into the drawing
+        // and re-seated the arc centers on top of it. So the radius was measured to a center the
+        // gesture had already dragged: on a bare arc pulled two and a half units, the ghost
+        // reported a circle of 38.29 about [1.74, -1.39] while the arc itself settled at 39.87
+        // about the origin, and the author saw a ghost that did not lie on the shape it named.
+        //
+        // Hands the caller did not record are read where they stand, which for a caller that has
+        // moved nothing is where they stood.
+        let mut stood: Vec<(EntityId, [f64; 2])> = was.to_vec();
+        for hand in hands {
+            if !stood.iter().any(|(named, _)| *named == hand.point) {
+                if let Some(at) = self.point_in_plane(hand.point) {
+                    stood.push((hand.point, at));
+                }
+            }
+        }
+        let was = stood;
         // Only the part of the drawing the hands can reach takes part. What the rest of the plane
         // holds cannot change the answer, but it does change what the answer COSTS: the kernel
         // prices a solve by how many free coordinates and drawn edges it carries, and its dense

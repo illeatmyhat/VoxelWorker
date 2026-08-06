@@ -338,3 +338,74 @@ fn a_ceiling_does_not_bring_the_spring_back() {
         "a fiftieth of a unit of cursor swung the drawing {worst} under a ceiling"
     );
 }
+
+/// The ghost must name the circle the shape is actually on.
+///
+/// The author found this by looking at it: "the ghost circle doesn't correctly follow the arc. it's
+/// the same center point and radius as the arc so I'm confused". It was not. A snap measures its
+/// quantity to a PIVOT, and the pivot — an arc's center — is not a hand, so the kernel fell back to
+/// where the pivot stands NOW. By then the caller has written the raw cursor into the drawing and
+/// [`Sketch::seat_arc_centers`] has re-seated the center on top of it, so the radius was measured
+/// against a center the gesture had already dragged. Pulled two and a half units out, the ghost
+/// reported 38.29 about `[1.74, -1.39]` while the arc settled at 39.87 about the origin, and the
+/// ghost drifted further with every frame.
+///
+/// The drawing as the gesture FOUND it is the answer, and `was` is where it travels — it was simply
+/// narrowed to the hands on the way down.
+#[test]
+fn the_ghost_names_the_circle_the_arc_is_on() {
+    let mut arc = Sketch::empty(PlaneAxis::Z);
+    let from = arc.add_free_point(SketchPoint::new(40, 0));
+    let to = arc.add_free_point(SketchPoint::new(0, 40));
+    let made = arc
+        .connect_arc(from, to, AngleMeasurement::from_degrees(90))
+        .expect("an arc");
+    let center = arc
+        .arcs()
+        .iter()
+        .find(|arc| arc.id == made)
+        .expect("the arc")
+        .center;
+    for step in 0..=5 {
+        let out = 40.0 + f64::from(step) * 0.5;
+        let mut drawn = arc.clone();
+        let kept = drawn
+            .move_point_reporting_its_snap(
+                from,
+                SketchPoint::from_continuous(out, 6.0),
+                ctx(16),
+                SnapReach::UNBOUNDED,
+            )
+            .expect("answered")
+            .kept
+            .expect("a quantity for the ghost to draw");
+        let at = |id| {
+            drawn
+                .points()
+                .iter()
+                .find(|point| point.id == id)
+                .expect("a point")
+                .at
+                .in_plane()
+        };
+        let (hub, end) = (at(center), at(from));
+        let radius = (end[0] - hub[0]).hypot(end[1] - hub[1]);
+        // The ghost is the circle the gesture opened on, so it does not move as the hand does.
+        assert!(
+            kept.about[0].hypot(kept.about[1]) < 1.0e-6 && (kept.radius - 40.0).abs() < 1.0e-6,
+            "pulled {out} out, the ghost wandered to {:?} r {}",
+            kept.about,
+            kept.radius
+        );
+        // And the arc is ON it. Roughly: the center keeps its one real freedom — how far out along
+        // the chord's bisector it stands — so a swept end trades a little radius for reaching the
+        // cursor. Before this it was out by 2.2.
+        assert!(
+            (hub[0] - kept.about[0]).hypot(hub[1] - kept.about[1]) < 0.2
+                && (radius - kept.radius).abs() < 0.2,
+            "pulled {out} out, the ghost said {:?} r {} and the arc is at {hub:?} r {radius}",
+            kept.about,
+            kept.radius
+        );
+    }
+}

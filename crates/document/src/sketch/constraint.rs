@@ -821,10 +821,14 @@ impl PreparedProblem {
                     })
             })
             .collect::<Option<Vec<_>>>()?;
+        // A point the prepared problem does not carry is DROPPED, not a failure. What arrives is
+        // the drawing as the gesture found it, whole, while the problem is scoped to the part the
+        // drag can reach; refusing the ones outside that scope would refuse every snap on a plane
+        // with a second shape on it.
         let stood: Vec<(parametric::sketch::PointId, [f64; 2])> = was
             .iter()
-            .map(|(held, at)| self.point(*held).map(|point| (point, *at)))
-            .collect::<Option<Vec<_>>>()?;
+            .filter_map(|(held, at)| self.point(*held).map(|point| (point, *at)))
+            .collect();
         let (snapped, kept) = self.problem.snap_the_hands(&pulling, &stood)?;
         // Back into the document's names. A hand whose point does not map is dropped rather than
         // guessed at, which leaves it where the caller put it.
@@ -864,14 +868,13 @@ impl PreparedProblem {
                     .ok_or(parametric::sketch::RequestError::UnknownPoint)
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let stood = was
+        // Out of scope is not unknown. `was` is the whole pre-drag drawing and the problem is only
+        // the reachable part of it, so a point the problem does not carry is one the solve could
+        // not have consulted anyway.
+        let stood: Vec<_> = was
             .iter()
-            .map(|(held, at)| {
-                self.point(*held)
-                    .map(|point| (point, *at))
-                    .ok_or(parametric::sketch::RequestError::UnknownPoint)
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+            .filter_map(|(held, at)| self.point(*held).map(|point| (point, *at)))
+            .collect();
         self.problem.drag_together(&pulling, &stood)
     }
 

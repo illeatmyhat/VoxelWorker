@@ -106,3 +106,46 @@ remains unbuilt. It needs a length computed by the shell from the camera and pas
 anything, and the cure has now arrived by another route, so it is a comfort feature rather than a
 fix. The `SNAP_CONE_KEEPING_A_SPAN` case has had no equivalent attention: nothing has measured
 whether a segment's end wants a wider cone than 0.25, only that 0.75 is too wide.
+
+**The ghost named a circle the arc was never on, and this decision's own explanation of why was
+wrong.** The section above closed with "it holds *roughly* rather than exactly because that arc's
+center is derived from its two ends, so it shifts with them". That is not what an arc's center is.
+[ADR 0038](0038-a-point-is-placed-never-computed.md) made it AUTHORED, and
+`Sketch::seat_arc_centers` only takes away the component running along the chord — the center keeps
+its one real freedom, how far out along the bisector it stands.
+
+The actual fault was in when the quantity is measured. A snap measures to a PIVOT, and a pivot is
+rarely a hand: `was`, the record of where the gesture started, carried only the points under the
+hand, so the kernel fell back to where the pivot stands *now*. By then the caller has written the
+raw cursor into the drawing and re-seated the arc centers on top of it. The radius was therefore
+measured to a center the gesture had already dragged — and the ghost drew that.
+
+The author saw it: *"the ghost circle doesn't correctly follow the arc. it's the same center point
+and radius as the arc so I'm confused."* Measured on a bare arc, pulling the end out:
+
+| pulled out | the ghost said | where the arc actually was | apart by |
+| --- | --- | --- | --- |
+| 0.5 | 39.45 about `[0.55, -0.46]` | 39.98 about `[0.00, 0.00]` | 0.72 |
+| 1.5 | 38.87 about `[1.14, -0.93]` | 39.89 about `[-0.06, 0.11]` | 1.47 |
+| 2.5 | 38.29 about `[1.74, -1.39]` | 39.87 about `[0.00, 0.13]` | 2.21 |
+
+The ghost drifted further every frame while the arc stayed put, which is precisely the drawing the
+author was looking at.
+
+`was` now carries the WHOLE pre-drag drawing rather than the hands alone.
+`Sketch::point_move_attempt` already held it — `before`, cloned for
+[`carry_authored_handles`](../../crates/document/src/sketch/mod.rs) — and was narrowing it on the
+way down. The prepared problem is scoped to the part of the plane a drag can reach, so a point it
+does not carry is dropped rather than refused; refusing would have failed every snap on a plane
+with a second shape on it.
+
+| | before | after |
+| --- | --- | --- |
+| the ghost, over a two-and-a-half unit pull | drifted 39.45 → 38.29, center wandering to `[1.74, -1.39]` | **40.0000 about `[0, 0]`, every frame** |
+| the arc's own radius at the far end of that pull | 39.87 | 39.93 |
+| ghost against arc | 2.21 apart | **0.09 apart** |
+
+Guarded by `the_ghost_names_the_circle_the_arc_is_on`. It also fixes something nothing was watching:
+`Rigidity::Preferred`'s `opening` is documented as "the drawing as the gesture FOUND it" and was
+being handed the same narrowed record, so every non-hand point it priced was priced off the bent
+drawing.
