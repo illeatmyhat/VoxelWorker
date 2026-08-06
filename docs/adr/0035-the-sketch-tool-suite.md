@@ -1,6 +1,8 @@
 # ADR 0035 — The sketch tool suite: a constraint solver, a geometric arrangement, and a parametric crate
 
-- **Status:** Accepted
+- **Status:** Accepted; decision 3's badge pick **amended** by
+  [ADR 0046](0046-a-badge-takes-a-click-never-a-drag.md) (a badge beats the geometry under it for a
+  click, but not for a drag)
 - **Date:** 2026-07-30
 - **Supersedes:** [ADR 0030 §2](0030-sketch-as-entity-collection.md)'s topological region
   ("a visual crossing with no shared point makes no region") and its §3 face identity (the

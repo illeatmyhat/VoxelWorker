@@ -4578,22 +4578,20 @@ impl WindowedState {
     ///
     /// Vertices win over edges, and by more than proximity: every edge passes through its own
     /// endpoints, so an endpoint grab would be unreachable if the nearer edge could take it.
+    ///
+    /// **A badge takes a click; it never takes a drag.** A constraint has no position, so a badge
+    /// is not something a drag could move — and a badge is a 32-point box floating 30 points off
+    /// the geometry it labels, so on a drawing that carries many relations the badges cover the
+    /// curves. Refusing the whole gesture there made the geometry under them unreachable. It is
+    /// not asked at all now: the grabs below are all positional by construction, and the badge
+    /// keeps its click regardless, because the press arms the selection resolve independently of
+    /// the drag and a release that never left the press still resolves it.
     pub(super) fn begin_sketch_vertex_drag(
         &self,
         cursor_x: f64,
         cursor_y: f64,
     ) -> Option<SketchVertexDrag> {
         let target = self.panel_state.sketch_mode?;
-        // A constraint badge takes the press it is drawn over, and MOVING one means nothing: a
-        // constraint has no position, so there is nothing for a drag to change (the
-        // Decision 3). Asked through `is_positional` rather than by matching the variant, so the
-        // next entity kind that has no place answers here without a second edit.
-        if self
-            .sketch_entity_target_at(target, cursor_x, cursor_y)
-            .is_some_and(|hit| !hit.is_positional())
-        {
-            return None;
-        }
         let held = self
             .sketch_vertex_at(cursor_x, cursor_y)
             .and_then(|index| self.sketch_point_ids.get(index).copied())

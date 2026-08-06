@@ -66,7 +66,7 @@ can be skipped entirely; one superseded *in part* cannot.
 | [0031](0031-frame-phases-and-scene-draw.md) | The viewport render is ordered frame phases of one scene draw | Accepted |
 | [0032](0032-selection-as-workspace-state.md) | Selection is workspace state, unified across target kinds | Accepted |
 | [0033](0033-selection-is-not-undo-state.md) | Selection is view state, not undo state | Accepted |
-| [0035](0035-the-sketch-tool-suite.md) | The sketch tool suite: a constraint solver, a geometric arrangement, a parametric library | Accepted; being built |
+| [0035](0035-the-sketch-tool-suite.md) | The sketch tool suite: a constraint solver, a geometric arrangement, a parametric library | Accepted; being built. Decision 3's badge pick **amended** by 0046 |
 | [0036](0036-parametric-sketch-solver-ownership.md) | Parametric owns continuous sketch solving | Accepted |
 | [0037](0037-curve-intrinsic-authority-and-evaluation-context.md) | Curve-intrinsic authority and density-aware evaluation | Accepted; the `ArcSweep` half **amended** by 0038 |
 | [0038](0038-a-point-is-placed-never-computed.md) | A point is placed, never computed | Accepted; being built. Amends 0037 for arcs |
@@ -77,6 +77,7 @@ can be skipped entirely; one superseded *in part* cannot.
 | [0043](0043-a-snap-lets-go-gradually.md) | A snap lets go gradually | Accepted. The cone becomes a plateau and a smoothstep, so nothing switches at its rim; the bigger instability is measured to be the drawing's free sweep, not the snap |
 | [0044](0044-an-end-of-a-round-curve-holds-its-radius.md) | An end of a round curve holds its radius | Accepted. The cone belongs to the quantity, not the drawing: a radius is held three times harder than a span because the body drag already authors it, which closes 0043's free-sweep wander |
 | [0045](0045-a-snap-reaches-only-as-far-as-the-shell-allows.md) | A snap reaches only as far as the shell allows | Accepted. `SnapReach` caps the cone at a length the shell converts from 90 screen points, because an angle cannot say how far from the cursor the drawing may end up; a ceiling, never an invention |
+| [0046](0046-a-badge-takes-a-click-never-a-drag.md) | A badge takes a click, never a drag | Accepted. Amends 0035 decision 3: a constraint badge beats the geometry under it for a pick, but refusing the whole press there made that geometry undraggable |
 
 ## Records that quote documents no longer in the repo
 
