@@ -269,6 +269,15 @@ impl LeafPlacement {
     /// far from the world origin (the wandering-origin fold). Bit-identical to the near-frame
     /// `world_of(index + 0.5).floor()` for a small origin, and the precision-preserving replacement
     /// for it everywhere a far-out leaf's cells are emitted.
+    ///
+    /// **Why the `+0.5`/`floor` reproduces the discrete lattice byte-for-byte.** For a
+    /// positive-sign lattice axis the affine's `world_of` is already `local + offset`, and
+    /// `floor(local + 0.5 + offset) = local + offset`. For a NEGATED axis the corner-anchored
+    /// affine gives `full − local + offset` while the discrete permutation gives
+    /// `full − 1 − local + offset`; the center sample makes the affine value
+    /// `full − local − 0.5 + offset`, whose `floor` is `full − 1 − local + offset` — exactly the
+    /// permutation. So every axis-aligned turn emits into the identical absolute cells the discrete
+    /// lattice does, and the half-unit margin absorbs the `Quat` round-off.
     #[must_use]
     pub fn world_cell_of_local_center(&self, local_index: [i32; 3]) -> [i64; 3] {
         let center = Vec3::from_array(local_index.map(|value| i32_to_f32(value) + 0.5));

@@ -119,7 +119,7 @@ fn gather_reproduces_the_axis_aligned_permutation_on_a_cube() {
     let (block_min, edge) = enclosing_window(&leaf);
 
     // Forward-emit (the permutation path: `compose_leaf_into_region` routes an axis-aligned
-    // leaf through `producer_local_voxel_to_abs`).
+    // leaf through the affine's `world_cell_of_local_center`).
     let mut forward = VoxelRegion::new_empty([edge; 3]);
     compose_leaf_into_region(&mut forward, &leaf, block_min, edge, DENSITY);
 

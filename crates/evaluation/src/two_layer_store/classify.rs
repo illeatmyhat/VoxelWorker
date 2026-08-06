@@ -417,27 +417,6 @@ pub(crate) fn abs_box_to_producer_local(
     VoxelAabb::new(min, max)
 }
 
-/// Map a **producer-local** voxel index to its absolute voxel index: the absolute
-/// cell the local cell's CENTER lands in, `world_of(index + 0.5).floor()`. The inverse of
-/// [`abs_box_to_producer_local`] for a single cell — the forward-emit direction.
-///
-/// **Why `+0.5`/`floor` reproduces the lattice byte-for-byte.** For a positive-sign lattice axis
-/// the affine's `world_of` already equals `local + offset`, and `floor(local + 0.5 + offset) =
-/// local + offset`. For a NEGATED axis the corner-anchored affine gives `full − local + offset`
-/// while the lattice `turn_point_in_box` gives `full − 1 − local + offset`; the center sample makes
-/// the affine value `full − local − 0.5 + offset`, whose `floor` is `full − 1 − local + offset` —
-/// exactly the lattice. So every axis-aligned turn emits into the identical absolute cells the
-/// discrete lattice permutation does, and the half-unit margin absorbs the `Quat` round-off.
-pub(crate) fn producer_local_voxel_to_abs(
-    leaf: &LeafProducer,
-    local_index: [i32; 3],
-    voxels_per_block: u32,
-) -> [i64; 3] {
-    // Wandering origin: `world_cell_of_local_center` re-adds the integer origin in i64
-    // after flooring the small origin-relative image, so a far-out leaf's cells stay exact.
-    leaf_affine(leaf, voxels_per_block).world_cell_of_local_center(local_index)
-}
-
 /// The FIRST **purely additive** leaf (see [`LeafProducer::is_purely_additive`]) whose grid AABB
 /// overlaps `block_abs_voxels`, or `None` if none does. The overlap test mirrors
 /// [`classify_chunk_block`]'s exactly, so the same leaf is found. A coarse-solid block is
@@ -796,10 +775,10 @@ pub(crate) fn compose_leaf_into_region(
     let window_local = abs_box_to_producer_local(leaf, block_abs, voxels_per_block);
     // ONE placement map for every voxel this leaf emits into the block.
     //
-    // [`producer_local_voxel_to_abs`] rebuilds it per call, and building it reads the producer's
-    // `full_dimensions` — which for a sketch is a derived quantity behind a lock. Asking a
-    // producer how big it is once per EMITTED VOXEL turned the drag frame's chunk fan-out into a
-    // queue on that lock: 235k acquisitions per rebuild, and more threads made it slower.
+    // Built per voxel it rebuilds per call, and building it reads the producer's `full_dimensions`
+    // — which for a sketch is a derived quantity behind a lock. Asking a producer how big it is
+    // once per EMITTED VOXEL turned the drag frame's chunk fan-out into a queue on that lock: 235k
+    // acquisitions per rebuild, and more threads made it slower.
     let affine = leaf_affine(leaf, voxels_per_block);
     let mut local = VoxelGrid::default();
     leaf.producer
