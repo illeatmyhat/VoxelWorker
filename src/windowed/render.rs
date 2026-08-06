@@ -18,15 +18,23 @@ fn preview_outline(chords: Vec<egui::Pos2>) -> ui::chrome::SketchPreviewMark {
     ui::chrome::SketchPreviewMark::Polyline {
         chords,
         line: ui::chrome::SketchPreviewLine::Outline,
+        strength: 1.0,
     }
 }
 
 /// The datum a preview rests on — a polygon's base circle, a slot's spine. Drawn under the
 /// outline, at the lighter guide weight, and never authored.
 fn preview_guide(chords: Vec<egui::Pos2>) -> ui::chrome::SketchPreviewMark {
+    fading_guide(chords, 1.0)
+}
+
+/// The same datum, drawn at the strength it is actually in force at. A guide that STANDS passes
+/// one through [`preview_guide`]; a snap's circle passes how hard the quantity is being held.
+fn fading_guide(chords: Vec<egui::Pos2>, strength: f32) -> ui::chrome::SketchPreviewMark {
     ui::chrome::SketchPreviewMark::Polyline {
         chords,
         line: ui::chrome::SketchPreviewLine::Guide,
+        strength,
     }
 }
 
@@ -5541,7 +5549,11 @@ impl WindowedState {
             let projected: Vec<egui::Pos2> =
                 ring.iter().copied().filter_map(snapped_screen).collect();
             if !ring.is_empty() && projected.len() == ring.len() {
-                self.sketch_draw_preview.push(preview_guide(projected));
+                // At the strength the quantity is actually being held at. The snap fades to
+                // nothing at the rim of its cone, and a ring drawn at full ink there says "you are
+                // sliding along this" at its loudest exactly where it has stopped being true.
+                self.sketch_draw_preview
+                    .push(fading_guide(projected, kept.pull as f32));
             }
         }
         match tool {

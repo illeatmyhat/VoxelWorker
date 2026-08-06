@@ -163,11 +163,17 @@ pub fn dashed_segment(painter: &Painter, a: Pos2, b: Pos2) {
 
 /// The dashed **preview polyline** — [`dashed_segment`]'s whole-run form, for a preview that is a
 /// flattened curve rather than one straight run. See [`roled_curve`] for why this cannot be a loop.
-pub fn dashed_preview_polyline(painter: &Painter, points: &[Pos2]) {
+///
+/// `strength` scales the ink for a mark that is only partly in force; pass `1.0` for one that is.
+pub fn dashed_preview_polyline(painter: &Painter, points: &[Pos2], strength: f32) {
     if points.len() < 2 {
         return;
     }
-    super::dashed_polyline(painter, points, Stroke::new(STROKE_SEGMENT, HANDLE_ACCENT));
+    super::dashed_polyline(
+        painter,
+        points,
+        Stroke::new(STROKE_SEGMENT, HANDLE_ACCENT.gamma_multiply(strength)),
+    );
 }
 
 /// The dashed **guide polyline** — the datum a preview is derived from rather than the shape being
@@ -176,9 +182,17 @@ pub fn dashed_preview_polyline(painter: &Painter, points: &[Pos2]) {
 /// Same cool dashed ink as [`dashed_preview_polyline`], at the lighter [`STROKE_GUIDE`] weight the
 /// family already reserves for a datum. The weight is the whole distinction, deliberately: a
 /// second ink here would collide with CONSTRUCTION, which is what warm dashes already mean.
-pub fn dashed_guide_polyline(painter: &Painter, points: &[Pos2]) {
+///
+/// `strength` scales the ink. A guide that stands unconditionally passes `1.0`; a snap's circle
+/// passes how hard the quantity is being held, so the ring arrives and leaves with the hold rather
+/// than switching on at full ink where the hold is worth nothing.
+pub fn dashed_guide_polyline(painter: &Painter, points: &[Pos2], strength: f32) {
     if points.len() < 2 {
         return;
     }
-    super::dashed_polyline(painter, points, Stroke::new(STROKE_GUIDE, HANDLE_ACCENT));
+    super::dashed_polyline(
+        painter,
+        points,
+        Stroke::new(STROKE_GUIDE, HANDLE_ACCENT.gamma_multiply(strength)),
+    );
 }

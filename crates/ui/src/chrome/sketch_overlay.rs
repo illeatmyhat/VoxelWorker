@@ -158,6 +158,13 @@ pub enum SketchPreviewMark {
         chords: Vec<Pos2>,
         /// Which linetype this run takes.
         line: SketchPreviewLine,
+        /// How much of the ink this run gets, from one to nothing.
+        ///
+        /// A mark that is only PARTLY in force should say so with its ink. A snap's circle is the
+        /// case that wanted it: the hold fades continuously to nothing at the rim of its cone, and
+        /// a ring drawn at full strength there announces a quantity that is no longer being kept.
+        /// Everything that stands unconditionally passes one.
+        strength: f32,
     },
     /// The tool cannot complete from where the cursor is. Drawn AT the cursor rather than in the
     /// notice corner: the condition is continuous and cursor-tracking, so it belongs where the
@@ -182,16 +189,21 @@ pub fn sketch_draw_preview(ui: &egui::Ui, marks: &[SketchPreviewMark]) {
     ));
     let polylines = |want: SketchPreviewLine| {
         for mark in marks {
-            if let SketchPreviewMark::Polyline { chords, line } = mark {
+            if let SketchPreviewMark::Polyline {
+                chords,
+                line,
+                strength,
+            } = mark
+            {
                 if *line == want {
                     // One run, not one per chord: a curve preview arrives already flattened, and
                     // restarting the dash rhythm on every short chord would draw it solid.
                     match want {
                         SketchPreviewLine::Outline => {
-                            gizmos::dashed_preview_polyline(&painter, chords);
+                            gizmos::dashed_preview_polyline(&painter, chords, *strength);
                         }
                         SketchPreviewLine::Guide => {
-                            gizmos::dashed_guide_polyline(&painter, chords);
+                            gizmos::dashed_guide_polyline(&painter, chords, *strength);
                         }
                     }
                 }
@@ -461,6 +473,59 @@ mod tests {
             .len()
     }
 
+    /// The strongest stroke alpha any mark in the set painted.
+    fn ink_alpha(marks: &[SketchPreviewMark]) -> u8 {
+        fn strongest(shape: &egui::Shape) -> u8 {
+            match shape {
+                egui::Shape::LineSegment { stroke, .. } => stroke.color.a(),
+                egui::Shape::Path(path) => match path.stroke.color {
+                    egui::epaint::ColorMode::Solid(color) => color.a(),
+                    egui::epaint::ColorMode::UV(_) => 0,
+                },
+                egui::Shape::Vec(inner) => inner.iter().map(strongest).max().unwrap_or(0),
+                _ => 0,
+            }
+        }
+        let context = Context::default();
+        context
+            .run_ui(
+                RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::splat(32.0))),
+                    ..Default::default()
+                },
+                |ui| sketch_draw_preview(ui, marks),
+            )
+            .shapes
+            .iter()
+            .map(|clipped| strongest(&clipped.shape))
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// A guide that is only PARTLY in force is drawn only partly.
+    ///
+    /// The snap's circle is the case: its hold fades continuously to nothing at the rim of the
+    /// cone, and before this the ring appeared at full ink the moment the cone was entered — at its
+    /// loudest exactly where the quantity had stopped being kept. Half the hold is now visibly less
+    /// than the whole of it, and a hold of nothing paints nothing.
+    #[test]
+    fn a_guide_is_drawn_at_the_strength_it_is_held_at() {
+        let guide = |strength| {
+            ink_alpha(&[SketchPreviewMark::Polyline {
+                chords: ring(),
+                line: SketchPreviewLine::Guide,
+                strength,
+            }])
+        };
+        let (whole, half, none) = (guide(1.0), guide(0.5), guide(0.0));
+        assert!(whole > 0 && half > 0, "a held guide has to be visible");
+        assert!(
+            half < whole,
+            "half a hold painted {half} against {whole} for the whole of it"
+        );
+        assert_eq!(none, 0, "a hold of nothing painted {none}");
+    }
+
     fn ring() -> Vec<Pos2> {
         vec![
             pos2(10.0, 5.0),
@@ -477,6 +542,7 @@ mod tests {
             painted(&[SketchPreviewMark::Polyline {
                 chords: ring(),
                 line: SketchPreviewLine::Outline,
+                strength: 1.0,
             }]) > 0,
             "the closed preview produced foreground ink"
         );
@@ -492,6 +558,7 @@ mod tests {
             SketchPreviewMark::Polyline {
                 chords: ring(),
                 line: SketchPreviewLine::Guide,
+                strength: 1.0,
             },
         ] {
             assert!(
@@ -507,10 +574,12 @@ mod tests {
         let as_outline = painted(&[SketchPreviewMark::Polyline {
             chords: ring(),
             line: SketchPreviewLine::Outline,
+            strength: 1.0,
         }]);
         let as_guide = painted(&[SketchPreviewMark::Polyline {
             chords: ring(),
             line: SketchPreviewLine::Guide,
+            strength: 1.0,
         }]);
         assert!(as_outline > 0 && as_guide > 0);
     }

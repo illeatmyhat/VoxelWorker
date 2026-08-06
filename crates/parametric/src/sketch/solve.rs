@@ -2562,6 +2562,14 @@ pub struct KeptQuantity {
     pub about: [f64; 2],
     /// How far the held point stood from it. The radius of the circle the hand is sliding along.
     pub radius: f64,
+    /// How much of the correction the falloff let through — one where the quantity is held exactly,
+    /// nothing at the rim of the cone.
+    ///
+    /// It rides home so the overlay can draw the circle at the strength it is actually being held
+    /// at. Without it the ghost is a step function on top of a continuous snap: it appears at full
+    /// ink the moment the cone is entered, which is precisely where the snap is doing nothing, and
+    /// says "you are sliding along this" at its loudest exactly when it is least true.
+    pub pull: f64,
 }
 
 /// What one frame of a walked drag answered: how the solve went, and what the hand was pulled
@@ -3968,6 +3976,7 @@ impl Problem {
             kept: KeptQuantity {
                 about,
                 radius: quantity,
+                pull,
             },
             turn: (from[0] * to[1] - from[1] * to[0])
                 .atan2(from[0] * to[0] + from[1] * to[1])
