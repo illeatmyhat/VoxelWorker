@@ -5549,11 +5549,11 @@ impl WindowedState {
             let projected: Vec<egui::Pos2> =
                 ring.iter().copied().filter_map(snapped_screen).collect();
             if !ring.is_empty() && projected.len() == ring.len() {
-                // At the strength the quantity is actually being held at. The snap fades to
-                // nothing at the rim of its cone, and a ring drawn at full ink there says "you are
-                // sliding along this" at its loudest exactly where it has stopped being true.
+                // At the strength that says how much room is LEFT — see `ghost_ink` for why that
+                // is not the same as how hard the quantity is being held, and for the two
+                // measurements that chose between them.
                 self.sketch_draw_preview
-                    .push(fading_guide(projected, kept.pull as f32));
+                    .push(fading_guide(projected, kept.ghost_ink() as f32));
             }
         }
         match tool {

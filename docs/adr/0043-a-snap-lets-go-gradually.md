@@ -104,3 +104,50 @@ is a share of travel and grows with the gesture. Converting it needs a length co
 from the camera and passed down, since `parametric` has no camera and the per-layer crate split
 keeps the flow downward-only. Worth doing; it bounds the correction rather than smoothing it, and
 the measurements above say it is not what the author is feeling.
+
+## Amendment, 2026-08-06 — the ring is inked from the room left, not from the hold
+
+The falloff shipped with the ring drawn at the hold's own strength, on the reasoning that a snap
+which fades ought to be drawn fading. The author, on the shipped result: *"It feels fine but the
+ghost fade is rather inconsistent and dies quickly."* Both halves are what the hold does, and
+measuring it says so.
+
+**The hold spends its whole range in the outer 40% of the cone.** It is exactly one over the
+plateau, so the ring sat at full ink until the hand was already 60% of the way out and then
+collapsed across `0.4 * cone` — for a radius, `0.3 * travel` of cursor. Early in a gesture that is a
+handful of screen points.
+
+**Its steepest slope is `3.75` per cone.** `1.5` from the smoothstep, over a band `0.4` wide. So a
+one-point jitter of the mouse against a cone twenty points across swings the ink by nearly a fifth,
+and at the start of a gesture, where the cone is a few points wide, it swings the whole range. The
+ring strobes.
+
+**And the ratio the hold reads is constant along a straight gesture.** `across` grows like
+`travel * sin(heading)` while the cone grows like `share * travel`, so `across / cone` is
+`sin(heading) / share` and does not depend on travel at all. Measured on a 90° arc of radius 40:
+headings of 0°, 5°, 15° and 30° all sit pinned at a hold of `1.0` for the whole walk, and 60° never
+snaps at all — the transition lives entirely inside a 22° window of *wrist angle*. So the fade is
+not something the author moves through. It is a level their heading picks at the outset. Widening
+the plateau could not have fixed that, which is why the plateau was left where it is.
+
+**Decision: the ring reports how much cone is LEFT.** `KeptQuantity::ghost_ink` is
+`1 - across / cone`, clamped, linear. Straight consequences, against the hold it replaces:
+
+| | hold | room left |
+|---|---|---|
+| fade spans | `0.4 * cone` | `1.0 * cone` |
+| steepest ink slope | `3.75 / cone` | `1 / cone` |
+| dims from | 60% out | the first step off |
+
+Linear rather than smoothed on purpose: a constant slope is the steadiest ink there is, and
+smoothing it would put the peak back at `1.5 / cone`.
+
+**What it costs is that a ring at 40% ink may still be holding its quantity exactly.** That is the
+trade, taken deliberately. How much correction is being applied is not something the author can act
+on; how much room is left is. A ring going grey while there is still room to act is a warning, and
+a ring at full strength right up to the moment it collapses is not.
+
+The physics is untouched — `pull` still scales the correction, the plateau is still `0.6`, and the
+drag the author says feels fine answers exactly as it did. Only the ink changed. Bound end to end in
+`the_snap_ring_is_inked_from_the_room_left_in_the_cone`, which walks a real drag radially out of its
+cone and checks the closed form against every step of it.

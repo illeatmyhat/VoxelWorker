@@ -2562,14 +2562,42 @@ pub struct KeptQuantity {
     pub about: [f64; 2],
     /// How far the held point stood from it. The radius of the circle the hand is sliding along.
     pub radius: f64,
-    /// How much of the correction the falloff let through — one where the quantity is held exactly,
-    /// nothing at the rim of the cone.
+    /// How far into the cone the hand is standing, as a share of it: zero on the quantity, one at
+    /// the rim.
     ///
-    /// It rides home so the overlay can draw the circle at the strength it is actually being held
-    /// at. Without it the ghost is a step function on top of a continuous snap: it appears at full
-    /// ink the moment the cone is entered, which is precisely where the snap is doing nothing, and
-    /// says "you are sliding along this" at its loudest exactly when it is least true.
-    pub pull: f64,
+    /// It rides home so the ring can be drawn at a strength — see [`Self::ghost_ink`], which is
+    /// the only thing that reads it.
+    pub across_the_cone: f64,
+}
+
+impl KeptQuantity {
+    /// How strongly to ink the ring: full on the quantity, nothing at the rim of the cone.
+    ///
+    /// **This reports how much cone is LEFT, not how hard the quantity is being held.** The two
+    /// look interchangeable and are not, and drawing the hold was measured to be the wrong choice:
+    ///
+    /// - The hold is flat over the plateau (`SNAP_HOLD`) and spends its whole range in the
+    ///   outer `0.4` of the cone, so the visible fade covered `0.3 * travel` of cursor. This spends
+    ///   the whole cone, which is **two and a half times as long a fade** for the same gesture.
+    /// - Ink drawn from the hold swings `3.75 / cone` per unit of cursor at the steepest point of
+    ///   the falloff; ink drawn from this swings `1 / cone`. At the start of a gesture, where the
+    ///   cone is a few screen points across, that difference is the ring strobing against the ring
+    ///   dimming.
+    /// - The hold cannot warn. It is exactly one until the hand is already 60% of the way out, so
+    ///   a ring inked from it is at full strength right up to the moment it starts collapsing. This
+    ///   dims from the first step off the quantity, so the ring going grey means "you are running
+    ///   out of room" while there is still room.
+    ///
+    /// What it costs is that a ring at 40% ink may still be holding its quantity *exactly*. That is
+    /// the right trade: the author cannot act on how much correction is being applied, and can act
+    /// on how much room is left.
+    ///
+    /// Linear rather than smoothed on purpose — a constant slope is the steadiest ink there is, and
+    /// smoothing it would put the peak back at `1.5 / cone`.
+    #[must_use]
+    pub fn ghost_ink(self) -> f64 {
+        (1.0 - self.across_the_cone).clamp(0.0, 1.0)
+    }
 }
 
 /// What one frame of a walked drag answered: how the solve went, and what the hand was pulled
@@ -2607,6 +2635,9 @@ struct Nearest {
     quantity: f64,
     /// How far off it the hand is, which is how candidates are ranked.
     across: f64,
+    /// The same distance as a share of the cone it was measured in, which is what the ring is
+    /// inked from — see [`KeptQuantity::ghost_ink`].
+    across_the_cone: f64,
     /// The falloff at that distance.
     pull: f64,
     /// How far the hand actually is from `about`, which the faded turn is measured against.
@@ -3909,6 +3940,7 @@ impl Problem {
                     scale: target / reach,
                     quantity,
                     across,
+                    across_the_cone: across / cone,
                     pull,
                     reach,
                 });
@@ -3918,6 +3950,7 @@ impl Problem {
             about,
             scale,
             quantity,
+            across_the_cone: across_the_cone_of_lead,
             pull,
             reach: reach_of_lead,
             ..
@@ -3976,7 +4009,7 @@ impl Problem {
             kept: KeptQuantity {
                 about,
                 radius: quantity,
-                pull,
+                across_the_cone: across_the_cone_of_lead,
             },
             turn: (from[0] * to[1] - from[1] * to[0])
                 .atan2(from[0] * to[0] + from[1] * to[1])

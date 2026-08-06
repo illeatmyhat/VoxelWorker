@@ -758,3 +758,101 @@ fn scaled_slot(scale: i64) -> Sketch {
         .as_ref()
         .clone()
 }
+
+/// The snap ring is inked from how much CONE IS LEFT, and that is not how hard the snap holds.
+///
+/// The two were interchangeable enough that the ring shipped drawing the hold, and the author's
+/// read on it was that the fade "is rather inconsistent and dies quickly". Both halves are what the
+/// hold does, measured:
+///
+/// - The hold is exactly one over the plateau (`Problem::SNAP_HOLD`) and spends
+///   its entire range in the outer `0.4` of the cone, so the ring sat at full ink until the hand
+///   was already 60% of the way out and then collapsed over `0.3 * travel` of cursor. Inking from
+///   the room left spends the WHOLE cone: two and a half times the fade for the same gesture, and
+///   the ring dims while there is still room to act on.
+/// - The hold's steepest slope is `1.5 / 0.4 = 3.75` per cone; this one's is `1`. At the start of a
+///   gesture the cone is a few screen points wide and that factor is the ring strobing against the
+///   ring dimming.
+///
+/// The third measured fact is why neither number can be fixed by tuning the falloff: for a hand
+/// travelling in a straight line, `across` grows like `travel * sin(heading)` while the cone grows
+/// like `share * travel`, so **their ratio is constant in travel**. A straight gesture picks its
+/// place in the cone at the outset and holds it. The fade is a function of the author's wrist
+/// angle, not of how far they have gone — which is why widening the plateau would not have helped
+/// and why the ink has to spend as much of the cone as it can get.
+#[test]
+fn the_snap_ring_is_inked_from_the_room_left_in_the_cone() {
+    let mut arc = Sketch::empty(PlaneAxis::Z);
+    let from = arc.add_free_point(SketchPoint::new(40, 0));
+    let to = arc.add_free_point(SketchPoint::new(0, 40));
+    drop(
+        arc.connect_arc(from, to, AngleMeasurement::from_degrees(90))
+            .expect("an arc to slide along"),
+    );
+    // Radially out from one point of the circle, so `across` is the step itself and the ring's
+    // whole fade is walked. Fifteen degrees round keeps the gesture off the tangent, where a hand
+    // pulling away from a quantity actually is.
+    let along = 15.0_f64.to_radians();
+    let mut walked: Vec<(f64, f64)> = Vec::new();
+    for step in 0..=60 {
+        let across = f64::from(step) * 0.2;
+        let cursor = [(40.0 + across) * along.cos(), (40.0 + across) * along.sin()];
+        let travel = (cursor[0] - 40.0).hypot(cursor[1]);
+        let cone = 0.75 * travel;
+        let mut drawn = arc.clone();
+        let kept = drawn
+            .move_point_reporting_its_snap(
+                from,
+                SketchPoint::from_continuous(cursor[0], cursor[1]),
+                ctx(16),
+                SnapReach::UNBOUNDED,
+            )
+            .expect("answered")
+            .kept;
+        let Some(kept) = kept else {
+            assert!(
+                across >= cone,
+                "the snap was dropped {across} out of a cone of {cone}"
+            );
+            continue;
+        };
+        // The circle the gesture opened on, so the closed form below is measured against the
+        // radius candidate and not some other quantity that happened to win.
+        assert!(
+            kept.about[0].hypot(kept.about[1]) < 1.0e-9 && (kept.radius - 40.0).abs() < 1.0e-9,
+            "{across} out, the ring is {:?} r {}",
+            kept.about,
+            kept.radius
+        );
+        let ink = kept.ghost_ink();
+        // To a millionth rather than exactly: the cursor is stored as a fixed-point coordinate, so
+        // the cone recomputed here from the ideal position is a few billionths off the one the
+        // solve measured.
+        assert!(
+            (ink - (1.0 - across / cone)).abs() < 1.0e-6,
+            "{across} out of a cone of {cone}, the ring inked {ink}"
+        );
+        walked.push((across, ink));
+    }
+    // It dims from the FIRST step off the quantity. The hold is flat at one until 60% out.
+    let early = walked
+        .iter()
+        .find(|(across, _)| *across > 1.5)
+        .expect("a step off the quantity");
+    assert!(
+        early.1 < 0.95,
+        "{} out the ring is still at {} ink",
+        early.0,
+        early.1
+    );
+    // And it never moves faster than one per cone. The hold peaks at 3.75 per cone.
+    let cone_at_the_start = 0.75 * (40.0 * (2.0 * (along / 2.0).sin())).abs();
+    for pair in walked.windows(2) {
+        let [(was, before), (now, after)] = [pair[0], pair[1]];
+        let slope = (before - after) / (now - was);
+        assert!(
+            slope <= 1.02 / cone_at_the_start,
+            "the ring swung {slope} per unit between {was} and {now}, past 1 per cone"
+        );
+    }
+}
