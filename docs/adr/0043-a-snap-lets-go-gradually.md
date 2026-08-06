@@ -97,6 +97,66 @@ motion emergent from the initial guess, the way planegcs and `SolveSpace` get it
 warm start we deliberately gave up for path-independence. That is its own decision, with its own
 measurements.
 
+### Amendment, 2026-08-06 — where the free sweep actually is, and four ways it does not get fixed
+
+The 2.7-per-0.005 slot sweep above is **closed** — now `2.8e-25`, and holding the radius is what
+closed it, guarded by `the_free_sweep_of_a_slot_is_no_longer_spent_arbitrarily`. The text above is
+left as written because it was true when written; this says what replaced it.
+
+**The live instability is the UNSNAPPED drag, and it is far worse than the 39.25 recorded above.**
+Walking a curved slot's end out from `[40, 0]` at 0.005 a step:
+
+| heading | worst gain |
+| --- | --- |
+| 0° | 2.46 |
+| 60° | **191** |
+| 90° | 1.70 |
+| 120° | 1.76 |
+| 180° | **1318** |
+
+**It is not a drift; it is isolated single frames.** The answer tracks smoothly — one coordinate
+creeping `-0.414` to `-0.420` across the whole walk — and then one cursor value lands at `-1.418`,
+or `+1.697`, or `-2.532`, and the next is back on the line. Frequency climbs with travel: sparse at
+6.215, roughly every other step by 6.25. The coordinate that jumps is the far cap sliding along its
+own arc. Guarded by `the_unsnapped_free_sweep_is_still_spent_arbitrarily`, which asserts the defect
+so that fixing it fails the test.
+
+Instrumenting all three solve passes says where it comes from. The preference pass stalls at a
+stationary point after **46, 48, 50 or 54 iterations depending on the cursor**, at residual ~4.62 in
+every case — a compromise, as designed. The exactness pass then crawls **48 iterations** from that
+seed to reach `1.2e-9`, and where it ends up along the free direction is a property of the path, not
+of the cursor. Both the clean answer and the outlier satisfy every authored constraint to `1.2e-9`.
+Nothing downstream can recover the choice, because there is nothing left to choose on.
+
+**Four approaches were measured and rejected. None of them is a tuning problem.**
+
+- **A weak least-motion term for non-reshaping drags.** No effect at any weight, because the drag is
+  already classed `reshaping = true` and the stay rows are already at full weight. The premise —
+  that the preference is blind to this motion — is simply false.
+- **Least-motion rows on the exactness passes, anchored at the pre-drag drawing.** Every step
+  rejected: the penalty rows land in the report the acceptance test reads, so a satisfied drawing
+  reports a residual of the penalty's size and the drag is refused.
+- **The same, scoped to the middle pass only.** This WORKS on the number — 1318 → 2.45 and 191 →
+  1.52, holding from `λ = 1e-6` to `1e-2`, with the smooth headings unchanged to three figures. It
+  breaks **11 tests**, and they are not tests pinning an arbitrary answer: a group that must hold
+  still moves 15, a slot's half-width goes 1 → 6.06, a point leaves the line it is constrained to,
+  and a point the author FIXED moves from `[20, 0]` to `[22.4, -3.7]`.
+- **Seeding with the penalty and following it with a clean exact pass.** Still 11. Re-anchoring the
+  penalty at the seed rather than the pre-drag drawing: still 11–12.
+
+**Why the magnitude of `λ` barely matters, which is the finding that rules the whole family out.**
+Fourteen extra rows change `residual_count`, and the dog-leg chooses between the `JᵀJ` and the `JJᵀ`
+branch on whether the system is over- or under-determined. Adding rows can flip that, switching the
+entire solve strategy — so a penalty of `1e-6` breaks a `Fix` by 2.4 units. **A weighted penalty
+row competes with the constraints and can lose to them.** That is structural, and no weight repairs
+it.
+
+**What is left is a null-space projection**, which does not touch the residual system's shape at
+all: solve as now, then project the least-motion direction onto the Jacobian's null space and move
+along it. That is work in
+[`nonlinear_least_squares`](../../crates/substrate/src/nonlinear_least_squares.rs) rather than in
+the sketch, and it is its own decision.
+
 **A generous fixed tolerance is still wanted, and is still not this.** Real systems anchor snap
 tolerance in screen pixels — five by default in OCAD, an off-screen buffer in cloud CAD — because
 model space is continuous and scale-free, so a tolerance measured in it has no natural size. Ours

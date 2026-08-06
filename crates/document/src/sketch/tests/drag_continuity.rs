@@ -856,3 +856,76 @@ fn the_snap_ring_is_inked_from_the_room_left_in_the_cone() {
         );
     }
 }
+
+/// The free sweep is STILL spent arbitrarily when nothing snaps, and this measures how badly.
+///
+/// [ADR 0043](../../../../../docs/adr/0043-a-snap-lets-go-gradually.md) named the free sweep as the
+/// bigger of the two instabilities and closed it only where a snap holds the radius —
+/// `the_free_sweep_of_a_slot_is_no_longer_spent_arbitrarily`. Outside a cone nothing holds the set
+/// together, and walking a slot's end out from its own corner at 0.005 a step:
+///
+/// | heading | worst gain |
+/// | --- | --- |
+/// | 0° | 2.46 |
+/// | 60° | **191** |
+/// | 90° | 1.70 |
+/// | 120° | 1.76 |
+/// | 180° | **1318** |
+///
+/// It is not a drift. The answer tracks smoothly — one coordinate creeping `-0.414` to `-0.420`
+/// over the whole walk — and then a single cursor value lands at `-1.418`, or `+1.697`, or
+/// `-2.532`, and the next value is back on the line. The coordinate that jumps is the far cap
+/// sliding along its own arc. Both answers satisfy every authored constraint to `1.2e-9`; the tie
+/// is broken by which stationary point the trust region walked into, not by anything the drawing
+/// says.
+///
+/// **This asserts the defect, so the day it is fixed this test fails and gets renamed.** See
+/// [ADR 0043](../../../../../docs/adr/0043-a-snap-lets-go-gradually.md) for the four approaches
+/// that were measured and rejected, so they are not tried a second time.
+#[test]
+fn the_unsnapped_free_sweep_is_still_spent_arbitrarily() {
+    let slot = curved_slot();
+    let end = spine_end(&slot, [40.0, 0.0]);
+    let gain_at = |heading: f64| {
+        let ray: f64 = heading.to_radians();
+        let mut last: Option<Vec<f64>> = None;
+        let mut worst = 0.0_f64;
+        for step in 0..=200 {
+            let out = 6.0 + f64::from(step) * 0.005;
+            let cursor = [40.0 + out * ray.cos(), out * ray.sin()];
+            let mut sketch = slot.clone();
+            let Ok(_) = sketch.move_point_reporting_its_snap(
+                end,
+                SketchPoint::from_continuous(cursor[0], cursor[1]),
+                ctx(16),
+                SnapReach::UNBOUNDED,
+            ) else {
+                continue;
+            };
+            let now: Vec<f64> = sketch
+                .points()
+                .iter()
+                .flat_map(|point| point.at.in_plane())
+                .collect();
+            if let Some(was) = last.as_ref() {
+                worst = worst.max(spread(was, &now) / 0.005);
+            }
+            last = Some(now);
+        }
+        worst
+    };
+    // Pulled straight back toward the hub, and out at sixty degrees, the drawing swings by
+    // hundreds of times the cursor step.
+    assert!(
+        gain_at(180.0) > 500.0 && gain_at(60.0) > 100.0,
+        "the free sweep steadied on its own: 180 deg {}, 60 deg {}",
+        gain_at(180.0),
+        gain_at(60.0)
+    );
+    // While the same walk in three other directions stays under three, which is what says the
+    // spikes are a defect of the solve rather than the shape of the gesture.
+    for heading in [0.0, 90.0, 120.0] {
+        let gain = gain_at(heading);
+        assert!(gain < 3.0, "{heading} deg is no longer smooth: {gain}");
+    }
+}
