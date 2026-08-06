@@ -68,6 +68,15 @@ ADR 0035 decision 3 promised — the one place a future entity kind answers "doe
 — and the transforms it was written for are what should be asking it. That it was being asked by the
 drag hit-test was the bug.
 
+Checked afterwards, and the promise was never kept: a transform reaches its subjects by enumerating
+the positional accessors (`sketch_points`, `sketch_segments`, `sketch_arcs`, `sketch_circles`,
+`sketch_higher_curves`), so a constraint is excluded by never being reached rather than by being
+screened out. The behaviour is right and always was. The mechanism is not the one decision 3
+described, and it does not scale: a new entity kind would be silently absent from every transform
+while the predicate that exists to decide the question told no one. Recorded here rather than fixed,
+because rerouting the transform subject lists is a change to working code with no bug behind it
+yet.
+
 **Not covered by a test.** The hit-test lives in the shell, above the seam anything in the workspace
 can construct: it needs a live camera, a laid-out badge set from the last overlay refresh, and a
 window scale factor. What is checkable — that a badge is not positional, and that everything else is

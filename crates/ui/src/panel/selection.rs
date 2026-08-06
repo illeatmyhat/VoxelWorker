@@ -104,8 +104,15 @@ impl SelectionTarget {
     /// lives. Moving one would have to mean moving the badge, which changes nothing about what
     /// is asserted — so a transform simply skips it, the same way it skips nothing else.
     ///
-    /// Every transform over a sketch selection filters on this rather than matching the variants
-    /// itself, so a future entity kind decides the question once, here.
+    /// **Nothing in production asks this today, and that is the gap it names.** A transform reaches
+    /// its subjects by enumerating the positional accessors — `sketch_points`, `sketch_segments`,
+    /// `sketch_arcs`, `sketch_circles`, `sketch_higher_curves` — so a constraint is excluded by
+    /// never being reached rather than by being screened out. The behaviour is right; the mechanism
+    /// is not the one that scales. A new entity kind would be silently absent from every transform,
+    /// and this predicate, which is where the question ought to be decided once, would tell no one.
+    ///
+    /// It was asked in exactly one place, by the drag hit-test, and that was a misuse — see
+    /// [ADR 0046](../../../../../docs/adr/0046-a-badge-takes-a-click-never-a-drag.md).
     pub fn is_positional(self) -> bool {
         match self {
             SelectionTarget::Node(_)
