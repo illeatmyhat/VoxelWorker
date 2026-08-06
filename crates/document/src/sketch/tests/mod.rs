@@ -27,6 +27,7 @@ mod beziers;
 mod circles;
 mod coarse_solid;
 mod constraints;
+mod drag_continuity;
 mod drag_zones;
 mod drawing;
 mod edges;

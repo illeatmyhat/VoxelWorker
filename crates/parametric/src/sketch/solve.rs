@@ -2537,6 +2537,27 @@ struct Snap {
     /// How far around the point the quantity is measured from the hand is asking to go, in
     /// radians.
     turn: f64,
+    /// How much of the correction the falloff let through, from one on the quantity to zero at
+    /// the rim of the cone. Everything the snap does is scaled by it, so that a snap which is
+    /// about to be let go is already doing nothing by the time it is.
+    pull: f64,
+}
+
+/// The best quantity found so far while looking for one to hold, and how hard it pulls.
+#[derive(Debug, Clone, Copy)]
+struct Nearest {
+    /// The point the quantity is measured from.
+    about: [f64; 2],
+    /// What to multiply the hand's arm by to land it on the faded quantity.
+    scale: f64,
+    /// The quantity itself, which is what the overlay draws whatever the pull.
+    quantity: f64,
+    /// How far off it the hand is, which is how candidates are ranked.
+    across: f64,
+    /// The falloff at that distance.
+    pull: f64,
+    /// How far the hand actually is from `about`, which the faded turn is measured against.
+    reach: f64,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -3582,12 +3603,48 @@ impl Problem {
         )
     }
 
-    /// How far off a quantity may be, as a share of how far the hand travelled, and still be
-    /// treated as one the author is holding rather than one they are setting.
+    /// The rim of the falloff: how far off a quantity the hand may be, as a share of how far it
+    /// travelled, before the quantity stops pulling on it at all.
     ///
     /// Read as an angle it is a cone about the direction that keeps the quantity: a hand moving
-    /// within about fifteen degrees of it is understood to be moving ALONG it.
+    /// within about fifteen degrees of it is understood to be moving ALONG it. Nothing switches
+    /// AT the rim — see [`Problem::snapped`] for why the correction has to arrive there already
+    /// faded to nothing rather than be dropped when it is crossed.
     const SNAP_CONE: f64 = 0.25;
+
+    /// The share of the cone over which the quantity holds EXACTLY, before it starts letting go.
+    ///
+    /// A falloff without a plateau is not a snap. Fading from the moment the hand is off the
+    /// quantity means a hand a fifteenth of a radius off it lands a fifteenth off it too, only
+    /// slightly pulled in — which is the behaviour the snap exists to replace. The plateau is
+    /// where the author is understood to be ON the quantity; the band outside it is where the
+    /// snap gives the quantity up, and gives it up smoothly.
+    const SNAP_HOLD: f64 = 0.6;
+
+    /// How hard a quantity pulls on a hand standing `across` from it, measured in the `cone` the
+    /// gesture opened: one on the plateau, nothing at the rim, a smoothstep between.
+    ///
+    /// A snap that is simply dropped when the hand leaves its cone makes every drag a spring, and
+    /// the author felt it: "small changes in movement of the mouse result in massive swings of
+    /// movement back and forth". The snapped and unsnapped answers differ by the WHOLE correction
+    /// exactly where the hand crosses between them, so on a six-unit gesture a hundredth of a unit
+    /// of mouse swung the drawing 3.79 and swung it back on the next frame, forever — measured at
+    /// 189x gain against about 1.7 for every other drag there is. Damping the solve cannot reach
+    /// it: the jump is in the question being asked, not in how it is answered, and the numerics
+    /// are already a trust region.
+    ///
+    /// The smoothstep is zero in VALUE and in SLOPE at both ends of the band, so there is nothing
+    /// left to cross at the rim and no kink where the holding stops. The plateau is what keeps it
+    /// a snap rather than a weak pull toward one — fading from the moment the hand is off the
+    /// quantity leaves a hand a fifteenth of a radius off it landing a fifteenth off it too.
+    fn pull_toward(across: f64, cone: f64) -> f64 {
+        let held_within = Self::SNAP_HOLD * cone;
+        if across <= held_within {
+            return 1.0;
+        }
+        let past = (across - held_within) / (cone - held_within);
+        1.0 - past * past * past.mul_add(-2.0, 3.0)
+    }
     /// How far a walked drag turns in one step, and the most steps it will ever walk.
     const TURN_PER_FRAME: f64 = std::f64::consts::PI / 180.0;
     const MOST_FRAMES: u32 = 16;
@@ -3687,7 +3744,7 @@ impl Problem {
             .chain(self.arc_centers.iter().filter_map(|arc| {
                 (ends_here(arc.from) || ends_here(arc.to)).then_some(arc.center)
             }));
-        let mut snap: Option<([f64; 2], f64, f64, f64)> = None;
+        let mut snap: Option<Nearest> = None;
         for pivot in circles {
             let Some(about) = stood_at(pivot) else {
                 continue;
@@ -3697,15 +3754,44 @@ impl Problem {
             if !quantity.is_finite() || !reach.is_finite() || quantity <= 0.0 || reach <= 0.0 {
                 continue;
             }
+            let cone = Self::SNAP_CONE * travel;
             let across = (reach - quantity).abs();
-            if across > Self::SNAP_CONE * travel {
+            if across >= cone {
                 continue;
             }
-            if snap.is_none_or(|(_, _, _, nearest)| across < nearest) {
-                snap = Some((about, quantity / reach, quantity, across));
+            // The correction FADES to nothing at the rim rather than being let go at full size.
+            //
+            // A hard cone made every drag a spring, and the author felt it: "small changes in
+            // movement of the mouse result in massive swings of movement back and forth". The
+            // snapped and unsnapped answers differ by the WHOLE correction exactly where the hand
+            // crosses between them, so on a six-unit gesture a hundredth of a unit of mouse swung
+            // the drawing 3.79 and swung it back on the next frame, forever. Measured at 189x gain
+            // against about 1.7 for every other drag there is. Worse, the correction is a share of
+            // travel, so the bang grew with the gesture: travel 3, 6 and 12 let go of 1.90, 3.76
+            // and 7.46. Damping the solve cannot reach this — the jump is in the question being
+            // asked, not in how it is answered, and the numerics are already a trust region.
+            //
+            let pull = Self::pull_toward(across, cone);
+            let target = (quantity - reach).mul_add(pull, reach);
+            if snap.is_none_or(|nearest| across < nearest.across) {
+                snap = Some(Nearest {
+                    about,
+                    scale: target / reach,
+                    quantity,
+                    across,
+                    pull,
+                    reach,
+                });
             }
         }
-        let (about, scale, quantity, _) = snap?;
+        let Nearest {
+            about,
+            scale,
+            quantity,
+            pull,
+            reach: reach_of_lead,
+            ..
+        } = snap?;
         let arm = |at: [f64; 2]| [at[0] - about[0], at[1] - about[1]];
         let (from, to) = (arm(stood), arm(now));
         // The snap is a TURN of the whole rigid set, not a correction to one point of it. Moving
@@ -3717,14 +3803,24 @@ impl Problem {
         //
         // Written as a similarity about the pivot: the same complex multiply that takes `stood` to
         // the snapped lead takes every carried point with it, so the set keeps its shape exactly.
+        // ONE map, faded once, applied to the lead and to everything it carries alike. The turn
+        // fades with the radius: fading only the radius left the set turning through the hand's
+        // full angular travel however weakly the quantity pulled, so the drawing was neither where
+        // a translation would put it nor where a snap would, and the solve spent a real freedom
+        // reconciling the two — the same spring, one layer down. Blending the coefficients of two
+        // complex affine maps yields a third, so the faded map is a translation at the rim, the
+        // exact similarity of ADR 0042 on the quantity, and a similarity — never a distortion — at
+        // every pull between.
         let lead_now = [about[0] + to[0] * scale, about[1] + to[1] * scale];
-        let (from_arm, onto_arm) = (arm(stood), arm(lead_now));
+        let from_arm = arm(stood);
         let denominator = from_arm[0].mul_add(from_arm[0], from_arm[1] * from_arm[1]);
         let similarity = if denominator > 0.0 {
-            [
-                onto_arm[0].mul_add(from_arm[0], onto_arm[1] * from_arm[1]) / denominator,
-                onto_arm[1].mul_add(from_arm[0], -(onto_arm[0] * from_arm[1])) / denominator,
-            ]
+            let held = quantity / reach_of_lead;
+            let turned = [
+                to[0].mul_add(from_arm[0], to[1] * from_arm[1]) / denominator * held,
+                to[1].mul_add(from_arm[0], -(to[0] * from_arm[1])) / denominator * held,
+            ];
+            [(turned[0] - 1.0).mul_add(pull, 1.0), turned[1] * pull]
         } else {
             [1.0, 0.0]
         };
@@ -3736,10 +3832,10 @@ impl Problem {
                     let Some(rode) = stood_at(hand.point) else {
                         continue;
                     };
-                    let arm = arm(rode);
+                    let rides = [rode[0] - stood[0], rode[1] - stood[1]];
                     hand.to = [
-                        about[0] + similarity[0].mul_add(arm[0], -(similarity[1] * arm[1])),
-                        about[1] + similarity[1].mul_add(arm[0], similarity[0] * arm[1]),
+                        lead_now[0] + similarity[0].mul_add(rides[0], -(similarity[1] * rides[1])),
+                        lead_now[1] + similarity[1].mul_add(rides[0], similarity[0] * rides[1]),
                     ];
                 }
                 HandRole::Pin => {}
@@ -3754,6 +3850,7 @@ impl Problem {
             turn: (from[0] * to[1] - from[1] * to[0])
                 .atan2(from[0] * to[0] + from[1] * to[1])
                 .abs(),
+            pull,
         })
     }
 
@@ -3940,8 +4037,17 @@ impl Problem {
         let frames = self
             .snapped(hands, &origin, positions)
             .map_or(1, |opening| {
+                // Stepped by how much of a rotation the snap is actually IMPOSING, not by how far
+                // the hand went. The walk earns its cost because a snapped drag forces the set
+                // around a pivot and a linearization is worst at exactly that; where the falloff
+                // has let go, nothing is being forced and there is nothing to walk. Scaling by the
+                // pull is what stops the step count dropping sixteen to one the instant the hand
+                // leaves the cone, which was the same spring wearing a second hat: one frame
+                // against sixteen is not a rounding difference, it collapsed a slot's rails from
+                // 36/40/44 to 33.5/38.3/43.2 over less than eight degrees.
+                let forced = opening.pull * opening.turn;
                 (1..=Self::MOST_FRAMES)
-                    .find(|frames| opening.turn <= f64::from(*frames) * Self::TURN_PER_FRAME)
+                    .find(|frames| forced <= f64::from(*frames) * Self::TURN_PER_FRAME)
                     .unwrap_or(Self::MOST_FRAMES)
             });
         (origin, frames)
