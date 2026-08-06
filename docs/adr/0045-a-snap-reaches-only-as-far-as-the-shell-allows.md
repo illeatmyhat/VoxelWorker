@@ -102,3 +102,34 @@ to bound. `move_point` — the same gesture for a caller that does not want to d
 knowledge that 0.75 is too wide for a segment. And ninety points is a judgement, not a measurement:
 what it wants is the author dragging something at a few zoom levels and saying whether it ever
 bites when it should not.
+
+## Amendment, 2026-08-06 — what ninety points decides, and that zoom cancels
+
+This record closed with "ninety points is a judgement, not a measurement: what it wants is the
+author dragging something at a few zoom levels." Half of that turns out to be answerable without
+anyone's hands, and answering it changes what the remaining question is.
+
+**Zoom cancels out.** The cone is `share × travel`, travel is read from the cursor, and the ceiling
+is `90 × units-per-point`. Divide both by units-per-point and the comparison is
+`share × travel_in_points` against `90` — no drawing scale left in it. So the ceiling engages at a
+fixed gesture LENGTH:
+
+| quantity | share | the drag that first reaches the ceiling |
+| --- | --- | --- |
+| a radius | 0.75 | **120 points** |
+| a span | 0.25 | **360 points** |
+
+Measured rather than only derived: `a_ceiling_in_screen_points_means_the_same_at_every_zoom` scales
+a slot, its gesture and its ceiling together by four, at five ceilings spanning the whole slope from
+"does nothing" to "gives the radius up entirely", and the answers agree to about a part in a
+million — the solve's own convergence, not anything about scale.
+
+The one place it is approximate is the shell's conversion, not the kernel's arithmetic. Under
+perspective on a tilted plane, drawing-units-per-pixel varies across the screen and the shell
+measures it once, at the cursor. That is the same one-sample assumption the drag itself makes, and
+deliberately so — the two must not drift apart — but it does mean a long gesture across a steeply
+foreshortened plane is bounded by the reach as measured where it started, not where it ended.
+
+**So the open question is narrower than it was.** Not "is ninety points right at every zoom" — it is
+the same everywhere. It is: *should a drag be allowed to travel 120 points before the radius snap
+starts being reined in?* That is one number about one gesture, and it still wants the author's hands.

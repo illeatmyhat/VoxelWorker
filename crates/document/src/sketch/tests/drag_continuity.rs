@@ -701,3 +701,60 @@ fn holds_at(base: &Sketch, grabbed: EntityId, travel: f64, degrees: f64) -> bool
             (at[0].hypot(at[1]) - 40.0).abs() < 1.0e-4
         })
 }
+
+/// Ninety screen points means the SAME thing at every zoom.
+///
+/// [ADR 0045](../../../../../docs/adr/0045-a-snap-reaches-only-as-far-as-the-shell-allows.md) states
+/// the ceiling in screen points and has the shell convert. The claim that buys is scale
+/// equivariance: scale the drawing by k, scale the gesture by k, scale the ceiling by k, and the
+/// answer should be the k-scaled answer — otherwise "ninety points" would mean a generous limit
+/// zoomed out and a biting one zoomed in, and the author would have to relearn it at every zoom.
+///
+/// Measured across a fourfold scale, at five ceilings spanning the whole slope from "does nothing"
+/// to "gives the radius up entirely". Agreement is to about a part in a million, which is the
+/// solve's own convergence rather than anything about scale.
+///
+/// The one place it is only approximate is the SHELL's conversion, not the kernel's arithmetic:
+/// under perspective on a tilted plane, drawing-units-per-pixel varies across the screen, and the
+/// shell measures it once at the cursor.
+#[test]
+fn a_ceiling_in_screen_points_means_the_same_at_every_zoom() {
+    for reach in [1.5, 2.0, 2.5, 3.0, 4.0] {
+        let answers: Vec<f64> = [1_i64, 2, 4]
+            .into_iter()
+            .map(|scale| {
+                let (slot, span) = (
+                    scaled_slot(scale),
+                    f64::from(i32::try_from(scale).unwrap_or(1)),
+                );
+                let end = spine_end(&slot, [40.0 * span, 0.0]);
+                radius_under_a_ceiling(&slot, end, [41.5 * span, 6.0 * span], reach * span) / span
+            })
+            .collect();
+        let widest = answers
+            .iter()
+            .flat_map(|first| answers.iter().map(move |second| (first - second).abs()))
+            .fold(0.0_f64, f64::max);
+        assert!(
+            widest < 1.0e-4,
+            "a ceiling of {reach} answered {answers:?} across a fourfold zoom"
+        );
+    }
+}
+
+/// The curved slot of [`curved_slot`], every dimension multiplied by `scale`.
+fn scaled_slot(scale: i64) -> Sketch {
+    SketchSolid::extrude(Sketch::empty(PlaneAxis::Z), 4)
+        .with_center_arc_slot(
+            SketchPoint::new(0, 0),
+            SketchPoint::new(40 * scale, 0),
+            SketchPoint::new(0, 40 * scale),
+            ::parametric::sketch::ArcTurn::CounterClockwise,
+            SketchPoint::new(44 * scale, 0),
+            ctx(16),
+        )
+        .expect("a curved slot")
+        .sketch
+        .as_ref()
+        .clone()
+}

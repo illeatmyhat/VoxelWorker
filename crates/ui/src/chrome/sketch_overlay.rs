@@ -20,6 +20,19 @@ pub const SKETCH_SEGMENT_GRAB_PAD: f32 = 7.0;
 /// Deliberately generous — the author asked for a generous limit, and the snap it bounds is one the
 /// drawing is entitled to keep. Roughly three fifths of it holds the quantity exactly and the rest
 /// is the falloff letting go, so this is the whole band, not the yank.
+///
+/// **What the number decides is a gesture LENGTH, and the same one at every zoom.** The cone is a
+/// share of travel and travel is read from the cursor, so the ceiling engages once
+/// `share × travel` passes it — with travel in these same screen points. At the shares the kernel
+/// holds, that is a drag of **120 points before the ceiling touches a radius** and **360 before it
+/// touches a span**; below that the gesture's own cone is the narrower of the two and this does
+/// nothing at all, which is the intent.
+///
+/// Zoom cancels out of that comparison entirely, and it is measured:
+/// `a_ceiling_in_screen_points_means_the_same_at_every_zoom` scales a drawing, its gesture and its
+/// ceiling together fourfold and the answers agree to a part in a million. The one approximation is
+/// on this side of the seam — under perspective on a tilted plane, units-per-pixel varies across
+/// the screen and the shell measures it once, at the cursor.
 pub const SKETCH_SNAP_REACH: f32 = 90.0;
 /// The half-extent (egui points) of the add-point insert-preview diamond.
 pub const SKETCH_INSERT_MARKER_HALF: f32 = 4.0;
