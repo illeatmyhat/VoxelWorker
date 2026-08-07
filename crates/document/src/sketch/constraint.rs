@@ -110,6 +110,29 @@ impl SketchCurve {
 /// load-bearing rather than stylistic: it makes adding a variant a compiler error at every place
 /// that has to answer for it instead of a silent default. In particular, a new two-residual kind
 /// assigned one row shifts every later constraint's row and corrupts the whole system.
+/// A quantity the AUTHOR states, which the drawing then has to honour.
+///
+/// One family, three members, because a dimension is a single idea the author has — "this is how
+/// big it is" — and the geometry it is stated about is what varies. What does not vary is that the
+/// value is authored: it keeps its exact measurement, it survives a density re-target, and it
+/// outranks anything the solve merely prefers.
+///
+/// **Each member carries its own STATICALLY TYPED value** — a span and a radius take a
+/// [`SketchLength`], an angle takes a [`parametric::units::AngleMeasurement`], and mixing them
+/// does not compile.
+/// That is ADR 0035 decision 12: the dynamic `Quantity { value, dimension }` belongs to the
+/// expression evaluator, and document fields sit statically typed above it.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum Dimension {
+    /// Two points stand a given distance apart. The length is authored, so it keeps its
+    /// [`SketchLength`] and survives a density re-target like every other authored quantity.
+    Span {
+        from: EntityId,
+        to: EntityId,
+        length: SketchLength,
+    },
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum ConstraintKind {
     /// This point does not move, and `at` is where it does not move to.
@@ -122,13 +145,13 @@ pub enum ConstraintKind {
     Horizontal { segment: EntityId },
     /// The segment lies along in-plane axis 1: its ends share axis 0.
     Vertical { segment: EntityId },
-    /// Two points stand a given distance apart. A dimension: the length is authored, so it keeps
-    /// its [`SketchLength`] and survives a density re-target like every other authored quantity.
-    Distance {
-        from: EntityId,
-        to: EntityId,
-        length: SketchLength,
-    },
+    /// An authored quantity the drawing must honour — see [`Dimension`].
+    ///
+    /// Nested rather than spread across the kinds beside it, so "is this a dimension?" has one
+    /// answer. A dimension is the one family that draws as a NUMBER instead of a badge, and both
+    /// the gizmos and the panel that lay those numbers out need to ask that question without
+    /// naming every member.
+    Dimension(Dimension),
     /// Two points occupy one place.
     ///
     /// It is a CONSTRAINT and not a merge, although a merge is the other design available.
@@ -294,7 +317,7 @@ impl ConstraintKind {
             Self::Curvature { .. }
             | Self::Fix { .. }
             | Self::Quantize { .. }
-            | Self::Distance { .. }
+            | Self::Dimension(_)
             | Self::Coincident { .. }
             | Self::Horizontal { .. }
             | Self::Vertical { .. }
@@ -316,7 +339,7 @@ impl ConstraintKind {
             | Self::Midpoint { point, .. }
             | Self::PointOnCurve { point, .. } => vec![point],
             Self::Curvature { joint, .. } => vec![joint],
-            Self::Distance { from, to, .. } => vec![from, to],
+            Self::Dimension(Dimension::Span { from, to, .. }) => vec![from, to],
             Self::Coincident { first, second } => vec![first, second],
             Self::Horizontal { .. }
             | Self::Vertical { .. }
@@ -364,7 +387,7 @@ impl ConstraintKind {
         match *self {
             Self::Fix { point, .. } | Self::Quantize { point, .. } => [point, point],
             Self::Horizontal { segment } | Self::Vertical { segment } => [segment, segment],
-            Self::Distance { from, to, .. } => [from.min(to), from.max(to)],
+            Self::Dimension(Dimension::Span { from, to, .. }) => [from.min(to), from.max(to)],
             Self::Coincident { first, second }
             | Self::Parallel { first, second }
             | Self::Perpendicular { first, second }
@@ -439,7 +462,7 @@ impl ConstraintKind {
             },
             Self::Fix { .. }
             | Self::Quantize { .. }
-            | Self::Distance { .. }
+            | Self::Dimension(_)
             | Self::Coincident { .. }
             | Self::Concentric { .. } => Vec::new(),
         }
@@ -455,7 +478,7 @@ impl ConstraintKind {
         match *self {
             Self::Fix { point, .. } | Self::Quantize { point, .. } => vec![point],
             Self::Horizontal { segment } | Self::Vertical { segment } => vec![segment],
-            Self::Distance { from, to, .. } => vec![from, to],
+            Self::Dimension(Dimension::Span { from, to, .. }) => vec![from, to],
             Self::Coincident { first, second }
             | Self::Parallel { first, second }
             | Self::Perpendicular { first, second }
@@ -1018,15 +1041,13 @@ fn relation_for(
         ConstraintKind::Vertical { segment: id } => {
             segment(id).map(|segment| Relation::Vertical { segment })
         }
-        ConstraintKind::Distance { from, to, length } => {
-            point(from)
-                .zip(point(to))
-                .map(|(from, to)| Relation::Distance {
-                    from,
-                    to,
-                    length: length.value(),
-                })
-        }
+        ConstraintKind::Dimension(Dimension::Span { from, to, length }) => point(from)
+            .zip(point(to))
+            .map(|(from, to)| Relation::Distance {
+                from,
+                to,
+                length: length.value(),
+            }),
         ConstraintKind::Coincident { first, second } => point(first)
             .zip(point(second))
             .map(|(first, second)| Relation::Coincident { first, second }),

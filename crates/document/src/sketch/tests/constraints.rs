@@ -265,11 +265,11 @@ fn a_distance_dimension_is_met() {
     let head = sketch.add_free_point(SketchPoint::new(10, 0));
     sketch
         .add_constraint(
-            ConstraintKind::Distance {
+            ConstraintKind::Dimension(Dimension::Span {
                 from: tail,
                 to: head,
                 length: SketchLength::new(6),
-            },
+            }),
             ctx(16),
         )
         .expect("two free points can always be six apart");
@@ -307,11 +307,11 @@ fn a_contradictory_constraint_is_refused_and_leaves_the_drawing_alone() {
     // The ends are pinned about 10.77 apart. Five is not a distance they can be.
     let refusal = sketch
         .add_constraint(
-            ConstraintKind::Distance {
+            ConstraintKind::Dimension(Dimension::Span {
                 from: tail,
                 to: head,
                 length: SketchLength::new(5),
-            },
+            }),
             ctx(16),
         )
         .expect_err("five is not a distance those pins allow");
@@ -454,11 +454,11 @@ fn a_constraint_naming_absent_geometry_is_refused() {
     // A negative length is no drawing's distance, so it never reaches the solver.
     assert_eq!(
         sketch.add_constraint(
-            ConstraintKind::Distance {
+            ConstraintKind::Dimension(Dimension::Span {
                 from: tail,
                 to: head,
                 length: SketchLength::new(-3),
-            },
+            }),
             ctx(16)
         ),
         Err(ConstraintRefusal::Impossible)
@@ -641,21 +641,23 @@ fn refixing_a_fixed_point_somewhere_else_is_still_a_duplicate() {
 #[test]
 fn a_distance_is_the_same_assertion_in_either_direction() {
     let (mut sketch, tail, head, _) = slanted();
-    let apart = |value: f64| ConstraintKind::Distance {
-        from: tail,
-        to: head,
-        length: SketchLength::from_continuous(value),
+    let apart = |value: f64| {
+        ConstraintKind::Dimension(Dimension::Span {
+            from: tail,
+            to: head,
+            length: SketchLength::from_continuous(value),
+        })
     };
     let first = sketch
         .add_constraint(apart(9.0), ctx(16))
         .expect("the first");
     assert_eq!(
         sketch.add_constraint(
-            ConstraintKind::Distance {
+            ConstraintKind::Dimension(Dimension::Span {
                 from: head,
                 to: tail,
                 length: SketchLength::from_continuous(4.0),
-            },
+            }),
             ctx(16)
         ),
         Err(ConstraintRefusal::AlreadyAsserted { existing: first })

@@ -295,7 +295,7 @@ pub fn constraint_icon(kind: ConstraintKind) -> Icon {
         ConstraintKind::Vertical { .. } => Icon::ConstraintVertical,
         ConstraintKind::Fix { .. } => Icon::ConstraintFix,
         ConstraintKind::Quantize { .. } => Icon::ConstraintQuantize,
-        ConstraintKind::Distance { .. } => Icon::SketchDimension,
+        ConstraintKind::Dimension(_) => Icon::SketchDimension,
         // Point-on-curve wears the coincident mark deliberately: it is the same claim the author
         // makes when they put a point ON something, and Fusion spells both with one glyph. The
         // kinds stay separate underneath because they pin a different number of coordinates.

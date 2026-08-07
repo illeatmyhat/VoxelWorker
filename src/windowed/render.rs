@@ -4188,9 +4188,10 @@ impl WindowedState {
                     .into_iter()
                     .filter_map(beside_segment)
                     .collect(),
-                // A Distance dimension draws as a dimension gizmo, not a badge — the number IS
-                // the mark, and a glyph beside it would say the same thing twice.
-                document::sketch::ConstraintKind::Distance { .. } => Vec::new(),
+                // A dimension draws as a dimension gizmo, not a badge — the number IS the mark,
+                // and a glyph beside it would say the same thing twice. True of every member of
+                // the family, so this asks the family and not its members.
+                document::sketch::ConstraintKind::Dimension(_) => Vec::new(),
                 // Tangent has one derived, finite-domain-validated contact, so it gets one badge
                 // at that locus rather than one duplicate mark per member curve.
                 document::sketch::ConstraintKind::Tangent {

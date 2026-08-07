@@ -63,8 +63,8 @@ mod tests;
 mod transform;
 
 pub use constraint::{
-    Constraint, ConstraintKind, ConstraintRefusal, InternalContainment, LineSide, SketchCurve,
-    SymmetryBranch, TangentBranch,
+    Constraint, ConstraintKind, ConstraintRefusal, Dimension, InternalContainment, LineSide,
+    SketchCurve, SymmetryBranch, TangentBranch,
 };
 pub use faces::{Face, FaceKey};
 pub use modify::{
@@ -4393,7 +4393,7 @@ impl Sketch {
                     return Err(ConstraintRefusal::Impossible);
                 }
             }
-            ConstraintKind::Distance { from, to, length } => {
+            ConstraintKind::Dimension(Dimension::Span { from, to, length }) => {
                 if !known_point(from) || !known_point(to) {
                     return Err(ConstraintRefusal::UnknownEntity);
                 }
@@ -6065,7 +6065,7 @@ impl Sketch {
                 ConstraintKind::Fix { at, .. } => {
                     *at = at.retargeted(old_density, new_density);
                 }
-                ConstraintKind::Distance { length, .. } => {
+                ConstraintKind::Dimension(Dimension::Span { length, .. }) => {
                     *length = length.retargeted(old_density, new_density);
                 }
                 ConstraintKind::Quantize { pitch, phase, .. } => {
