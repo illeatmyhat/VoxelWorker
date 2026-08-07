@@ -29,8 +29,17 @@
 //!
 //! **Picking the shortest is a GAUGE CHOICE**, in the sense a fluid solver means when it pins the
 //! constant mode of a pressure field: the free directions have to be settled by a rule, and the
-//! only question is whether the rule is stated or left to rounding error. Stating it is what makes
-//! the solve a continuous function of its input, and a drag a continuous function of the cursor.
+//! only question is whether the rule is stated or left to rounding error. The shortest is chosen
+//! because it is UNIQUE and does not depend on the pivot order, so no tie breaking the other way
+//! can move the answer.
+//!
+//! It is worth being exact about how much that buys, because the record first said it bought
+//! everything. Measured against the basic solution — the other natural gauge, and the one that does
+//! depend on pivot order — the two are within four percent on the same drag, and both collapse
+//! identically when the rank tolerance is set below the noise floor. **What settles the free
+//! direction usefully is DISCARDING the directions the Jacobian cannot see**, not the choice made
+//! among the ones it can; that is `JACOBIAN_RANK_TOLERANCE`, and it is worth a factor of a
+//! thousand where the gauge is worth a few percent.
 //!
 //! ## The rank report is the diagnosis
 //!
@@ -509,10 +518,16 @@ fn clipped(step: &[f64], length: f64, trust_radius: f64) -> Vec<f64> {
 /// hundreds of times the cursor step. Working on `J` itself never squares anything.
 ///
 /// **The minimum-norm choice is a GAUGE CHOICE and is made here on purpose.** An under-constrained
-/// drawing has a whole subspace of equally good steps; the shortest one is the answer that leaves
-/// every parameter no relation names nearest where the author put it, and — unlike whatever a
-/// damped factorisation happens to land on — it is a continuous function of the Jacobian, so
-/// neighbouring cursor positions give neighbouring drawings.
+/// drawing has a whole subspace of equally good steps — on a slot's third pass, 16 residual rows
+/// against 19 parameters at rank 12, the subspace is seven-dimensional — and the shortest step is
+/// the one that leaves every parameter no relation names nearest where the author put it. Unlike a
+/// basic solution it does not depend on the pivot order, so no tie breaking the other way can move
+/// the drawing.
+///
+/// That is a reason to keep it, not the reason the drag is smooth. Swapping it for the basic
+/// solution changes the worst gain from 1.52 to 1.45 and changes nothing else; what removed the
+/// swinging was truncating the noise directions out of the system, and both gauges are equally
+/// useless without it. See [`JACOBIAN_RANK_TOLERANCE`].
 fn gauss_newton_step(
     jacobian_matrix: &[f64],
     residuals: &[f64],
@@ -540,10 +555,32 @@ fn gauss_newton_step(
 /// between `3e-10` and `1e-8` from one cursor position to the next, then three at the machine
 /// epsilon. The wobbling one is the noise floor showing itself: three orders of magnitude of clear
 /// gap sit between it and the last real direction, and this tolerance sits in the middle of that
-/// gap. Sweeping it confirms the plateau — every value from `1e-10` to `1e-6` gives the same
-/// drawing, and tightening to `1e-13` puts the noise back in and swings the drawing thousands of
-/// times the cursor step.
-const JACOBIAN_RANK_TOLERANCE: f64 = 1.0e-8;
+/// gap.
+///
+/// **This one constant is the whole of the fix**, which is not what ADR 0047 first claimed and is
+/// worth stating where someone might change it. Sweeping it over a five-heading walk, worst gain as
+/// a multiple of the cursor step:
+///
+/// | tolerance | worst gain | what fails |
+/// | --------- | ---------: | ---------- |
+/// | `1e-3`    |          — | the drag goes DEAD — real directions truncated away |
+/// | `1e-4`    |       1.52 | (suite: one test fails by `1e-5`) |
+/// | `1e-6`    |       1.52 | nothing |
+/// | `1e-7`    |       1.52 | nothing — **here**, the middle of the band |
+/// | `1e-8`    |       1.52 | nothing |
+/// | `1e-10`   |       3.95 | noise starting to show |
+/// | `1e-12`   |       1556 | following the noise outright |
+///
+/// Failure is two-sided and the band is narrow, so the value belongs in the middle of it rather
+/// than at an end: the workspace suite is green from `1e-8` to `1e-6` and red at `1e-5`, and the
+/// walk degrades at `1e-10`. A power of ten of margin each way is all there is.
+///
+/// What does NOT matter, measured the same way: which member of the surviving solution set is
+/// picked. Taking the basic solution instead of the shortest gives 1.45 against 1.52 and fails
+/// identically at `1e-12`. Weighting the norm by column size — the textbook equilibration — is
+/// strictly worse the more of it is applied, because scaling the columns to equal size destroys the
+/// very ordering the rank-revealing pivot uses to sort the noise directions last.
+const JACOBIAN_RANK_TOLERANCE: f64 = 1.0e-7;
 
 /// The reduction in the sum of squares the LINEAR model predicts for `step`:
 /// `‖r‖² − ‖r + J·step‖²`.

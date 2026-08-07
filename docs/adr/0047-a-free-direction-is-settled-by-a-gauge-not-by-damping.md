@@ -192,3 +192,80 @@ tolerances that damage the answer. Recording the gap because the difference betw
 entire content of the measurement: a cap on iterations stops a search wherever it happens to be, and
 a relative-decrease test stops it where it stopped earning. They cost the same and they are not the
 same change.
+
+
+## Amendment, 2026-08-06 — the title is wrong: it was the truncation, not the gauge
+
+This record claimed the drag stopped swinging because the free direction was settled by a stated
+gauge instead of by damping. **That is not what the measurement says**, and the experiment that
+would have caught it was never run at the time. Run now, as a 2×2 over the same five-heading walk —
+worst gain as a multiple of the cursor step, at 60° and 180°:
+
+| | minimum-norm gauge | basic-solution gauge |
+| --- | ---: | ---: |
+| on `J`, tolerance `1e-8` | 1.52 / 2.46 | **1.45 / 2.45** |
+| on `J`, tolerance `1e-12` | 1556 / 3000 | **1139 / 3346** |
+
+The gauge column makes no difference. The tolerance row makes a factor of a thousand. Forming `JᵀJ`
+turns out not to be the deciding factor either: the same minimum-norm answer computed through the
+normal equations is smooth at a comparable effective truncation, and only breaks when the truncation
+is pushed below the noise floor — the same place `J` itself breaks.
+
+**The correct statement is that a free direction is settled by DISCARDING it.** The Jacobian is
+taken by central differences, and below about `1e-8` relative it contains nothing but cancellation
+error; the old solver had no rank concept at all, so it damped those directions instead of removing
+them, and a damped noise direction is still a noise direction. Rank-revealing truncation removes
+them. Which member of the surviving solution set is then chosen is a real decision — minimum norm is
+kept because it is unique and pivot-order independent, where a basic solution can flip when a tie
+breaks the other way — but it is not the decision that fixed anything.
+
+The complete orthogonal decomposition still earns its place, for a reason one level down from the
+one first given: **it is what makes the rank knowable**. Pivoting sorts the directions by size so
+"below the noise floor" is a question that can be asked at all. That is the load-bearing property,
+not the avoidance of `JᵀJ` and not the shortest-member gauge.
+
+### The metric question, answered and closed
+
+If the answer is the shortest step, shortest in which norm? The parameters are all lengths in the
+same voxel units — coordinates and radii, no angles — so the plain Euclidean norm is at least
+dimensionally honest, which retires half the objection. For the other half, the textbook answer is
+Van der Sluis column equilibration: weight each column by its own norm. Measured at the shipped
+tolerance, worst gain at 60° and total collateral travel of the points that were not grabbed:
+
+| weighting | worst gain | collateral travel |
+| --------- | ---------: | ----------------: |
+| **none** | **1.515** | **3.341** |
+| `‖J_j‖^¼` | 1.630 | 3.365 |
+| `‖J_j‖^½` | 1.765 | 3.969 |
+| `‖J_j‖` | 217.5 | 6.840 |
+
+Monotone, and unweighted wins on both measures — including on collateral travel, which is the
+direct measurement of "least motion" and the thing weighting was supposed to improve. **The reason
+is the same as the finding above**: equilibration scales every column to the same size, which is
+precisely the ordering the rank-revealing pivot needs in order to sort the noise directions last.
+Flatten it and the truncation stops finding them. A metric and a truncation cannot both be imposed
+through the same pivot; the truncation is worth more.
+
+So the weighted norm is rejected, and this time on its own numbers rather than on numbers taken
+while the damping was still in the way — which was the defect in the four penalty-row rejections and
+in the "weigh least motion" cure that this record already retracted.
+
+### One thing did change: the tolerance was at the edge of its band, and is now in the middle
+
+Failure is two-sided. Too loose and real directions are truncated away — at `1e-3` the drag stops
+responding entirely, and at `1e-5` a workspace test fails. Too tight and the noise comes back.
+Measured, the walk is flat from `1e-4` to `1e-8` and the workspace suite is green from `1e-6` to
+`1e-8`; the intersection is `1e-6` to `1e-8`, and `1e-8` sat at one end of it.
+
+`JACOBIAN_RANK_TOLERANCE` is now **`1e-7`**, the middle of the measured band, which agrees with the
+independent estimate from the decomposition's own diagonal (noise wandering up to `1e-8`, smallest
+real direction `1.9e-6`, geometric centre `1.4e-7`). Full workspace suite green. This is the only
+behavioural change from the whole investigation, and it buys margin rather than accuracy.
+
+### Extended Jacobian: not built, and argued against
+
+The other half of the original proposal is still unbuilt, now deliberately. Baillieul's construction
+buys repeatability under a warm start by making the free direction a function of the task, and the
+drag is cold-started from the pre-drag drawing every frame, so path-independence is already
+structural. It would cost algorithmic singularities — configurations where the augmented Jacobian is
+singular though the original is not — which is trading a solved problem for an unsolved one.
