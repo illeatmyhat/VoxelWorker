@@ -27,6 +27,32 @@ pub struct ArcDomain {
     pub sweep_radians: f64,
 }
 
+/// The place on a segment's DRAWN extent nearest `at` — the foot of the perpendicular, pulled
+/// back to whichever end it overshot.
+///
+/// This is the companion to [`within_drawn_extent`]: that one asks whether a point is already on
+/// the piece, this one says where the piece would have it stand. A tool that inserts a point ONTO
+/// a curve has to ask, because the place the author pointed at is a cursor reading and may have
+/// been snapped to a grid the curve does not run along — committing it verbatim puts a bend in a
+/// straight edge and calls it a split.
+///
+/// `None` for a collapsed span, which has no direction to project along.
+#[must_use]
+pub fn foot_on_span(from: [f64; 2], to: [f64; 2], at: [f64; 2]) -> Option<[f64; 2]> {
+    let span = [to[0] - from[0], to[1] - from[1]];
+    let length_squared = span[0].mul_add(span[0], span[1] * span[1]);
+    if length_squared <= COLLAPSE_TOLERANCE.powi(2) {
+        return None;
+    }
+    let delta = [at[0] - from[0], at[1] - from[1]];
+    let parameter =
+        (delta[0].mul_add(span[0], delta[1] * span[1]) / length_squared).clamp(0.0, 1.0);
+    Some([
+        parameter.mul_add(span[0], from[0]),
+        parameter.mul_add(span[1], from[1]),
+    ])
+}
+
 /// Whether `at` lies within a curve's DRAWN extent — the finite piece between its own ends —
 /// rather than merely somewhere on the support it was cut from.
 ///

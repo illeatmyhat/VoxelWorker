@@ -4703,14 +4703,43 @@ impl Sketch {
         });
     }
 
-    /// Split the segment with id `seg_id` by inserting a new point `at` on it. The first
+    /// Split the segment with id `seg_id` by inserting a new point on it at `at`. The first
     /// half keeps the segment's id; the new second half inherits its
     /// `origin`, so a bounding face's origin-set is unchanged. No-op if `seg_id` is unknown.
+    ///
+    /// ON it, which is why `at` is projected rather than taken at its word. The caller's point is
+    /// a cursor reading, and the snap policy that shaped it answers to the plane's grid, not to
+    /// this segment's direction — so on any edge that does not run along the grid the raw point
+    /// stands off the line, and inserting it verbatim replaces a straight edge with a dogleg. The
+    /// shell already draws the foot as its preview; this makes the commit agree with it.
+    ///
+    /// A projection landing on either end is a no-op: an end already exists, and the split would
+    /// hand the store a zero-length half with no line for a relation to be about.
     pub fn split_segment(&mut self, seg_id: EntityId, at: SketchPoint) {
+        const APART: f64 = 1.0e-6;
         let Some(index) = self.segments.iter().position(|seg| seg.id == seg_id) else {
             return;
         };
-        let new_point = self.add_point(at);
+        let (from, to) = (self.segments[index].from, self.segments[index].to);
+        let (Some(tail), Some(head)) = (self.point_in_plane(from), self.point_in_plane(to)) else {
+            return;
+        };
+        let Some(foot) = parametric::sketch::foot_on_span(tail, head, at.in_plane()) else {
+            return;
+        };
+        if (foot[0] - tail[0]).hypot(foot[1] - tail[1]) <= APART
+            || (foot[0] - head[0]).hypot(foot[1] - head[1]) <= APART
+        {
+            return;
+        }
+        // Standing already on the line, the authored point keeps whatever measurement it carries;
+        // only a point that had to MOVE is rewritten, and a rewrite has no measurement to keep.
+        let seated = if (foot[0] - at.in_plane()[0]).hypot(foot[1] - at.in_plane()[1]) <= APART {
+            at
+        } else {
+            SketchPoint::from_continuous(foot[0], foot[1])
+        };
+        let new_point = self.add_point(seated);
         let origin = self.segments[index].origin;
         let old_to = self.segments[index].to;
         self.segments[index].to = new_point;

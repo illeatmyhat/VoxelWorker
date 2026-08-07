@@ -73,6 +73,49 @@ fn split_inserts_a_vertex_on_the_named_segment() {
     );
 }
 
+/// A split point is SEATED on the edge it splits, wherever the cursor's snap left it.
+///
+/// The snap policy answers to the plane's grid, and a diagonal edge does not run along it, so the
+/// point the shell hands over is off the line more often than on it. Taken at its word it puts a
+/// bend in a straight edge; the two halves are no longer collinear and the "split" has silently
+/// redrawn the profile. The shell already previews the foot of the perpendicular — this is the
+/// commit agreeing with the preview.
+#[test]
+fn a_split_seats_an_off_line_point_on_the_edge_it_splits() {
+    let mut diagonal = Sketch::empty(PlaneAxis::Z);
+    let tail = diagonal.add_free_point(SketchPoint::new(0, 0));
+    let head = diagonal.add_free_point(SketchPoint::new(10, 10));
+    let edge = diagonal.connect(tail, head).expect("a diagonal edge");
+
+    // Whole-voxel snap on a 45-degree edge: (7,6) is a voxel off the line by 1/sqrt(2).
+    diagonal.split_segment(edge, SketchPoint::new(7, 6));
+    let seated = diagonal
+        .points()
+        .iter()
+        .find(|point| point.id != tail && point.id != head)
+        .expect("the split minted a point")
+        .at
+        .in_plane();
+    assert!(
+        (seated[0] - seated[1]).abs() < 1.0e-6,
+        "the point sits on the 45-degree line, at {seated:?}"
+    );
+    assert!(
+        (seated[0] - 6.5).abs() < 1.0e-6,
+        "and at the foot of the perpendicular from (7,6), not at either end: {seated:?}"
+    );
+
+    // A point whose foot lands on an end would leave a zero-length half, so it is refused
+    // outright rather than seated onto a point that already exists.
+    let mut collapsing = Sketch::empty(PlaneAxis::Z);
+    let start = collapsing.add_free_point(SketchPoint::new(0, 0));
+    let finish = collapsing.add_free_point(SketchPoint::new(10, 0));
+    let flat = collapsing.connect(start, finish).expect("a flat edge");
+    collapsing.split_segment(flat, SketchPoint::new(-4, 3));
+    assert_eq!(collapsing.points().len(), 2, "nothing was minted");
+    assert_eq!(collapsing.segments().len(), 1, "and nothing was split");
+}
+
 #[test]
 fn split_of_an_unknown_segment_is_a_noop() {
     let before = bracket();
@@ -230,12 +273,13 @@ fn resolve_tolerates_a_dangling_segment_without_panic() {
 
 #[test]
 fn anchor_offset_absorbs_a_bbox_min_shift_on_the_in_plane_axes_only() {
-    // Splitting an edge with a vertex BELOW the current bbox-minimum (in both in-plane axes)
-    // moves the minimum from [2, 2] to [0, 1]; the compensated offset must shift by exactly that
-    // delta on the plane's in-plane axes (X, Y for PlaneAxis::Z) and never on the normal (Z).
+    // An edit that adds filled area BELOW the current bbox-minimum (in both in-plane axes) moves
+    // the minimum from [2, 2] to [0, 1]; the compensated offset must shift by exactly that delta
+    // on the plane's in-plane axes (X, Y for PlaneAxis::Z) and never on the normal (Z).
     let before = bracket();
-    let seg = segment_id_between(&before, [2, 2], [6, 2]);
-    let after = before.with_point_on_segment(seg, SketchPoint::new(0, 1));
+    let after = before
+        .with_rectangle(SketchPoint::new(0, 1), SketchPoint::new(1, 4), ctx(16))
+        .expect("a second rectangle below and left of the bracket");
     let offset = after.anchor_preserving_offset(&before, [10, 10, 10], ctx(16));
     assert_eq!(
         offset,
