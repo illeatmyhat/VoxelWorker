@@ -145,14 +145,50 @@ shape to use: carry the multiplier and state a compliance, so the row's strength
 the row rather than of the iteration count.
 
 **Not fixed, and now the largest remaining cost: the second pass does not converge.** 13% of solves
-still spend the full 100 iterations, and capping the budget at 30 cuts the drag suite from 10.5s to
-3.6s — so **two thirds of the time is spent grinding past iteration 30**. This is pre-existing and
-was hidden behind the damping. The cause is that the hand's `Fix` is frequently unreachable, making
+still spend the full 100 iterations. This is pre-existing and was hidden behind the damping. The cause is that the hand's `Fix` is frequently unreachable, making
 that pass a genuinely incompatible least-squares problem on which Gauss-Newton converges only
 linearly. The solver has a gradient test, a step test and an absolute residual test, and **no
 relative-decrease test** — the standard fourth criterion, and the one that stops exactly this. Left
 alone deliberately: adding it changes answers, and this record is about a change that did not.
 
-**The decomposition costs about 1.7× the old step, and the suite runs 6.8s → 10.5s.** Held
-column-major so the inner loop walks a contiguous run; the remaining gap is the non-converging pass
-above rather than the kernel.
+**The decomposition costs about 1.1× the old step: the suite runs 6.24s → 6.81s.** Held
+column-major so the inner loop walks a contiguous run.
+
+## Amendment, 2026-08-06 — two numbers above were wrong, and the missing criterion is now there
+
+**Correction first.** The two performance figures originally in this record were measured against a
+build with `std::env::var` probe lookups compiled into the solve loop, which inflated the wall clock
+by roughly half. Measured honestly against the commits themselves, the decomposition costs ~1.1×
+rather than the ~1.7× first claimed (6.24s → 6.81s, not 6.8s → 10.5s), and the "10.5s to 3.6s under
+a budget cap" figure was contaminated in the same way and has been struck rather than restated. Both
+paragraphs above now carry the corrected numbers. **An environment lookup inside a numerical inner
+loop is not free, and a probe that changes the thing it measures is worse than no probe** — prefer a
+deterministic counter (total iterations, solves hitting the ceiling) to a stopwatch.
+
+**The relative-decrease test is in.** `SolveSettings::improvement_tolerance` stops an accepted step
+that improved the sum of squares by less than that share of it, and reports `Stalled` — the honest
+outcome, since the search stopped because it had stopped moving and whether the *answer* is one is
+read off `residual_norm` as always. Tested only on an accepted step: a rejected step leaves the
+objective alone, so counting it as "no improvement" would stop at the first bad guess rather than at
+the end of progress, and the collapsing trust radius is already the test for that.
+
+The tolerance is measured, not adopted. Over a drag of a curved slot, 1005 solves:
+
+| tolerance | iterations | hit the ceiling | zoom-invariance error (budget 1e-4) |
+| --------- | ---------: | --------------: | ----------------------------------: |
+| off       |    349,196 |            2176 |                            2.005e-5 |
+| 1e-9      |    296,003 |            1917 |                            1.981e-5 |
+| **1e-8**  |**269,624** |        **1015** |                        **2.090e-5** |
+| 1e-7      |    212,868 |              45 |                            5.936e-5 |
+| 1e-6      |    155,487 |               0 |                 1.989e-4 — **fails** |
+
+**A quarter of the work goes for four percent of the error at 1e-8**, and that is the setting. One
+notch looser triples the error; Ceres's own default of 1e-6 breaks
+`a_ceiling_in_screen_points_means_the_same_at_every_zoom` outright — which is what a general
+optimizer's default looks like on a problem whose answer a person is looking at.
+
+**This is a 23% cut, not the 3× the budget-cap experiment suggested.** The 3× exists only at
+tolerances that damage the answer. Recording the gap because the difference between the two is the
+entire content of the measurement: a cap on iterations stops a search wherever it happens to be, and
+a relative-decrease test stops it where it stopped earning. They cost the same and they are not the
+same change.

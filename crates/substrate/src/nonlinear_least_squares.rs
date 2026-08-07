@@ -122,6 +122,40 @@ pub struct SolveSettings {
     /// Stop when the residual norm is under this. The one tolerance that is about the ANSWER
     /// rather than about the search.
     pub residual_tolerance: f64,
+    /// Stop when an accepted step improves the sum of squares by less than this SHARE of it.
+    ///
+    /// The other three stopping tests all ask whether the search has arrived. This one asks whether
+    /// it is still going anywhere, and it is the test that catches an INCOMPATIBLE system — one
+    /// where no parameter vector satisfies every residual, so there is a least-squares compromise
+    /// to find and no solution to converge to. Gauss-Newton reaches such a compromise only
+    /// linearly, and linear convergence past the first few digits is a search spending its whole
+    /// budget to move the answer by nothing.
+    ///
+    /// Relative rather than absolute, because "improved by 1e-9" means something different on a
+    /// system compromising at 4e-3 than on one compromising at 40. Ceres calls the same test
+    /// `function_tolerance`.
+    ///
+    /// **The default is a hundred times tighter than Ceres's**, and the difference is measured
+    /// rather than cautious. Over a drag of a curved slot — 1005 solves, 349,000 iterations without
+    /// this test, 2176 of them spending the whole iteration ceiling — the trade runs:
+    ///
+    /// | tolerance | iterations | hit the ceiling | error in a scale-invariance check |
+    /// | --------- | ---------: | --------------: | --------------------------------: |
+    /// | off       |    349,196 |            2176 |                          2.005e-5 |
+    /// | **1e-8**  | **269,624**|        **1015** |                      **2.090e-5** |
+    /// | 1e-7      |    212,868 |              45 |                          5.936e-5 |
+    /// | 1e-6      |    155,487 |               0 |                          1.989e-4 |
+    ///
+    /// A quarter of the work goes for four percent of the error at `1e-8`. One notch looser triples
+    /// the error, and Ceres's own default breaks the check outright — which is what a general
+    /// optimizer's default looks like on a problem whose answer a person is looking at.
+    ///
+    /// **It reports [`Stalled`](SolveOutcome::Stalled), which is the honest outcome and not a
+    /// failure**: the search stopped because it had stopped moving, and whether the ANSWER is one is
+    /// read off [`residual_norm`](SolveReport::residual_norm) as always. A system that genuinely
+    /// converges is claimed by the residual test first — this one can only fire while the residuals
+    /// are still large.
+    pub improvement_tolerance: f64,
     /// The trust region's starting radius, in parameter units.
     pub initial_trust_radius: f64,
     /// The iteration ceiling.
@@ -129,13 +163,15 @@ pub struct SolveSettings {
 }
 
 impl Default for SolveSettings {
-    /// Tuned for a sketch measured in voxels: converge to well under a thousandth of a voxel, and
-    /// give up after a budget that is generous for a drawing and instant for a machine.
+    /// Tuned for a sketch measured in voxels: converge to well under a thousandth of a voxel, give
+    /// up on a search that has stopped moving the answer, and give up entirely after a budget that
+    /// is generous for a drawing and instant for a machine.
     fn default() -> Self {
         Self {
             gradient_tolerance: 1.0e-12,
             step_tolerance: 1.0e-12,
             residual_tolerance: 1.0e-10,
+            improvement_tolerance: 1.0e-8,
             initial_trust_radius: 1.0,
             maximum_iterations: 100,
         }
@@ -218,7 +254,8 @@ pub fn solve(
         // The gain ratio: how much of the improvement the LINEAR model promised was actually
         // delivered. Above zero the step is an improvement and is taken; near one the model is
         // trustworthy over this radius and the region may grow.
-        let actual = sum_of_squares(&residuals) - sum_of_squares(&candidate_residuals);
+        let objective = sum_of_squares(&residuals);
+        let actual = objective - sum_of_squares(&candidate_residuals);
         let predicted = predicted_reduction(
             &jacobian_matrix,
             &residuals,
@@ -241,6 +278,14 @@ pub fn solve(
             parameters.copy_from_slice(&candidate);
             residuals = candidate_residuals;
             jacobian_matrix = jacobian(system, parameters);
+            // Tested only on an ACCEPTED step, and after taking it. A rejected step leaves the
+            // objective alone, so counting it as "no improvement" would stop the search at the
+            // first bad guess rather than at the end of its progress — the trust radius collapsing
+            // is what says a rejected step will keep being rejected, and that test is below.
+            if actual <= settings.improvement_tolerance * objective {
+                outcome = SolveOutcome::Stalled;
+                break;
+            }
         }
         // Madsen–Nielsen–Tingleff's radius update: grow on a well-predicted step, shrink hard on
         // a rejected one, leave it alone in between.
@@ -841,6 +886,95 @@ mod tests {
             "the parameter no residual names did not drift: {parameters:?}"
         );
         assert!(report.redundant_residuals >= 1, "{report:?}");
+    }
+
+    /// A search still making real progress is NOT cut short by the improvement test.
+    ///
+    /// `r(x) = e⁻ˣ` has no root and shrinks geometrically: the Gauss-Newton step is exactly one
+    /// every iteration, so each step takes a fixed 86% off the sum of squares forever. That is the
+    /// shape the test must never fire on — steady progress, however far from done — and it runs all
+    /// the way down to the residual tolerance and reports the honest `Converged`.
+    /// A search still making real progress is NOT cut short by the improvement test.
+    ///
+    /// `x² = 2` has a root, so Gauss-Newton is Newton's method on it and converges quadratically:
+    /// every step takes almost the whole remaining error, which is the shape the test must never
+    /// fire on. Switching the test off changes nothing about the run — same outcome, same five
+    /// iterations, same answer — which is the actual claim.
+    #[test]
+    fn a_search_still_making_progress_is_not_cut_short() {
+        let root_of_two = |p: &[f64]| p[0].mul_add(p[0], -2.0);
+        let system = Closures {
+            parameters: 1,
+            residuals: vec![&root_of_two],
+        };
+
+        let mut tested = vec![0.5];
+        let with_the_test = solve(&system, &mut tested, SolveSettings::default());
+        assert_eq!(
+            with_the_test.outcome,
+            SolveOutcome::Converged,
+            "{with_the_test:?}"
+        );
+        assert!((tested[0] - std::f64::consts::SQRT_2).abs() < 1.0e-10);
+
+        let mut untested = vec![0.5];
+        let without_it = solve(
+            &system,
+            &mut untested,
+            SolveSettings {
+                improvement_tolerance: 0.0,
+                ..SolveSettings::default()
+            },
+        );
+        assert_eq!(
+            with_the_test.iterations, without_it.iterations,
+            "the test cost the search iterations it needed: {with_the_test:?} against {without_it:?}"
+        );
+        assert_eq!(tested, untested);
+    }
+
+    /// An INCOMPATIBLE system stops when it stops improving, rather than grinding out its budget.
+    ///
+    /// `x = 1` and `10x² = 0` cannot both hold, so there is a least-squares compromise near 0.161
+    /// and no solution. A compromise with residuals this large is reached only LINEARLY — the error
+    /// roughly halves per step forever instead of squaring — so the last digits cost exactly what
+    /// the first ones did and buy nothing anyone can see.
+    ///
+    /// Eight iterations against sixty-five, and the two answers agree in their residual norm to a
+    /// part in a billion. The fifty-seven extra iterations moved the parameter by 8e-6, in a basin
+    /// flat enough that moving it there changed the objective by nothing — which is the whole
+    /// argument for the test.
+    #[test]
+    fn an_incompatible_system_stops_when_it_stops_improving() {
+        let wants_one = |p: &[f64]| p[0] - 1.0;
+        let wants_zero = |p: &[f64]| 10.0 * p[0] * p[0];
+        let system = Closures {
+            parameters: 1,
+            residuals: vec![&wants_one, &wants_zero],
+        };
+
+        let mut stopping = vec![0.5];
+        let stopped = solve(&system, &mut stopping, SolveSettings::default());
+        assert_eq!(stopped.outcome, SolveOutcome::Stalled, "{stopped:?}");
+        assert!(stopped.residual_norm > 0.5, "and unsolved: {stopped:?}");
+
+        let mut grinding = vec![0.5];
+        let ground = solve(
+            &system,
+            &mut grinding,
+            SolveSettings {
+                improvement_tolerance: 0.0,
+                ..SolveSettings::default()
+            },
+        );
+        assert!(
+            stopped.iterations * 4 < ground.iterations,
+            "it saved next to nothing: {stopped:?} against {ground:?}"
+        );
+        assert!(
+            (stopped.residual_norm - ground.residual_norm).abs() < 1.0e-8,
+            "and the extra iterations were not free: {stopped:?} against {ground:?}"
+        );
     }
 
     /// A system already at its solution takes no step and says so immediately.
