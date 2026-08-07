@@ -3493,6 +3493,21 @@ impl Sketch {
     /// same gesture arriving on the boundary instead of the spine — a slot's outer corner pulled
     /// round its rail is a reshape by every reading, and without the second way it named no pivot,
     /// so the hub it was supposed to turn about drifted along behind the cursor.
+    ///
+    /// **A shape need not have a hub for a drag of it to be a reshape**, and asking for one is what
+    /// left a STRAIGHT slot unable to lengthen. [`names_a_whole_shape`](Self::names_a_whole_shape)
+    /// recognises a hub by the curves that turn about it, so it can only ever fire where the shape
+    /// is built from arcs: a turning slot's two rails and its centerline share one middle, and a
+    /// straight one's rails are SEGMENTS, which have no middle to share. No point on it qualified,
+    /// no pivot was found, and with no pivot the gesture read as the drawing being moved — so the
+    /// author pulled an end cap and the whole slot followed. The blind spot is not the slot's: it
+    /// belongs to every shape drawn as straight runs between arc caps.
+    ///
+    /// So the hub is preferred and no longer required. Where the shape has one the answer is
+    /// unchanged, which is what keeps a turning slot behaving exactly as it did; where it has none,
+    /// the pivot is the FARTHEST other center in the shape, which on anything cap-ended is the
+    /// opposite cap — the end a reshape visibly turns about. Farthest rather than first so the
+    /// answer is a property of the drawing rather than of the order its curves were stored in.
     fn pivot_a_reshape_turns_about(&self, held: EntityId) -> Option<EntityId> {
         let centered = self.curves_centered_on(held);
         if self.names_a_whole_shape(&centered) {
@@ -3506,11 +3521,31 @@ impl Sketch {
         if seeds.is_empty() {
             return None;
         }
-        self.shape_holding(seeds)
+        let mut candidates: Vec<EntityId> = Vec::new();
+        for point in self
+            .shape_holding(seeds)
             .into_iter()
             .flat_map(|curve| self.points_of(curve))
-            .filter(|point| self.is_arc_center(*point) && *point != held)
-            .find(|point| self.names_a_whole_shape(&self.curves_centered_on(*point)))
+        {
+            if point != held && self.is_arc_center(point) && !candidates.contains(&point) {
+                candidates.push(point);
+            }
+        }
+        if let Some(hub) = candidates
+            .iter()
+            .find(|point| self.names_a_whole_shape(&self.curves_centered_on(**point)))
+        {
+            return Some(*hub);
+        }
+        let stood = self.point_in_plane(held)?;
+        candidates.into_iter().max_by(|first, second| {
+            let reach = |point: EntityId| {
+                self.point_in_plane(point).map_or(f64::NEG_INFINITY, |at| {
+                    (at[0] - stood[0]).hypot(at[1] - stood[1])
+                })
+            };
+            reach(*first).total_cmp(&reach(*second))
+        })
     }
 
     /// Every curve this point is an END of, its center excluded.

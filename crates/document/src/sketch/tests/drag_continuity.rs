@@ -56,6 +56,77 @@ fn curved_slot() -> Sketch {
         .clone()
 }
 
+/// A slot drawn with STRAIGHT rails, the shape whose cap centers name no hub.
+fn straight_slot() -> Sketch {
+    SketchSolid::extrude(Sketch::empty(PlaneAxis::Z), 4)
+        .with_linear_slot(
+            ::parametric::sketch::LinearSlotKind::Overall,
+            SketchPoint::new(0, 0),
+            SketchPoint::new(40, 0),
+            SketchPoint::new(0, 8),
+            ctx(16),
+        )
+        .expect("a straight slot")
+        .sketch
+        .as_ref()
+        .clone()
+}
+
+/// Pulling a STRAIGHT slot's end cap lengthens it, rather than carrying the whole slot along.
+///
+/// The author's report, on three slots side by side: "I can grab an endpoint and resize it" for
+/// two of them, and "for the one in the middle, I can only translate it". The middle one was drawn
+/// [`Overall`](parametric::sketch::LinearSlotKind::Overall), so it carries the extra
+/// `PointOnCurve` relations that tie its extremes to its caps — enough extra structure to tip a
+/// solve that was ALREADY reading the gesture as a translation into actually performing one.
+///
+/// The reading is what this guards. A drag is a reshape when it names a pivot, and
+/// [`pivot_a_reshape_turns_about`](Sketch::pivot_a_reshape_turns_about) used to demand that the
+/// pivot be a hub — a point that several curves turn about. Only arcs turn about anything, so a
+/// slot with SEGMENT rails has no hub anywhere on it and could never be reshaped, whatever the
+/// author did to it. The far cap is the pivot now, and the whole slot no longer follows the hand.
+#[test]
+fn a_straight_slot_lengthens_when_its_end_cap_is_pulled() {
+    let slot = straight_slot();
+    let far = spine_end(&slot, [8.0, 0.0]);
+    let near = spine_end(&slot, [32.0, 0.0]);
+    let anchored = slot
+        .points()
+        .iter()
+        .find(|point| point.id == far)
+        .map(|point| point.at.in_plane())
+        .expect("the far cap");
+
+    let mut moved = slot.clone();
+    moved
+        .move_point_reporting_its_snap(
+            near,
+            SketchPoint::from_continuous(60.0, 0.0),
+            ctx(16),
+            SnapReach::UNBOUNDED,
+        )
+        .expect("the drag lands");
+
+    let at = |id: EntityId| {
+        moved
+            .points()
+            .iter()
+            .find(|point| point.id == id)
+            .map(|point| point.at.in_plane())
+            .expect("a point")
+    };
+    let pulled = at(near);
+    assert!(
+        (pulled[0] - 60.0).abs() < 1.0,
+        "the pulled cap did not reach the cursor: {pulled:?}"
+    );
+    let drifted = (at(far)[0] - anchored[0]).hypot(at(far)[1] - anchored[1]);
+    assert!(
+        drifted < 1.0,
+        "the far cap travelled {drifted} with the hand, so the slot moved instead of lengthening"
+    );
+}
+
 fn spine_end(sketch: &Sketch, at: [f64; 2]) -> EntityId {
     sketch
         .points()
