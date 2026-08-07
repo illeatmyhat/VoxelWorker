@@ -127,6 +127,47 @@ fn a_straight_slot_lengthens_when_its_end_cap_is_pulled() {
     );
 }
 
+/// A scaffold's SPAN is not a quantity a drag can be asked to keep.
+///
+/// A slot's spine is construction geometry, and for a straight slot its span IS the slot's length.
+/// Offering it to the snap put a ghost circle on a cap center and held the length while the author
+/// was trying to change it — reported as "the arc circle ghost also happens even though this
+/// endpoint is the center-point of the arc, which should never happen".
+///
+/// A scaffold ARC keeps its radius, which is why the filter is on spans alone: travelling around a
+/// center never changes a radius, so a curved slot's curvature survives a gesture that lengthens
+/// it. See `Problem::add_scaffolding_segment` in the parametric crate.
+#[test]
+fn a_scaffold_span_offers_no_quantity_to_hold() {
+    let slot = SketchSolid::extrude(Sketch::empty(PlaneAxis::Z), 4)
+        .with_linear_slot(
+            ::parametric::sketch::LinearSlotKind::CenterToCenter,
+            SketchPoint::new(8, 0),
+            SketchPoint::new(32, 0),
+            SketchPoint::new(8, 8),
+            ctx(16),
+        )
+        .expect("a straight slot")
+        .sketch
+        .as_ref()
+        .clone();
+    let cap = spine_end(&slot, [32.0, 0.0]);
+    let mut moved = slot;
+    let answer = moved
+        .move_point_reporting_its_snap(
+            cap,
+            SketchPoint::from_continuous(32.0, 6.0),
+            ctx(16),
+            SnapReach::UNBOUNDED,
+        )
+        .expect("the drag lands");
+    assert!(
+        answer.kept.is_none(),
+        "the spine offered its span as a quantity to hold: {:?}",
+        answer.kept
+    );
+}
+
 fn spine_end(sketch: &Sketch, at: [f64; 2]) -> EntityId {
     sketch
         .points()

@@ -19,8 +19,8 @@
 )]
 
 use super::{
-    Arc, Circle, CircleRadius, EntityId, Hand, Point, Segment, Sketch, SketchLength, SketchPoint,
-    Spline,
+    Arc, Circle, CircleRadius, EntityId, EntityRole, Hand, Point, Segment, Sketch, SketchLength,
+    SketchPoint, Spline,
 };
 use parametric::sketch::{
     ArcId, BuildError, CircleId, ConstraintId, PointId, Problem, ProblemBuilder, Relation,
@@ -1202,7 +1202,11 @@ pub(super) fn prepare_scoped(
         let (Some(from), Some(to)) = (point(segment.from), point(segment.to)) else {
             return Err(PrepareError::InvalidDocumentGeometry);
         };
-        segments.push((segment.id, builder.add_segment(from, to)));
+        let local = match segment.role {
+            EntityRole::Real => builder.add_segment(from, to),
+            EntityRole::Construction => builder.add_scaffolding_segment(from, to),
+        };
+        segments.push((segment.id, local));
     }
     let mut arcs: Vec<&Arc> = sketch.arcs.iter().collect();
     arcs.sort_by_key(|arc| arc.id);
@@ -1216,7 +1220,11 @@ pub(super) fn prepare_scoped(
         else {
             return Err(PrepareError::InvalidDocumentGeometry);
         };
-        local_arcs.push((arc.id, builder.add_arc(center, from, to)));
+        let local = match arc.role {
+            EntityRole::Real => builder.add_arc(center, from, to),
+            EntityRole::Construction => builder.add_scaffolding_arc(center, from, to),
+        };
+        local_arcs.push((arc.id, local));
     }
 
     let mut circles: Vec<&Circle> = sketch.circles.iter().collect();
