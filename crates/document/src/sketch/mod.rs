@@ -6251,19 +6251,25 @@ fn counter_clockwise_sweep_degrees(center: [f64; 2], from: [f64; 2], to: [f64; 2
 /// exclusive), as continuous sub-voxel points, each chord's sagitta within
 /// [`ARC_SAGITTA_TOLERANCE_VOXELS`]. Empty when the arc is degenerate — the callers
 /// then fall back to the straight chord.
-/// Whether `at` stands on `geometry`'s support, closely enough to call them met.
+/// Whether `at` stands on the DRAWN piece of `geometry`, closely enough to call them met.
 ///
-/// The SUPPORT and not the drawn piece, for the reason [`parametric::sketch::Relation::PointOnCurve`]
-/// gives: whether the author meant a place past the end of an arc is an authoring question, and
-/// answering it here would make the test discontinuous where the piece stops.
+/// The drawn piece and not the support, which is the opposite of what
+/// [`parametric::sketch::Relation::PointOnCurve`] does, and deliberately. That relation is a
+/// RESIDUAL the optimizer walks, so a test that had to report "off the end" would hand it a cliff
+/// at the endpoint. This is a yes/no ADMISSION GATE, run once when the author asks for the
+/// relation — and there a discontinuity at the endpoint is exactly the answer, because either the
+/// author drew the two things touching or they did not. Reading the support here let a curvature
+/// row be asserted against a phantom: a joint five hundred voxels past a segment's end but
+/// collinear with it, or anywhere on the full circle a twenty-degree arc was cut from.
 ///
 /// The tolerance is tight on purpose. Two curves either meet or they do not; "nearly meets" is the
 /// state the author is trying to leave by asserting the relation, and accepting it would let a
 /// curvature row be asserted against a curve the joint is merely near — which reads as a solver
-/// bug later, not as a mis-pick now.
+/// bug later, not as a mis-pick now. It is tighter than the one a tangent CONTACT is held to, so
+/// the shared extent test takes the slack as an argument rather than choosing it.
 fn point_stands_on(at: [f64; 2], geometry: parametric::sketch::CurveGeometry) -> bool {
     const MET: f64 = 1.0e-6;
-    match geometry {
+    let on_the_support = match geometry {
         parametric::sketch::CurveGeometry::Segment { from, to } => {
             let along = [to[0] - from[0], to[1] - from[1]];
             let length = along[0].hypot(along[1]);
@@ -6277,7 +6283,8 @@ fn point_stands_on(at: [f64; 2], geometry: parametric::sketch::CurveGeometry) ->
             ((at[0] - circle.center[0]).hypot(at[1] - circle.center[1]) - circle.radius).abs()
                 <= MET
         }
-    }
+    };
+    on_the_support && parametric::sketch::within_drawn_extent(geometry, at, MET)
 }
 
 pub fn arc_interior_points(from: [f64; 2], to: [f64; 2], sweep_degrees: f64) -> Vec<SketchPoint> {

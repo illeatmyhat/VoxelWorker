@@ -1247,6 +1247,74 @@ fn curvature_is_refused_without_a_free_end_standing_on_the_curve() {
     );
 }
 
+/// Curvature is refused against a curve's PHANTOM — the rest of the line, the rest of the circle.
+///
+/// A segment runs along an infinite line and an arc is cut from a whole circle, and asking only
+/// "does the joint sit on that support?" says yes five hundred voxels past the segment's last
+/// voxel, or on the far side of a circle a twenty-degree arc never reached. Nothing is drawn there.
+/// The curvature the author would be matching is a reading of a curve that does not exist on the
+/// page, so the gate has to ask how far the curve RUNS and not only where it lies.
+#[test]
+fn curvature_is_refused_against_the_part_of_a_curve_that_was_never_drawn() {
+    // A ten-long segment on the x-axis, and a spline whose free end stands at forty — dead on the
+    // line the segment runs along, and thirty past where the ink stops.
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let tail = sketch.add_point(SketchPoint::new(0, 0));
+    let head = sketch.add_point(SketchPoint::new(10, 0));
+    let rail = sketch.connect(tail, head).expect("a segment on the x-axis");
+    sketch
+        .add_fit_point_spline(
+            &[
+                SketchPoint::new(40, 0),
+                SketchPoint::new(36, 6),
+                SketchPoint::new(30, 9),
+            ],
+            false,
+        )
+        .expect("an open spline");
+    let past_the_end = sketch.splines()[0].points[0];
+    assert_eq!(
+        sketch.add_constraint(
+            ConstraintKind::Curvature {
+                joint: past_the_end,
+                against: SketchCurve::Segment(rail),
+            },
+            ctx(16),
+        ),
+        Err(ConstraintRefusal::CurvatureNeedsAJoint)
+    );
+
+    // A quarter arc from (5,0) up to (0,5) about the origin, and a spline ending at (-5,0) — the
+    // same radius from the same center, on the half of the circle the arc never swept.
+    let mut round = Sketch::empty(PlaneAxis::Z);
+    let start = round.add_point(SketchPoint::new(5, 0));
+    let finish = round.add_point(SketchPoint::new(0, 5));
+    let quarter = round
+        .connect_arc(start, finish, AngleMeasurement::from_degrees(90))
+        .expect("a quarter arc about the origin");
+    round
+        .add_fit_point_spline(
+            &[
+                SketchPoint::new(-5, 0),
+                SketchPoint::new(-8, 4),
+                SketchPoint::new(-9, 9),
+            ],
+            false,
+        )
+        .expect("an open spline");
+    let off_the_sweep = round.splines()[0].points[0];
+    assert_eq!(
+        round.add_constraint(
+            ConstraintKind::Curvature {
+                joint: off_the_sweep,
+                against: SketchCurve::Arc(quarter),
+            },
+            ctx(16),
+        ),
+        Err(ConstraintRefusal::CurvatureNeedsAJoint)
+    );
+}
+
 /// A conic's shoulder is a reading of the curve, and it comes back to the author as a mark.
 ///
 /// ADR 0038 took away the stored shoulder point — it was recomputed every sync and so could not be

@@ -28,7 +28,7 @@ pub use circle::{
 pub use curvature::{
     curvature_arrow_at, curvature_residual, direction_at, direction_residual, JointSpan, SpanEnd,
 };
-pub use curve::{ArcDomain, CircularCurve, CurveGeometry};
+pub use curve::{within_drawn_extent, ArcDomain, CircularCurve, CurveGeometry};
 pub use higher_curve::{
     conic_candidate, conic_rho_from_shoulder, conic_shoulder_track, conic_vertex_from_rho,
     ellipse_candidate, ConicCandidate, ConicCandidateError, EllipseCandidate,

@@ -18,7 +18,7 @@
 )]
 
 use super::curve::{
-    CurveGeometry, COLLAPSE_TOLERANCE as COLLAPSED_SPAN,
+    within_drawn_extent, CurveGeometry, COLLAPSE_TOLERANCE as COLLAPSED_SPAN,
     SATISFACTION_TOLERANCE as SATISFIED_RESIDUAL,
 };
 
@@ -525,11 +525,8 @@ pub(super) fn contains_contact(curve: CurveGeometry, contact: [f64; 2]) -> bool 
             let length = length_squared.sqrt();
             let tolerance = contact_tolerance(length);
             let delta = [contact[0] - from[0], contact[1] - from[1]];
-            let parameter = (delta[0] * span[0] + delta[1] * span[1]) / length_squared;
             let perpendicular = (delta[0] * span[1] - delta[1] * span[0]).abs() / length;
-            perpendicular <= tolerance
-                && parameter >= -tolerance / length
-                && parameter <= 1.0 + tolerance / length
+            perpendicular <= tolerance && within_drawn_extent(curve, contact, tolerance)
         }
         CurveGeometry::Circular(circular) => {
             if !circular.center.into_iter().all(f64::is_finite) || !circular.radius.is_finite() {
@@ -542,29 +539,8 @@ pub(super) fn contains_contact(curve: CurveGeometry, contact: [f64; 2]) -> bool 
             let Some(arc) = circular.arc else {
                 return true;
             };
-            if !arc.sweep_radians.is_finite() || arc.sweep_radians.abs() <= f64::EPSILON {
-                return false;
-            }
-            let start_angle =
-                (arc.from[1] - circular.center[1]).atan2(arc.from[0] - circular.center[0]);
-            let contact_angle =
-                (contact[1] - circular.center[1]).atan2(contact[0] - circular.center[0]);
-            let travel = if arc.sweep_radians.is_sign_positive() {
-                (contact_angle - start_angle).rem_euclid(std::f64::consts::TAU)
-            } else {
-                (start_angle - contact_angle).rem_euclid(std::f64::consts::TAU)
-            };
             let scale = circular.radius.max(distance(arc.from, arc.to));
-            let angular_tolerance =
-                (contact_tolerance(scale) / circular.radius).clamp(f64::EPSILON * 64.0, 1.0e-3);
-            // `travel` alone wraps a contact a hair before the start to almost one full turn.
-            // Endpoints are authored domain boundaries, so the same bounded tolerance applies on
-            // either side of both ends and works for positive and negative sweeps.
-            let near_start = (contact_angle - start_angle)
-                .abs()
-                .min(std::f64::consts::TAU - (contact_angle - start_angle).abs())
-                <= angular_tolerance;
-            travel <= arc.sweep_radians.abs() + angular_tolerance || near_start
+            within_drawn_extent(curve, contact, contact_tolerance(scale))
         }
     }
 }
