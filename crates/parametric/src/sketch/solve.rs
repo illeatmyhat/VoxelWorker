@@ -34,6 +34,7 @@ use super::tangent::{
 };
 use crate::ResolvedLength;
 use std::sync::atomic::{AtomicU64, Ordering};
+use substrate::graph::biconnected_blocks;
 use substrate::nonlinear_least_squares::{
     jacobian, rank, solve as solve_nlls, ResidualSystem, SolveOutcome as SubstrateSolveOutcome,
     SolveReport as SubstrateSolveReport, SolveSettings,
@@ -3072,7 +3073,7 @@ impl<'a> Residuals<'a> {
                     // here either — a row in this sum is traded against every other row in it, and
                     // measured on the slot that prompted all this it lost outright: held as a
                     // preference the cap still went 7.33 to 0.05, within a thousandth of holding
-                    // nothing at all. It is held by `radii_a_carry_holds_still` instead, which
+                    // nothing at all. It is held by `quantities_a_carry_holds_still` instead, which
                     // takes the column away for the hand's passes rather than bidding for it.
                     let _ = index;
                     if [arc.center, arc.from, arc.to].iter().copied().all(in_hand) {
@@ -4077,6 +4078,95 @@ impl Problem {
         self
     }
 
+    /// The curves this gesture is allowed to RESHAPE — the ones whose span the rigidity
+    /// preference must stop pricing, because the hand is authoring them.
+    ///
+    /// A hand on a curve's END is the author saying "change THIS curve". Nothing else loosens: the
+    /// rest of the drawing still prefers to travel rather than deform, which is what carries a
+    /// shape under one finger.
+    ///
+    /// Without this the preference is too strong to be useful. Measured pre-hand, a span row is an
+    /// honest statement that the shape is rigid, and a rigid drawing under a pinned hand has
+    /// exactly one answer — translate — whatever was grabbed and whatever else is asserted. A level
+    /// segment dragged by one end took its far end along instead of leaving it where the level
+    /// allowed, and a segment whose other end was FIXED translated anyway and stayed translated
+    /// once the hand lost.
+    ///
+    /// A curve's SHAPE parameter is untouched by this: an arc grabbed by an end gives up its chord,
+    /// not its radius, which is what lets the end sweep around a center that stays put rather than
+    /// dragging the whole arc after it.
+    ///
+    /// `in_hand` is every point the hands hold, a handle already resolved to the vertex it stands
+    /// on — see [`Problem::standing_together`].
+    fn curves_the_hands_may_reshape(&self, in_hand: &[PointId]) -> Vec<SketchCurve> {
+        let grabbed = |point: PointId| in_hand.contains(&point);
+        // Concentric arcs are one rail family, and a preference prices an arc by its CHORD, which
+        // is not something a sweep leaves alone: swing one rail's end around and every sibling's
+        // chord shortens with it. A rigid sibling therefore outvotes the sweep by itself, and the
+        // drawing slides under the cursor instead — the same reasoning that already stops the
+        // family's radii being held when a hand has a whole rail, reaching the chords too.
+        let swept: Vec<PointId> = self
+            .arc_centers
+            .iter()
+            .filter(|arc| grabbed(arc.from) || grabbed(arc.to))
+            .map(|arc| arc.center)
+            .collect();
+        // A closed loop re-derives whatever a loosening leaves out of it. The spans around a loop
+        // sum to zero, so holding every edge but the two a corner joins states those two as well,
+        // and a loop with nothing left to give has one motion under a pinned hand: translate. A
+        // rectangle dragged by a corner slid across the plane instead of resizing. So the unit of
+        // loosening is the BICONNECTED BLOCK the hand stands in — the edges no single point can
+        // separate — which is the rule the incident edges were already following: in an open chain
+        // every edge is a block of its own and nothing here changes, and in a loop the block is
+        // the loop. An ARC's chord is an edge of that graph — it is how a slot's loop closes at
+        // all — but it is not loosened by standing in one: an arc chord already has a rule of its
+        // own in `swept`, measured against the rail family, and widening it there cost a slot the
+        // drag that carries a cap past its partner.
+        let chords: Vec<(usize, usize)> = self
+            .segments
+            .iter()
+            .map(|segment| (segment.from.index, segment.to.index))
+            .chain(
+                self.arc_centers
+                    .iter()
+                    .map(|arc| (arc.from.index, arc.to.index)),
+            )
+            .collect();
+        let standing_in: Vec<usize> = biconnected_blocks(self.points.len(), &chords)
+            .into_iter()
+            .filter(|block| {
+                block.iter().any(|&edge| {
+                    let (from, to) = chords[edge];
+                    in_hand
+                        .iter()
+                        .any(|held| held.index == from || held.index == to)
+                })
+            })
+            .flatten()
+            .collect();
+        self.segments
+            .iter()
+            .enumerate()
+            .filter(|(index, segment)| {
+                standing_in.contains(index) || grabbed(segment.from) || grabbed(segment.to)
+            })
+            .map(|(index, _)| {
+                SketchCurve::Segment(SegmentId {
+                    owner: self.owner,
+                    index,
+                })
+            })
+            .chain(
+                self.arc_centers
+                    .iter()
+                    .filter(|arc| {
+                        grabbed(arc.from) || grabbed(arc.to) || swept.contains(&arc.center)
+                    })
+                    .map(|arc| SketchCurve::Arc(arc.key)),
+            )
+            .collect()
+    }
+
     /// Pull SEVERAL local points toward their targets at once, then release and settle.
     ///
     /// One hand asks the drawing to do whatever it likes as long as this point ends up here, and
@@ -4104,57 +4194,11 @@ impl Problem {
                 return Err(RequestError::UnknownPoint);
             }
         }
-        // A hand on a curve's END is the author saying "change THIS curve", so that curve stops
-        // asking to keep its span. Nothing else loosens: the rest of the drawing still prefers to
-        // travel rather than deform, which is what carries a shape under one finger.
-        //
-        // Without this the preference is too strong to be useful. Measured pre-hand, a span row is
-        // an honest statement that the shape is rigid, and a rigid drawing under a pinned hand has
-        // exactly one answer — translate — whatever was grabbed and whatever else is asserted. A
-        // level segment dragged by one end took its far end along instead of leaving it where the
-        // level allowed, and a segment whose other end was FIXED translated anyway and stayed
-        // translated once the hand lost.
-        //
-        // A curve's SHAPE parameter is untouched by this: an arc grabbed by an end gives up its
-        // chord, not its radius, which is what lets the end sweep around a center that stays put
-        // rather than dragging the whole arc after it.
-        // A hand on a handle is a hand on the vertex it stands on — see [`Problem::standing_together`].
         let in_hand: Vec<PointId> = hands
             .iter()
             .flat_map(|hand| self.standing_together(hand.point))
             .collect();
-        let grabbed = |point: PointId| in_hand.contains(&point);
-        // Concentric arcs are one rail family, and a preference prices an arc by its CHORD, which
-        // is not something a sweep leaves alone: swing one rail's end around and every sibling's
-        // chord shortens with it. A rigid sibling therefore outvotes the sweep by itself, and the
-        // drawing slides under the cursor instead — the same reasoning that already stops the
-        // family's radii being held when a hand has a whole rail, reaching the chords too.
-        let swept: Vec<PointId> = self
-            .arc_centers
-            .iter()
-            .filter(|arc| grabbed(arc.from) || grabbed(arc.to))
-            .map(|arc| arc.center)
-            .collect();
-        let loosened: Vec<SketchCurve> = self
-            .segments
-            .iter()
-            .enumerate()
-            .filter(|(_, segment)| grabbed(segment.from) || grabbed(segment.to))
-            .map(|(index, _)| {
-                SketchCurve::Segment(SegmentId {
-                    owner: self.owner,
-                    index,
-                })
-            })
-            .chain(
-                self.arc_centers
-                    .iter()
-                    .filter(|arc| {
-                        grabbed(arc.from) || grabbed(arc.to) || swept.contains(&arc.center)
-                    })
-                    .map(|arc| SketchCurve::Arc(arc.key)),
-            )
-            .collect();
+        let loosened = &self.curves_the_hands_may_reshape(&in_hand);
         let mut positions: Vec<_> = self.points.iter().map(|point| point.at).collect();
         // The drawing as the gesture FOUND it, kept aside so the walk cannot re-aim the preference
         // at its own intermediate answers — see [`Rigidity::Preferred::opening`]. The problem's own
@@ -4390,11 +4434,11 @@ impl Problem {
         // Most gestures are that case, and running both regardless cost the suite two and a half
         // times its wall clock for answers that never differed.
         let (seed, seed_scalars) = (positions.clone(), scalar_coordinates.clone());
-        let report = match self.radii_a_carry_holds_still(hands, opening) {
+        let report = match self.quantities_a_carry_holds_still(hands, opening) {
             None => gesture(&pulled, self, positions, scalar_coordinates),
             Some(carried) => {
                 let pulled_held = pulled
-                    .radii_a_carry_holds_still(hands, opening)
+                    .quantities_a_carry_holds_still(hands, opening)
                     .unwrap_or_else(|| pulled.clone());
                 let held_report = gesture(&pulled_held, &carried, positions, scalar_coordinates);
                 // The LEAD hand alone, because the cursor is the lead's and no other hand's. Asked
@@ -4456,8 +4500,17 @@ impl Problem {
         Ok(Frame { report, kept })
     }
 
-    /// This problem with the radius of every arc the hands CARRY taken out of the solve, or `None`
+    /// This problem with every quantity the hands CARRY put beyond the solve's reach, or `None`
     /// when they carry none and the problem is already the right one to hand on.
+    ///
+    /// Two quantities, and the drawing gives them to the solve differently. An arc's radius is a
+    /// COLUMN, so holding it means deleting the column and letting the arc's own equal-radius rows
+    /// carry its ends. A segment's length is not a column at all — it is whatever its two ends
+    /// happen to be apart — so holding it means ADDING the row that says so. A circle needs
+    /// neither: its radius is authored rather than derived from points a hand can move, so nothing
+    /// can spend it cheaply, and the preference pass already keeps it without ever being skipped.
+    /// Take that preference away and a circle slot cannot even be BUILT — the first tangency comes
+    /// back `Degenerate` — which is the measurement that says the circle is already looked after.
     ///
     /// Taking the column away rather than bidding for it, because a bid in this system is traded
     /// against every other bid in the same sum and this one always loses. A slot's cap is tangent
@@ -4487,7 +4540,9 @@ impl Problem {
     /// from by more than any threshold worth setting, and by an amount that grows with the
     /// drawing's magnitude — a fourfold zoom changed which gesture the arithmetic thought it was
     /// looking at.
-    fn radii_a_carry_holds_still(&self, hands: &[Hand], opening: &[[f64; 2]]) -> Option<Self> {
+    fn quantities_a_carry_holds_still(&self, hands: &[Hand], opening: &[[f64; 2]]) -> Option<Self> {
+        /// Whether a segment carried entire keeps the length it was drawn. See where it is read.
+        const HOLD_A_CARRIED_SPAN: bool = false;
         let reaching = |role: HandRole| -> Vec<PointId> {
             hands
                 .iter()
@@ -4509,6 +4564,40 @@ impl Problem {
             let end = opening.get(arc.from.index)?;
             Some((end[0] - hub[0]).hypot(end[1] - hub[1]))
         };
+        // A segment carried entire keeps the length it was drawn. Unlike the arc there is no
+        // gesture on the other side of this: a segment dragged by its BODY slides sideways, both
+        // ends by the same offset, so its length was never what that gesture was setting. Measured
+        // on a straight slot's rail, sliding it out drifted 24.0000 to 23.7125 and 24.3920 in
+        // different directions for the same shape — small against the arc's 7.33 to 0.05, and the
+        // same undimensioned quantity going wherever the arithmetic left it.
+        //
+        // TEMPORARILY OFF at the owner's request (2026-08-07) while the arc's hold is tried in the
+        // app. Flip `HOLD_A_CARRIED_SPAN` back to `true` to restore it — nothing else is stubbed,
+        // and `sliding_a_slots_rail_keeps_the_length_it_was_drawn` is `#[ignore]`d to match.
+        let spans: Vec<(PointId, PointId, f64)> = self
+            .segments
+            .iter()
+            .filter(|_| HOLD_A_CARRIED_SPAN)
+            .filter(|segment| {
+                [segment.from, segment.to]
+                    .iter()
+                    .all(|point| in_hand.contains(point))
+            })
+            .filter(|segment| {
+                ![segment.from, segment.to]
+                    .iter()
+                    .any(|point| pinned.contains(point))
+            })
+            .filter_map(|segment| {
+                let tail = opening.get(segment.from.index)?;
+                let head = opening.get(segment.to.index)?;
+                Some((
+                    segment.from,
+                    segment.to,
+                    (head[0] - tail[0]).hypot(head[1] - tail[1]),
+                ))
+            })
+            .collect();
         let carried: Vec<(ParameterId, f64)> = self
             .arc_centers
             .iter()
@@ -4520,7 +4609,7 @@ impl Problem {
             .filter(|arc| !pinned.contains(&arc.center))
             .filter_map(|arc| Some((arc.radius?, drawn(arc)?)))
             .collect();
-        if carried.is_empty() {
+        if carried.is_empty() && spans.is_empty() {
             return None;
         }
         let mut held = self.clone();
@@ -4528,6 +4617,12 @@ impl Problem {
             if let Some(parameter) = held.parameters.get_mut(radius.index) {
                 parameter.stored = at;
                 parameter.free = false;
+            }
+        }
+        for (from, to, length) in spans {
+            let span = Relation::Distance { from, to, length };
+            if let Ok(resolved) = held.resolve(span) {
+                held = held.with_candidate(span, resolved);
             }
         }
         Some(held)

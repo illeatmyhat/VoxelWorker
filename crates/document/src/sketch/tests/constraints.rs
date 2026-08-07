@@ -3495,3 +3495,58 @@ fn a_curve_kind_carries_relation_geometry_exactly_when_the_drawing_can_produce_i
         );
     }
 }
+
+/// A rectangle dragged by a corner RESIZES. It does not slide across the plane.
+///
+/// The rigidity preference prices each segment by its whole span vector, and the spans around a
+/// closed loop sum to zero — so holding the two edges a corner does not touch states the two it
+/// does, and the horizontals and verticals then split that statement into four pinned edges. A
+/// rigid shape under a pinned hand has exactly one move left, and the rectangle used to make it:
+/// all four corners travelled together and the drawing kept the size it was drawn.
+///
+/// The unit of loosening is the biconnected block the hand stands in, so the whole loop gives way
+/// at once. What this test watches is the OPPOSITE corner: it is the one the hand never touches
+/// and the one a translation would take along.
+#[test]
+fn dragging_a_rectangles_corner_resizes_it_rather_than_moving_it() {
+    let drawn = SketchSolid::extrude(Sketch::empty(PlaneAxis::Z), 4)
+        .with_rectangle(SketchPoint::new(0, 0), SketchPoint::new(20, 10), ctx(16))
+        .expect("a rectangle")
+        .sketch
+        .as_ref()
+        .clone();
+    let corner_at = |sketch: &Sketch, want: [f64; 2]| {
+        sketch
+            .points()
+            .iter()
+            .find(|point| {
+                let at = point.at.in_plane();
+                (at[0] - want[0]).hypot(at[1] - want[1]) < 1.0e-9
+            })
+            .map(|point| point.id)
+            .unwrap_or_else(|| panic!("no corner at {want:?}"))
+    };
+    let grabbed = corner_at(&drawn, [0.0, 0.0]);
+    let opposite = corner_at(&drawn, [20.0, 10.0]);
+    for cursor in [[-10.0, -6.0], [5.0, 3.0], [-4.0, 7.0_f64]] {
+        let mut sketch = drawn.clone();
+        assert!(sketch
+            .move_point(
+                grabbed,
+                SketchPoint::from_continuous(cursor[0], cursor[1]),
+                ctx(16),
+            )
+            .expect("the corner drag is answered"));
+        let stayed = position(&sketch, opposite);
+        assert!(
+            (stayed[0] - 20.0).hypot(stayed[1] - 10.0) < 1.0e-6,
+            "dragging a corner to {cursor:?} took the opposite corner to {stayed:?}"
+        );
+        // And the grabbed corner really went where it was asked, so the shape resized to reach it.
+        let arrived = position(&sketch, grabbed);
+        assert!(
+            (arrived[0] - cursor[0]).hypot(arrived[1] - cursor[1]) < 1.0e-6,
+            "the corner asked for {cursor:?} and landed at {arrived:?}"
+        );
+    }
+}

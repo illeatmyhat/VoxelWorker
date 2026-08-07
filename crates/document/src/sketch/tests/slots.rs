@@ -1861,3 +1861,151 @@ fn a_snapped_drag_reports_the_circle_it_kept() {
         "a pull straight off the circle keeps nothing"
     );
 }
+
+/// A slot's RAIL keeps the length it was drawn when the hand slides it.
+///
+/// The same undimensioned quantity as the cap's radius, given to the solve differently: a length
+/// is not a column, it is only however far two ends happen to be apart, so nothing holds it and it
+/// settles wherever the arithmetic leaves it. Measured on this slot before the hold, sliding a rail
+/// out drifted 24.0000 to 23.7126, and to 24.3920 in the other direction for the same shape.
+///
+/// Nothing is being taken from the author here. A segment dragged by its BODY slides sideways —
+/// both ends by the same offset — so its length was never what the gesture was setting, and unlike
+/// an arc's radius there is no opposite gesture to tell apart.
+#[test]
+#[ignore = "the segment hold is switched off at the owner's request; see HOLD_A_CARRIED_SPAN"]
+fn sliding_a_slots_rail_keeps_the_length_it_was_drawn() {
+    let base = source()
+        .with_linear_slot(
+            ::parametric::sketch::LinearSlotKind::CenterToCenter,
+            SketchPoint::new(8, 0),
+            SketchPoint::new(32, 0),
+            SketchPoint::new(8, 8),
+            ctx(16),
+        )
+        .expect("a straight slot");
+    let position = |sketch: &Sketch, id: EntityId| {
+        sketch
+            .points()
+            .iter()
+            .find(|point| point.id == id)
+            .map(|point| point.at.in_plane())
+            .expect("the point survives the drag")
+    };
+    let length_of = |sketch: &Sketch, id: EntityId| {
+        sketch
+            .segments()
+            .iter()
+            .find(|segment| segment.id == id)
+            .map(|segment| {
+                let (tail, head) = (position(sketch, segment.from), position(sketch, segment.to));
+                (head[0] - tail[0]).hypot(head[1] - tail[1])
+            })
+            .expect("the rail survives its own drag")
+    };
+    let rails: Vec<EntityId> = base
+        .sketch
+        .segments()
+        .iter()
+        .filter(|segment| segment.role == EntityRole::Real)
+        .map(|segment| segment.id)
+        .collect();
+    assert_eq!(rails.len(), 2, "a straight slot has two rails");
+    for rail in rails {
+        let drawn = length_of(&base.sketch, rail);
+        assert!((drawn - 24.0).abs() < 1.0e-6, "the rail drew {drawn} long");
+        let mut slid = base.clone();
+        assert!(slid
+            .sketch
+            .move_curve(SketchCurve::Segment(rail), [20.0, 40.0], ctx(16))
+            .expect("the rail slide is answered"));
+        let after = length_of(&slid.sketch, rail);
+        assert!(
+            (after - drawn).abs() < 1.0e-6,
+            "a slid rail came out {after} long, not the {drawn} it was drawn"
+        );
+    }
+}
+
+/// A CIRCLE needs no hold of its own, and this is the shape that would have shown it if it did.
+///
+/// Two circular caps and two rails tangent to both, each rail end riding the circle it touches —
+/// the arc slot's undimensioned width in the one construction that can spend a circle's radius
+/// instead. Carried clean through its partner the radius does not move, because a circle's radius
+/// is AUTHORED rather than derived from points a hand can drag: an arc's follows its two endpoints
+/// through two equal-radius rows and goes wherever they are pushed, while nothing but a relation
+/// naming it can move a circle's. The preference pass keeps it and is never skipped for a carry the
+/// way the arc's was — take that preference away and this drawing cannot even be BUILT, the first
+/// tangency answering `Degenerate`.
+#[test]
+fn a_slot_capped_with_circles_keeps_its_width_without_a_hold_of_its_own() {
+    let mut base = Sketch::empty(PlaneAxis::Z);
+    let near = base
+        .add_circle(SketchPoint::new(8, 0), SketchLength::new(8))
+        .expect("the near cap");
+    let far = base
+        .add_circle(SketchPoint::new(32, 0), SketchLength::new(8))
+        .expect("the far cap");
+    let mut rails = Vec::new();
+    for (height, side) in [(8, LineSide::Left), (-8, LineSide::Right)] {
+        let tail = base.add_free_point(SketchPoint::new(8, height));
+        let head = base.add_free_point(SketchPoint::new(32, height));
+        let rail = base.connect(tail, head).expect("a rail");
+        for (cap, end) in [(near, tail), (far, head)] {
+            base.add_constraint(
+                ConstraintKind::PointOnCurve {
+                    point: end,
+                    curve: SketchCurve::Circle(cap),
+                },
+                ctx(16),
+            )
+            .expect("the rail end rides its cap");
+            base.add_constraint(
+                ConstraintKind::tangent(
+                    SketchCurve::Circle(cap),
+                    SketchCurve::Segment(rail),
+                    TangentBranch::Line(side),
+                ),
+                ctx(16),
+            )
+            .expect("the rail touches its cap");
+        }
+        rails.push(rail);
+    }
+    base.add_constraint(
+        ConstraintKind::Parallel {
+            first: rails[0],
+            second: rails[1],
+        },
+        ctx(16),
+    )
+    .expect("the rails run together");
+
+    let center = base
+        .circles()
+        .iter()
+        .find(|circle| circle.id == near)
+        .expect("the near cap")
+        .center;
+    let width_of = |sketch: &Sketch, id: EntityId| {
+        sketch
+            .circles()
+            .iter()
+            .find(|circle| circle.id == id)
+            .map(|circle| circle.resolved_radius(ctx(16)))
+            .expect("the cap survives the drag")
+    };
+    for target in [-20.0, -120.0, -300.0_f64] {
+        let mut carried = base.clone();
+        assert!(carried
+            .move_point(center, SketchPoint::from_continuous(target, 0.0), ctx(16))
+            .expect("the cap carry is answered"));
+        for cap in [near, far] {
+            let after = width_of(&carried, cap);
+            assert!(
+                (after - 8.0).abs() < 1.0e-6,
+                "carried to {target}, a cap came out {after} wide"
+            );
+        }
+    }
+}

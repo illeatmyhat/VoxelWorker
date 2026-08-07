@@ -62,6 +62,9 @@
 //!   [`CurveCrossing`](curve_intersection::CurveCrossing)s it reports, located by PARAMETER on
 //!   both curves so an arrangement can cut at them. Exact-`f64` throughout, because a missed
 //!   crossing changes the topology of the answer rather than its precision.
+//! - [`graph`] — undirected graph decompositions:
+//!   [`biconnected_blocks`](graph::biconnected_blocks) splits a graph into the maximal subgraphs
+//!   no single vertex can disconnect, which is how a drawing tells a closed loop from a chain.
 //! - [`noise`] — a procedural-generation kit: the [`SmallRng`](noise::SmallRng) LCG and
 //!   [`PerlinNoise`](noise::PerlinNoise) gradient noise with fBm.
 //! - [`nonlinear_least_squares`] — Powell's Dog Leg over a rank-revealing linear solve:
@@ -100,6 +103,7 @@
 pub mod complete_orthogonal_decomposition;
 pub mod curve_intersection;
 pub mod geom2d;
+pub mod graph;
 pub mod interval;
 pub mod noise;
 pub mod nonlinear_least_squares;
