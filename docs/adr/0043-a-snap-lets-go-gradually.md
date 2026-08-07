@@ -182,12 +182,52 @@ arc's sweep is neither.** `EdgeSpan` prices a segment's displacement, `ScalarHol
 shape scalar — which for an arc is its radius alone. Sliding a cap around its hub keeps every radius
 exactly, so the preference is indifferent to the one motion that is actually running away.
 
-So the next attempt is a MODELLING change and not a numerical one: give the preference a row for an
-arc's sweep, the way it already has one for an arc's radius. That is
-[`crates/parametric`](../../crates/parametric/src/sketch/solve.rs) work, it needs no projection and
-no extra pass, and it prices the free direction where the free direction actually lives. Its own
-decision, with its own measurements — including whether it costs a slot the sweeping drag that
-`an_arc_slot_end_follows_its_radius` exists to protect.
+### The sweep row was then built too, and it RELOCATES the spike rather than removing it
+
+A loosened arc has given up its chord — that is what loosening is, and it is why an end can sweep.
+So the row it was missing is the chord's LENGTH, held while its direction stays free: the arc still
+turns about its hub, but how far around it reaches is priced. With the radius already held, the
+chord length IS the sweep (`chord = 2r sin(θ/2)`). One residual per loosened arc, in the preference
+pass only — no change to the exactness passes' shape, so none of the dog-leg branch hazard above.
+
+At full weight it does exactly what it was built to do, and that turns out not to be enough:
+
+| heading | before | chord held |
+| --- | --- | --- |
+| 0° | 2.46 | **2724** |
+| 60° | 191 | 1.53 |
+| 90° | 1.70 | 1.73 |
+| 120° | 1.76 | 1.79 |
+| 180° | 1318 | 2.48 |
+
+**Both spikes are gone and a bigger one has opened at a heading that was smooth.** Halving the
+weight swaps them back — 0° returns to 2.45 and 180° goes to 2190 — and 0.2 does the same. At 0.05
+it is essentially the unfixed drawing again. There is no weight at which the drag is smooth in every
+direction, and the three sweeping tests (`an_arc_slot_end_follows_its_radius`,
+`both_arc_slot_grammars_carry_by_the_middle_and_sweep_by_an_end`,
+`pulling_a_slots_corner_along_its_rail_sweeps_the_near_end_and_leaves_the_far_one`) break at all of
+them.
+
+### What that retires
+
+**"The free sweep is spent arbitrarily" is not the explanation, and this record has carried it since
+it was written.** If an unpriced coordinate were the cause, pricing it would remove the spike.
+Pricing it moves the spike. The instability attaches itself to whichever direction is softest at the
+configuration the descent lands in, and closing one opens the next.
+
+So the cause is the descent, not the model: at scattered cursor values the trust region walks into a
+different place, and every coordinate the drawing leaves free is somewhere for that difference to
+show. Six approaches have now been measured against it — four penalty variants, a null-space
+projection, and this — and none of them touches the descent.
+
+**What is left is the trade this record already named and did not price.** Every drag frame
+re-solves from the pre-drag drawing, which buys path-independence: the same cursor always gives the
+same drawing, and no history can accumulate. Its cost is stated in the Context above as "no
+smoothness comes for free", and these measurements are what that costs — isolated frames at
+thousands of times the gain of a smooth one. A warm start from the previous frame is the standard
+cure and is what planegcs does; it would trade a property we chose deliberately for one the author
+can feel. That is a decision about what a drag IS, not a numerical repair, and it belongs in its own
+record with its own measurements.
 
 **A generous fixed tolerance is still wanted, and is still not this.** Real systems anchor snap
 tolerance in screen pixels — five by default in OCAD, an off-screen buffer in cloud CAD — because
