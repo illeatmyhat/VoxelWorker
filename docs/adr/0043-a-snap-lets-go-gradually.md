@@ -151,11 +151,43 @@ entire solve strategy — so a penalty of `1e-6` breaks a `Fix` by 2.4 units. **
 row competes with the constraints and can lose to them.** That is structural, and no weight repairs
 it.
 
-**What is left is a null-space projection**, which does not touch the residual system's shape at
-all: solve as now, then project the least-motion direction onto the Jacobian's null space and move
-along it. That is work in
-[`nonlinear_least_squares`](../../crates/substrate/src/nonlinear_least_squares.rs) rather than in
-the sketch, and it is its own decision.
+**The null-space projection was then built and measured, and it is a fifth rejection.**
+`solve_nearest` in [`nonlinear_least_squares`](../../crates/substrate/src/nonlinear_least_squares.rs):
+solve as now, then walk the answer back toward its own starting guess along
+`(I − Jᵀ(JJᵀ)⁻¹J)(x − anchor)`, each pass required to leave the residual no worse AND get strictly
+closer, so it is a strict improvement or an exact no-op. It behaved exactly as designed — **529
+tests green, no regression anywhere**, and the outlier at cursor 6.215 came down from `-1.418` to
+`-0.064` against neighbours at `-0.033`, a factor of forty.
+
+It is still not shippable. The worst pair on the walk is **unchanged to five decimals**, because a
+single linear projection under-shoots a free direction that is CURVED, and the walk inches. Four
+passes cost **3.7× the whole sketch suite** and did not reach it. Spending a multiple of every drag
+frame to fix some outliers and not the worst one is not a trade worth making.
+
+### And the coordinate that jumps is the SWEEP, which nothing prices
+
+The measurement that should have been taken first. At the worst pair on the 180° walk:
+
+| | radii | sweep |
+| --- | --- | --- |
+| out 6.290 | 37.7100 / 29.7100 / 33.7100 | **84.20°** |
+| out 6.295 | 37.7050 / 29.7050 / 33.7050 | **90.64°** |
+
+Every radius moves by 0.005 — exactly the cursor step, smooth to the last digit. What moves is the
+slot's **sweep, 6.44° for a thousandth of cursor**. And the slot was drawn at 90°, so the good
+answer is the one that KEPT its sweep and the bad one has spent 5.8° of it.
+
+That names the gap in one line: **the rigidity preference holds spans and it holds radii, and an
+arc's sweep is neither.** `EdgeSpan` prices a segment's displacement, `ScalarHold` prices a curve's
+shape scalar — which for an arc is its radius alone. Sliding a cap around its hub keeps every radius
+exactly, so the preference is indifferent to the one motion that is actually running away.
+
+So the next attempt is a MODELLING change and not a numerical one: give the preference a row for an
+arc's sweep, the way it already has one for an arc's radius. That is
+[`crates/parametric`](../../crates/parametric/src/sketch/solve.rs) work, it needs no projection and
+no extra pass, and it prices the free direction where the free direction actually lives. Its own
+decision, with its own measurements — including whether it costs a slot the sweeping drag that
+`an_arc_slot_end_follows_its_radius` exists to protect.
 
 **A generous fixed tolerance is still wanted, and is still not this.** Real systems anchor snap
 tolerance in screen pixels — five by default in OCAD, an off-screen buffer in cloud CAD — because
