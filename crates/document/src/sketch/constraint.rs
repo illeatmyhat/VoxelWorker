@@ -131,6 +131,27 @@ pub enum Dimension {
         to: EntityId,
         length: SketchLength,
     },
+    /// A curve that turns stands this far from its own center, everywhere.
+    ///
+    /// One member for the arc and the circle both, because it is one statement about one shape:
+    /// an arc is a circle with two ends, and how big it is does not depend on where they are. The
+    /// solver holds a radius column for each — the circle's authored, the arc's minted beside its
+    /// three points — so this reads the same row against either.
+    ///
+    /// A straight curve is refused when the relation is added, not here.
+    Radius {
+        curve: SketchCurve,
+        length: SketchLength,
+    },
+}
+
+impl Dimension {
+    /// The authored value, as a length, for the members that measure one.
+    pub const fn length(&self) -> Option<SketchLength> {
+        match *self {
+            Self::Span { length, .. } | Self::Radius { length, .. } => Some(length),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -341,7 +362,9 @@ impl ConstraintKind {
             Self::Curvature { joint, .. } => vec![joint],
             Self::Dimension(Dimension::Span { from, to, .. }) => vec![from, to],
             Self::Coincident { first, second } => vec![first, second],
-            Self::Horizontal { .. }
+            // A radius names a curve. The curve's own points are not what it is about.
+            Self::Dimension(Dimension::Radius { .. })
+            | Self::Horizontal { .. }
             | Self::Vertical { .. }
             | Self::Parallel { .. }
             | Self::Perpendicular { .. }
@@ -388,6 +411,7 @@ impl ConstraintKind {
             Self::Fix { point, .. } | Self::Quantize { point, .. } => [point, point],
             Self::Horizontal { segment } | Self::Vertical { segment } => [segment, segment],
             Self::Dimension(Dimension::Span { from, to, .. }) => [from.min(to), from.max(to)],
+            Self::Dimension(Dimension::Radius { curve, .. }) => [curve.id(), curve.id()],
             Self::Coincident { first, second }
             | Self::Parallel { first, second }
             | Self::Perpendicular { first, second }
@@ -479,6 +503,7 @@ impl ConstraintKind {
             Self::Fix { point, .. } | Self::Quantize { point, .. } => vec![point],
             Self::Horizontal { segment } | Self::Vertical { segment } => vec![segment],
             Self::Dimension(Dimension::Span { from, to, .. }) => vec![from, to],
+            Self::Dimension(Dimension::Radius { curve, .. }) => vec![curve.id()],
             Self::Coincident { first, second }
             | Self::Parallel { first, second }
             | Self::Perpendicular { first, second }
@@ -1048,6 +1073,13 @@ fn relation_for(
                 to,
                 length: length.value(),
             }),
+        ConstraintKind::Dimension(Dimension::Radius {
+            curve: subject,
+            length,
+        }) => curve(subject).map(|curve| Relation::Radius {
+            curve,
+            length: length.value(),
+        }),
         ConstraintKind::Coincident { first, second } => point(first)
             .zip(point(second))
             .map(|(first, second)| Relation::Coincident { first, second }),

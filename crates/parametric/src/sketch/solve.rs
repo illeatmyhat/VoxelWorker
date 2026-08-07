@@ -136,6 +136,14 @@ pub enum Relation {
         to: PointId,
         length: f64,
     },
+    /// A curve that turns stands a given distance from its own center, everywhere.
+    ///
+    /// One row, and the same row whether the curve is an arc or a circle: both answer
+    /// [`CurveGeometry::Circular`], and both name a radius the solver holds as a column — the
+    /// circle's authored one, the arc's minted beside its three points. That is the whole reason
+    /// this relation can be written once. A segment has no center and no radius, and the document
+    /// refuses to build one against it rather than this arm having to.
+    Radius { curve: SketchCurve, length: f64 },
     /// Two independently-addressable points occupy one place. This relation deliberately does not
     /// merge their handles: merging destroys an id, rewrites every segment that named it, and makes
     /// deleting the assertion unable to restore the drawing.
@@ -235,6 +243,7 @@ impl Relation {
             Self::Horizontal { .. }
             | Self::Vertical { .. }
             | Self::Distance { .. }
+            | Self::Radius { .. }
             | Self::Parallel { .. }
             | Self::Perpendicular { .. }
             | Self::Equal { .. }
@@ -941,6 +950,13 @@ impl Problem {
             } => Ok(Resolved::PointOnCurve {
                 point: point(id)?,
                 curve: curve(subject)?,
+            }),
+            Relation::Radius {
+                curve: subject,
+                length,
+            } => Ok(Resolved::Radius {
+                curve: curve(subject)?,
+                length,
             }),
             Relation::TangentDirection {
                 joint,
@@ -2749,6 +2765,10 @@ enum Resolved {
         point: usize,
         curve: ResolvedCurve,
     },
+    Radius {
+        curve: ResolvedCurve,
+        length: f64,
+    },
     TangentDirection {
         joint: usize,
         joint_arm: usize,
@@ -3342,6 +3362,22 @@ impl ResidualSystem for Residuals<'_> {
                             (here[0] - support.center[0]).hypot(here[1] - support.center[1])
                                 - support.radius
                         }
+                    };
+                    row += 1;
+                }
+                Resolved::Radius { curve, length } => {
+                    into[row] = match curve_geometry(
+                        curve,
+                        &at,
+                        &self.problem.parameters,
+                        &whole,
+                        self.problem.points.len(),
+                    ) {
+                        CurveGeometry::Circular(support) => support.radius - length,
+                        // Unreachable: the document will not build a radius against a straight
+                        // curve. Zero rather than a panic, so a hand-built problem misbehaves
+                        // by saying nothing instead of by falling over.
+                        CurveGeometry::Segment { .. } => 0.0,
                     };
                     row += 1;
                 }
@@ -4862,9 +4898,11 @@ impl Problem {
                     SketchCurve::Arc(_) | SketchCurve::Circle(_) => Vec::new(),
                 }
             }
+            // A radius only ever names a curve that turns, so it never names a segment.
             Relation::Fix { .. }
             | Relation::Quantize { .. }
             | Relation::Distance { .. }
+            | Relation::Radius { .. }
             | Relation::Coincident { .. }
             | Relation::Concentric { .. } => Vec::new(),
         }

@@ -4393,6 +4393,27 @@ impl Sketch {
                     return Err(ConstraintRefusal::Impossible);
                 }
             }
+            // A radius is a statement about a curve that TURNS. A segment has no center to
+            // measure from and the higher curves have no one radius, so both are refused here
+            // rather than left to say nothing in a residual row.
+            ConstraintKind::Dimension(Dimension::Radius { curve, length }) => {
+                let turns = match curve {
+                    SketchCurve::Arc(id) => self.arcs.iter().any(|arc| arc.id == id),
+                    SketchCurve::Circle(id) => self.circles.iter().any(|held| held.id == id),
+                    SketchCurve::Segment(_)
+                    | SketchCurve::Bezier(_)
+                    | SketchCurve::Ellipse(_)
+                    | SketchCurve::Conic(_)
+                    | SketchCurve::Spline(_) => return Err(ConstraintRefusal::Impossible),
+                };
+                if !turns {
+                    return Err(ConstraintRefusal::UnknownEntity);
+                }
+                // A curve of no size is not a smaller curve, it is a point.
+                if !length.value().is_finite() || length.value() <= 0.0 {
+                    return Err(ConstraintRefusal::Impossible);
+                }
+            }
             ConstraintKind::Dimension(Dimension::Span { from, to, length }) => {
                 if !known_point(from) || !known_point(to) {
                     return Err(ConstraintRefusal::UnknownEntity);
@@ -6065,7 +6086,9 @@ impl Sketch {
                 ConstraintKind::Fix { at, .. } => {
                     *at = at.retargeted(old_density, new_density);
                 }
-                ConstraintKind::Dimension(Dimension::Span { length, .. }) => {
+                ConstraintKind::Dimension(
+                    Dimension::Span { length, .. } | Dimension::Radius { length, .. },
+                ) => {
                     *length = length.retargeted(old_density, new_density);
                 }
                 ConstraintKind::Quantize { pitch, phase, .. } => {

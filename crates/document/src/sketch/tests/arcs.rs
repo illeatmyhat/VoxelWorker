@@ -7,7 +7,7 @@ use crate::sketch::{
     arc_center_radius, arc_interior_points, included_angle_through_degrees, EntityId, PlaneAxis,
     Point, PointLifetime, Sketch, SketchPoint, SketchSolid, ARC_SAGITTA_TOLERANCE_VOXELS,
 };
-use crate::sketch::{SketchCurve, SketchLength};
+use crate::sketch::{ConstraintKind, ConstraintRefusal, Dimension, SketchCurve, SketchLength};
 use crate::voxel::VoxelProducer;
 use ::parametric::units::AngleMeasurement;
 use voxel_core::voxel::VoxelGrid;
@@ -747,6 +747,100 @@ fn a_rim_drag_sets_the_radius_from_the_cursor_and_holds_the_center() {
         assert!(
             (radius - want) < 1.0e-6 && (want - radius) < 1.0e-6,
             "a circle rim drag {name} answered radius {radius}, not {want}"
+        );
+    }
+}
+
+/// One dimension reaches an arc and a circle alike, and it OUTRANKS the rim drag.
+///
+/// The point of the family: how big a round curve is does not depend on whether it has ends. The
+/// arc's radius is a solver column minted beside its three points and the circle's is authored
+/// beside its center, and the same relation reads a row against either.
+///
+/// Held against the gesture, because a dimension that a drag can quietly spend is not a dimension.
+/// This is the assertion that would have made a slot's width impossible to collapse.
+#[test]
+fn one_radius_dimension_holds_an_arc_and_a_circle_against_their_own_rim_drags() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let from = sketch.add_free_point(SketchPoint::new(10, 0));
+    let to = sketch.add_free_point(SketchPoint::new(0, 10));
+    let arc = sketch
+        .connect_arc(from, to, AngleMeasurement::from_degrees(90))
+        .expect("a quarter arc of radius 10 about the origin");
+    let circle = sketch
+        .add_circle(SketchPoint::new(40, 0), SketchLength::new(10))
+        .expect("a lone circle of radius 10");
+
+    // A straight curve has no center to measure from.
+    let segment = {
+        let tail = sketch.add_free_point(SketchPoint::new(0, -20));
+        let head = sketch.add_free_point(SketchPoint::new(10, -20));
+        sketch.connect(tail, head).expect("a segment")
+    };
+    assert_eq!(
+        sketch.add_constraint(
+            ConstraintKind::Dimension(Dimension::Radius {
+                curve: SketchCurve::Segment(segment),
+                length: SketchLength::new(10),
+            }),
+            ctx(16),
+        ),
+        Err(ConstraintRefusal::Impossible),
+        "a segment took a radius"
+    );
+
+    for (name, curve, grab) in [
+        ("arc", SketchCurve::Arc(arc), [10.0, 0.0]),
+        ("circle", SketchCurve::Circle(circle), [50.0, 0.0]),
+    ] {
+        let mut held = sketch.clone();
+        assert!(
+            held.add_constraint(
+                ConstraintKind::Dimension(Dimension::Radius {
+                    curve,
+                    length: SketchLength::new(10),
+                }),
+                ctx(16),
+            )
+            .is_ok(),
+            "the {name} refused a radius it already stands at"
+        );
+        // The same rim drag that grows an undimensioned curve to 14. It is ANSWERED, not refused
+        // — the drawing moves and settles back on the dimension, rather than the gesture being
+        // turned away and the radius surviving because nothing happened.
+        assert_eq!(
+            held.drag_curve_through(curve, grab, [grab[0] + 4.0, 0.0], ctx(16)),
+            Ok(true),
+            "the {name} rim drag was not answered, so this proves nothing"
+        );
+        let radius = match curve {
+            SketchCurve::Circle(id) => held
+                .circles()
+                .iter()
+                .find(|circle| circle.id == id)
+                .map(|circle| circle.resolved_radius(ctx(16)))
+                .expect("the circle"),
+            _ => {
+                let seat = |id: EntityId| {
+                    held.points()
+                        .iter()
+                        .find(|point| point.id == id)
+                        .map(|point| point.at.in_plane())
+                        .expect("the point")
+                };
+                let center = held
+                    .arcs()
+                    .iter()
+                    .find(|held| held.id == arc)
+                    .map(|held| held.center)
+                    .expect("the arc");
+                let (hub, end) = (seat(center), seat(from));
+                (end[0] - hub[0]).hypot(end[1] - hub[1])
+            }
+        };
+        assert!(
+            (radius - 10.0).abs() < 1.0e-6,
+            "a dimensioned {name} was dragged to {radius}, not held at 10"
         );
     }
 }
