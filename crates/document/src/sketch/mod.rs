@@ -1191,6 +1191,21 @@ pub struct ArcForm {
     pub sweep_degrees: f64,
 }
 
+/// Where a curve that TURNS stands: its center, and how far its rim is from it.
+///
+/// The two things every turning curve has and no straight one does. [`ArcForm`] answers more than
+/// this and only for an arc; this answers the part a circle can answer too, so a caller measuring
+/// a radius does not have to know first which of the two it is holding — which is the same reason
+/// the solver's radius relation is written once.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CircularForm {
+    /// The center, in plane coordinates. An arc's is projected onto its chord's bisector, so it is
+    /// the center of the circle the arc actually lies on rather than the one the author placed.
+    pub center: [f64; 2],
+    /// The distance from `center` out to the rim, in voxels.
+    pub radius: f64,
+}
+
 impl ProfileEdge {
     /// A straight span.
     pub fn straight(from: SketchPoint, to: SketchPoint) -> Self {
@@ -1928,6 +1943,38 @@ impl Sketch {
     #[must_use]
     pub fn arc_form_of(&self, id: EntityId) -> Option<ArcForm> {
         self.arc_form(self.arcs.iter().find(|arc| arc.id == id)?)
+    }
+
+    /// How the drawing currently stands `curve` off its own center, or `None` for a curve that
+    /// does not turn.
+    ///
+    /// The one public door to a radius. A circle keeps its radius as an authored parameter and an
+    /// arc reads one out of three placed points, and no caller that merely wants to MEASURE a rim
+    /// should have to know that.
+    pub fn circular_form(
+        &self,
+        curve: SketchCurve,
+        context: parametric::EvaluationContext,
+    ) -> Option<CircularForm> {
+        match curve {
+            SketchCurve::Arc(id) => self.arc_form_of(id).map(|form| CircularForm {
+                center: form.center,
+                radius: form.radius,
+            }),
+            SketchCurve::Circle(id) => {
+                let circle = self.circles.iter().find(|held| held.id == id)?;
+                let center = self.point_in_plane(circle.center)?;
+                let radius = circle.resolved_radius(context);
+                radius
+                    .is_finite()
+                    .then_some(CircularForm { center, radius })
+            }
+            SketchCurve::Segment(_)
+            | SketchCurve::Bezier(_)
+            | SketchCurve::Ellipse(_)
+            | SketchCurve::Conic(_)
+            | SketchCurve::Spline(_) => None,
+        }
     }
 
     /// The current center of one authored circular curve. Radius sources are irrelevant to this

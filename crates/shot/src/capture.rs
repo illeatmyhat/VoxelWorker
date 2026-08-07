@@ -1170,6 +1170,8 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         // no constraint badges — they are projected by the windowed
         // overlay refresh, which the headless path does not run.
         &[],
+        // nor dimension gizmos, projected by the same refresh.
+        &[],
         // #100: and no viewport menu is open, so no region is under one.
         None,
         // likewise no add-point insert preview in the headless goldens.

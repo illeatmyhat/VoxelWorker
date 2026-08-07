@@ -23,7 +23,7 @@
 //! glyph is drawn but whose residual is absent stays off the rail — an armable verb that asserts
 //! nothing is worse than a cell that is not there.
 
-use document::sketch::{ConstraintKind, EntityId, Sketch, SketchCurve};
+use document::sketch::{ConstraintKind, Dimension, EntityId, Sketch, SketchCurve, SketchLength};
 
 use crate::icons::Icon;
 
@@ -207,6 +207,18 @@ pub enum ConstraintVerb {
     /// A fit-point spline's END runs smoothly out of the picked curve: same direction there, and
     /// the same curvature.
     Curvature,
+    /// A quantity the author STATES about what they pick: how far apart two points are, how far
+    /// out a rim stands, or the angle two lines meet at.
+    ///
+    /// **One cell for all three.** The author is doing one thing — saying how big something is —
+    /// and once they have pointed at something the drawing already knows which kind of quantity
+    /// that is. Three cells would ask them to classify their own intent before they were allowed
+    /// to point, which is the question the tool should be answering for them. It is one tool in
+    /// Fusion for the same reason, and the family it asserts is one family for the same reason.
+    ///
+    /// It is the only verb whose arity the FIRST pick decides: a rim names its own center, so a
+    /// circle or an arc completes the gesture alone.
+    Dimension,
 }
 
 impl ConstraintVerb {
@@ -236,6 +248,11 @@ impl ConstraintVerb {
             // smoothly out of THAT", and asking for the curve first would read as picking a curve
             // and only then being told what for.
             ConstraintVerb::Curvature => &[SlotKind::Point, SlotKind::Curve],
+            // The MOST it can ask for. What it actually asks is decided pick by pick in
+            // [`ArmedConstraint::wants`], and `PointOrCurve` is already exactly the set a
+            // dimension can be about: a point, or a curve carrying relation geometry, which is a
+            // line, an arc or a circle and nothing else.
+            ConstraintVerb::Dimension => &[SlotKind::PointOrCurve, SlotKind::PointOrCurve],
         }
     }
 
@@ -258,6 +275,7 @@ impl ConstraintVerb {
             ConstraintVerb::Curvature => {
                 "Curvature — then pick a spline's end and the curve it runs out of"
             }
+            ConstraintVerb::Dimension => "Dimension — then pick what to measure",
         }
     }
 
@@ -282,6 +300,7 @@ impl ConstraintVerb {
             ConstraintVerb::Concentric => Icon::ConstraintConcentric,
             ConstraintVerb::Symmetry => Icon::ConstraintSymmetry,
             ConstraintVerb::Curvature => Icon::ConstraintCurvature,
+            ConstraintVerb::Dimension => Icon::SketchDimension,
         }
     }
 }
@@ -349,14 +368,13 @@ impl ArmedConstraint {
     /// Rebuild a gesture from its parts — the door a dump comes back through, so a mid-pick
     /// repro re-enters with the same question on screen.
     ///
-    /// A full or overfull restored list restarts empty: completed gestures are dispatched and
-    /// disarmed rather than persisted, so such a list is malformed session state.
+    /// A restored list that turns out to be COMPLETE restarts empty: completed gestures are
+    /// dispatched and disarmed rather than persisted, so such a list is malformed session state.
+    /// Asked of the rebuilt gesture rather than of the list's length, because the verb whose arity
+    /// its first pick decides has no one length to compare against.
     pub fn from_parts(verb: ConstraintVerb, picked: Vec<SketchEntity>) -> Self {
         // Tangent depends on unsnapped click evidence; restored artifacts intentionally restart it.
         if verb == ConstraintVerb::Tangent {
-            return Self::new(verb);
-        }
-        if picked.len() >= verb.slots().len() {
             return Self::new(verb);
         }
         let mut restored = Self::new(verb);
@@ -369,6 +387,9 @@ impl ArmedConstraint {
                 return Self::new(verb);
             }
             restored.picked.push(candidate);
+        }
+        if restored.wants().is_none() {
+            return Self::new(verb);
         }
         restored
     }
@@ -389,6 +410,20 @@ impl ArmedConstraint {
     /// most-specific-thing-wins rule and then refusing what it found. A question that already
     /// knows what kind of answer it wants should not be able to pick up the wrong kind.
     pub fn wants(&self) -> Option<PickRequirement> {
+        if self.verb == ConstraintVerb::Dimension {
+            // The first pick decides both WHICH member is being authored and whether a second
+            // pick is wanted at all. A rim names its own center, so it is the whole gesture; a
+            // point wants a point to be measured to, and a line wants a line to be measured
+            // against. Narrowing to the kind already picked is Symmetry's rule for Symmetry's
+            // reason: a span between a point and a line is not a quantity this family states.
+            return match self.picked.first() {
+                None => Some(PickRequirement::PointOrCurve),
+                Some(_) if self.picked.len() > 1 => None,
+                Some(SketchEntity::Point(_)) => Some(PickRequirement::Point),
+                Some(SketchEntity::Curve(curve)) if curve.is_circular() => None,
+                Some(SketchEntity::Curve(_)) => Some(PickRequirement::Segment),
+            };
+        }
         if self.verb == ConstraintVerb::Symmetry && self.picked.len() == 1 {
             return match self.picked[0] {
                 SketchEntity::Curve(curve) => Some(PickRequirement::MatchingCurve(curve)),
@@ -585,7 +620,10 @@ impl ArmedConstraint {
                 }
                 _ => None,
             },
-            ConstraintVerb::Tangent | ConstraintVerb::Symmetry => None,
+            // All three need the drawing MEASURED, and a circle's radius is a measurement only
+            // an evaluation context can resolve, so the whole family goes through
+            // [`ArmedConstraint::kind_at_context`].
+            ConstraintVerb::Tangent | ConstraintVerb::Symmetry | ConstraintVerb::Dimension => None,
             ConstraintVerb::Concentric => {
                 let (first, second) = circular_pair()?;
                 Some(ConstraintKind::concentric(first, second))
@@ -606,9 +644,12 @@ impl ArmedConstraint {
     ) -> Result<ConstraintKind, &'static str> {
         if !matches!(
             self.verb,
-            ConstraintVerb::Tangent | ConstraintVerb::Symmetry
+            ConstraintVerb::Tangent | ConstraintVerb::Symmetry | ConstraintVerb::Dimension
         ) {
             return self.kind(sketch).ok_or("constraint is incomplete");
+        }
+        if self.verb == ConstraintVerb::Dimension {
+            return seeded_dimension(&self.picked, sketch, context);
         }
         if self.verb == ConstraintVerb::Symmetry {
             let (
@@ -647,6 +688,88 @@ impl ArmedConstraint {
             .map_err(|_| "cannot choose a tangent branch here")?;
         Ok(ConstraintKind::tangent(first, second, branch))
     }
+}
+
+/// The dimension the picks assert, **at the size the drawing already is**.
+///
+/// A dimension arrives measured. The author asks "how big is this", the drawing answers, and only
+/// then do they overwrite the answer if they meant something else. The alternative — arriving at
+/// zero, or opening a value prompt before the constraint can exist at all — makes the common case,
+/// pin what I have, cost a number the author never had to think of. It also means the trial solve
+/// that admits the constraint is starting from a drawing that already satisfies it, so adding a
+/// dimension can only fail when the drawing was already fighting itself.
+///
+/// # Errors
+///
+/// A user-facing refusal when the picks are incomplete, or when the geometry they name has gone
+/// out from under them between the click and here.
+fn seeded_dimension(
+    picked: &[SketchEntity],
+    sketch: &Sketch,
+    context: parametric::EvaluationContext,
+) -> Result<ConstraintKind, &'static str> {
+    let dimension = match (picked.first(), picked.get(1)) {
+        (Some(SketchEntity::Curve(curve)), None) => {
+            let form = sketch
+                .circular_form(*curve, context)
+                .ok_or("that curve has no radius to state")?;
+            Dimension::Radius {
+                curve: *curve,
+                length: SketchLength::from_continuous(form.radius),
+            }
+        }
+        (Some(SketchEntity::Point(from)), Some(SketchEntity::Point(to))) => {
+            let (a, b) = (point_at(sketch, *from), point_at(sketch, *to));
+            let (a, b) = (a.ok_or(GONE)?, b.ok_or(GONE)?);
+            Dimension::Span {
+                from: *from,
+                to: *to,
+                length: SketchLength::from_continuous((b[0] - a[0]).hypot(b[1] - a[1])),
+            }
+        }
+        (
+            Some(SketchEntity::Curve(SketchCurve::Segment(first))),
+            Some(SketchEntity::Curve(SketchCurve::Segment(second))),
+        ) => Dimension::Angle {
+            first: *first,
+            second: *second,
+            degrees: parametric::units::AngleMeasurement::try_from_degrees_f64(
+                turn_between(sketch, *first, *second).ok_or(GONE)?,
+            )
+            .map_err(|_| "those lines do not meet at an angle this can state")?,
+        },
+        _ => return Err("pick two points, two lines, or one arc or circle"),
+    };
+    Ok(ConstraintKind::Dimension(dimension))
+}
+
+/// The one refusal both measured members share, spelled once because it is one `&'static str`.
+const GONE: &str = "that geometry is gone";
+
+fn point_at(sketch: &Sketch, id: EntityId) -> Option<[f64; 2]> {
+    Some(
+        sketch
+            .points()
+            .iter()
+            .find(|point| point.id == id)?
+            .at
+            .in_plane(),
+    )
+}
+
+/// The turn from `first` onto `second`, in degrees, folded into `[0, 180)`.
+///
+/// Folded because a segment has two ends and the drawing has no opinion about which one it points
+/// from, so an angle and that angle plus a half turn are the same claim — which is exactly what
+/// the residual, being a sine, already says. Seeding outside the fold would show the author a
+/// number their own drawing disagrees with.
+fn turn_between(sketch: &Sketch, first: EntityId, second: EntityId) -> Option<f64> {
+    let bearing = |id: EntityId| {
+        let held = sketch.segments().iter().find(|held| held.id == id)?;
+        let (from, to) = (point_at(sketch, held.from)?, point_at(sketch, held.to)?);
+        Some((to[1] - from[1]).atan2(to[0] - from[0]).to_degrees())
+    };
+    Some((bearing(second)? - bearing(first)?).rem_euclid(180.0))
 }
 
 /// Which axis constraint a segment is asking for: the one it is ALREADY nearer.
@@ -709,6 +832,130 @@ mod tests {
         let to = sketch.add_free_point(SketchPoint::from_continuous(8.0, 3.0));
         let segment = sketch.connect(from, to).expect("two distinct points join");
         (sketch, from, to, segment)
+    }
+
+    fn density_16() -> parametric::EvaluationContext {
+        parametric::EvaluationContext::new(std::num::NonZeroU32::new(16).expect("density"))
+    }
+
+    /// **One cell, three members, and the FIRST pick decides which.**
+    ///
+    /// This is the whole design of the verb: the author points at something and the drawing works
+    /// out what kind of quantity they are stating. It also holds the arity rule that follows from
+    /// it — a rim is one pick because it names its own center.
+    #[test]
+    fn a_dimension_reads_its_member_and_its_arity_off_the_first_pick() {
+        let (mut sketch, from, to, first) = one_segment();
+        let up = sketch.add_free_point(SketchPoint::from_continuous(0.0, 9.0));
+        let second = sketch.connect(from, up).expect("a second line");
+        let center = sketch.add_free_point(SketchPoint::from_continuous(30.0, 30.0));
+        let circle = sketch
+            .circle_about(center, document::sketch::SketchLength::new(7))
+            .expect("a circle about a free point");
+
+        // A rim: one pick, and the gesture is over.
+        let mut rim = ArmedConstraint::new(ConstraintVerb::Dimension);
+        assert_eq!(rim.wants(), Some(PickRequirement::PointOrCurve));
+        assert_eq!(
+            rim.offer(SketchEntity::Curve(SketchCurve::Circle(circle)), &sketch),
+            Offer::Complete
+        );
+        assert_eq!(rim.wants(), None);
+        assert_eq!(
+            rim.kind_at_context(&sketch, density_16()),
+            Ok(ConstraintKind::Dimension(Dimension::Radius {
+                curve: SketchCurve::Circle(circle),
+                length: SketchLength::from_continuous(7.0),
+            }))
+        );
+
+        // Two points: a span, seeded at the distance they already stand apart.
+        let mut span = ArmedConstraint::new(ConstraintVerb::Dimension);
+        assert_eq!(span.offer(SketchEntity::Point(from), &sketch), Offer::Taken);
+        // Narrowed by the first pick — a span from a point to a line is not a quantity this
+        // family states.
+        assert_eq!(span.wants(), Some(PickRequirement::Point));
+        assert_eq!(
+            span.offer(SketchEntity::Curve(SketchCurve::Segment(first)), &sketch),
+            Offer::Refused("that is not a point")
+        );
+        assert_eq!(
+            span.offer(SketchEntity::Point(to), &sketch),
+            Offer::Complete
+        );
+        let ConstraintKind::Dimension(Dimension::Span { length, .. }) = span
+            .kind_at_context(&sketch, density_16())
+            .expect("two points always have a distance")
+        else {
+            panic!("two points state a span");
+        };
+        // (0,0) to (8,3). The tolerance is f32-wide because a SketchLength keeps its whole
+        // voxels as an i64 and only the FRACTION as an f32.
+        assert!(
+            (length.value() - 73.0_f64.sqrt()).abs() < 1e-6,
+            "{}",
+            length.value()
+        );
+
+        // Two lines: an angle, seeded at the turn they already make.
+        let mut angle = ArmedConstraint::new(ConstraintVerb::Dimension);
+        assert_eq!(
+            angle.offer(SketchEntity::Curve(SketchCurve::Segment(first)), &sketch),
+            Offer::Taken
+        );
+        assert_eq!(angle.wants(), Some(PickRequirement::Segment));
+        assert_eq!(
+            angle.offer(SketchEntity::Point(to), &sketch),
+            Offer::Refused("that is not a line")
+        );
+        assert_eq!(
+            angle.offer(SketchEntity::Curve(SketchCurve::Segment(second)), &sketch),
+            Offer::Complete
+        );
+        let ConstraintKind::Dimension(Dimension::Angle { degrees, .. }) = angle
+            .kind_at_context(&sketch, density_16())
+            .expect("two lines always make an angle")
+        else {
+            panic!("two lines state an angle");
+        };
+        // (8,3) bears 20.556°, (0,9) bears 90°, so the turn is 69.444°.
+        let expected = 90.0 - 3.0_f64.atan2(8.0).to_degrees();
+        assert!(
+            (degrees.to_degrees_f64() - expected).abs() < 0.01,
+            "{}",
+            degrees.to_degrees_f64()
+        );
+    }
+
+    /// **A completed gesture is not session state**, and the dimension is why the rule is asked of
+    /// the rebuilt gesture rather than of the list's length: one pick can be a whole gesture, so
+    /// there is no one length to compare against.
+    #[test]
+    fn a_restored_dimension_that_is_already_complete_restarts_empty() {
+        let (mut sketch, from, to, _) = one_segment();
+        let center = sketch.add_free_point(SketchPoint::from_continuous(30.0, 30.0));
+        let circle = sketch
+            .circle_about(center, document::sketch::SketchLength::new(7))
+            .expect("a circle about a free point");
+
+        let rim = ArmedConstraint::from_parts(
+            ConstraintVerb::Dimension,
+            vec![SketchEntity::Curve(SketchCurve::Circle(circle))],
+        );
+        assert_eq!(rim.picked(), &[], "one pick was already the whole gesture");
+
+        let span = ArmedConstraint::from_parts(
+            ConstraintVerb::Dimension,
+            vec![SketchEntity::Point(from), SketchEntity::Point(to)],
+        );
+        assert_eq!(span.picked(), &[]);
+
+        // A gesture still mid-pick comes back intact, which is what the door is for.
+        let waiting =
+            ArmedConstraint::from_parts(ConstraintVerb::Dimension, vec![SketchEntity::Point(from)]);
+        assert_eq!(waiting.picked(), &[SketchEntity::Point(from)]);
+        assert_eq!(waiting.wants(), Some(PickRequirement::Point));
+        let _ = &sketch;
     }
 
     /// Coincident's second pick may be a CURVE, and then it asserts point-on-curve.

@@ -39,7 +39,7 @@
 //! a gizmo that drew them again would double every stroke. The one exception is the radius center
 //! mark, which is dimension ink and belongs to the dimension.
 
-use egui::{Color32, FontId, Painter, Pos2, Shape, Stroke, Vec2};
+use egui::{Color32, FontId, Painter, Pos2, Rect, Shape, Stroke, Vec2};
 
 use crate::theme::color_palette;
 
@@ -309,21 +309,33 @@ impl Drawing {
         }
     }
 
+    /// A box around each value, in screen space, for a caller that has to make the number
+    /// CLICKABLE.
+    ///
+    /// A dimension is the one relation with no badge — the number IS the mark — so the number is
+    /// also the only thing a click can land on to select or edit it. The extent is estimated from
+    /// the monospace advance rather than laid out, because the shell hit-tests before it has a
+    /// painter; the type is monospace precisely so that estimate is exact in width.
+    ///
+    /// Axis-aligned around the ROTATED text, so an angled value stays clickable over its whole
+    /// run rather than only where an unrotated box happened to cover it.
+    #[must_use]
+    pub fn label_boxes(&self) -> Vec<Rect> {
+        self.labels
+            .iter()
+            .map(|label| {
+                let size = Vec2::new(value_width(&label.text), VALUE_SIZE);
+                Rect::from_points(&label_corners(label, size))
+            })
+            .collect()
+    }
+
     fn paint_label(&self, painter: &Painter, label: &Label) {
         let color = self.rank.color();
         let galley =
             painter.layout_no_wrap(label.text.clone(), FontId::monospace(VALUE_SIZE), color);
         let size = galley.size();
-        let along = Vec2::new(label.radians.cos(), label.radians.sin());
-        let normal = Vec2::new(along.y, -along.x);
-        // egui draws a galley from its top-left and rotates about that point, so the offset that
-        // realises the anchor and the lift has to be applied in the ROTATED frame.
-        let shift = match label.anchor {
-            Anchor::Middle => -size.x / 2.0,
-            Anchor::Start => 0.0,
-            Anchor::End => -size.x,
-        };
-        let at = label.at + along * shift + normal * (label.lift + size.y);
+        let at = label_corners(label, size)[0];
 
         // The value's halo IS painted over the dimension line: a line is supposed to break where
         // the number sits, which is the one place the two-pass rule is deliberately broken.
@@ -363,6 +375,30 @@ pub fn upright_radians(radians: f32) -> f32 {
 }
 
 /// How wide a value will be once laid out — known before anything is painted.
+/// The four corners of a value's box, top-left first, in the order the text is laid out.
+///
+/// egui draws a galley from its top-left and rotates about that point, so the offset that realises
+/// the anchor and the lift has to be applied in the ROTATED frame. Written once because the paint
+/// path and [`Drawing::label_boxes`] have to agree exactly — a hit target that missed the mark it
+/// is standing for would be a click that does nothing on something the author can plainly see.
+fn label_corners(label: &Label, size: Vec2) -> [Pos2; 4] {
+    let along = Vec2::new(label.radians.cos(), label.radians.sin());
+    let normal = Vec2::new(along.y, -along.x);
+    let shift = match label.anchor {
+        Anchor::Middle => -size.x / 2.0,
+        Anchor::Start => 0.0,
+        Anchor::End => -size.x,
+    };
+    let top_left = label.at + along * shift + normal * (label.lift + size.y);
+    let down = -normal;
+    [
+        top_left,
+        top_left + along * size.x,
+        top_left + along * size.x + down * size.y,
+        top_left + down * size.y,
+    ]
+}
+
 pub(crate) fn value_width(text: &str) -> f32 {
     text.chars().count() as f32 * VALUE_ADVANCE
 }

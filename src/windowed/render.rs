@@ -220,6 +220,7 @@ impl WindowedState {
                 // The constraint badges, projected last frame — each
                 // asserted relation's glyph beside the geometry it names.
                 &self.sketch_constraint_badges,
+                &self.sketch_dimension_gizmos,
                 // #100: the pick state of the region the open menu was raised inside, so the
                 // menu can label its row "carve" or "fill".
                 sketch_face_at_menu,
@@ -3326,6 +3327,25 @@ impl WindowedState {
         // array here.
         let scale = self.last_pixels_per_point;
         let half = ui::chrome::SKETCH_CONSTRAINT_BADGE * 0.5 * scale;
+        for gizmo in &self.sketch_dimension_gizmos {
+            let hit = gizmo.drawing.label_boxes().into_iter().any(|box_px| {
+                let box_px = egui::Rect::from_min_max(
+                    egui::Pos2::new(box_px.min.x * scale, box_px.min.y * scale),
+                    egui::Pos2::new(box_px.max.x * scale, box_px.max.y * scale),
+                );
+                if window {
+                    rect.contains_rect(box_px)
+                } else {
+                    rect.intersects(box_px)
+                }
+            });
+            if hit {
+                picked.push(ui::panel::SelectionTarget::SketchConstraint {
+                    sketch,
+                    entity: gizmo.constraint,
+                });
+            }
+        }
         for badge in &self.sketch_constraint_badges {
             let center = egui::Pos2::new(badge.center.x * scale, badge.center.y * scale);
             let hit = if window {
@@ -4043,6 +4063,151 @@ impl WindowedState {
         self.commit_sketch_profile_edit(target, next);
     }
 
+    /// The dimension gizmos to draw next frame: one measured mark per authored quantity.
+    ///
+    /// A dimension is the one relation that does NOT get a badge — the number is the mark, and a
+    /// glyph beside it would say the same thing twice. This is the "instead".
+    ///
+    /// Everything is projected through the same plane-to-screen path the arcs are tessellated
+    /// with, so a gizmo tracks its geometry through every camera move. A dimension whose geometry
+    /// went behind the camera simply has no gizmo, which is the rule the badges and the drawing
+    /// both already follow.
+    fn refresh_sketch_dimension_gizmos(
+        &mut self,
+        target: document::scene::NodeId,
+        view_projection: glam::Mat4,
+        viewport_px: [u32; 4],
+        pixels_per_point: f32,
+    ) {
+        let Some((producer, _)) = self.sketch_node_state(target) else {
+            return;
+        };
+        let density = self.panel_state.geometry.voxels_per_block;
+        let (Some(context), Some(handles)) = (
+            self.sketch_evaluation_context(),
+            self.panel_state.scene.sketch_handles(target, density),
+        ) else {
+            return;
+        };
+        let [vx, vy, vw, vh] = viewport_px.map(|value| value as f32);
+        // The plane-to-screen door, in EGUI POINTS — the gizmo modules lay out in the same units
+        // egui paints in, so the conversion belongs here rather than at every call.
+        let to_px = |coord: [f64; 2]| {
+            let vertex = handles.profile_to_render(coord);
+            let clip = view_projection * glam::Vec4::new(vertex[0], vertex[1], vertex[2], 1.0);
+            (clip.w > 0.0).then(|| {
+                egui::Pos2::new(
+                    (vx + (clip.x / clip.w * 0.5 + 0.5) * vw) / pixels_per_point,
+                    (vy + (1.0 - (clip.y / clip.w * 0.5 + 0.5)) * vh) / pixels_per_point,
+                )
+            })
+        };
+        let in_plane = |id: document::sketch::EntityId| {
+            producer
+                .sketch
+                .points()
+                .iter()
+                .find(|point| point.id == id)
+                .map(|point| point.at.in_plane())
+        };
+        let ends_in_plane = |id: document::sketch::EntityId| {
+            let held = producer
+                .sketch
+                .segments()
+                .iter()
+                .find(|held| held.id == id)?;
+            Some((in_plane(held.from)?, in_plane(held.to)?))
+        };
+        let voxels = |length: document::sketch::SketchLength| {
+            parametric::units::format(
+                length.value().round() as i64,
+                density,
+                parametric::units::DisplayUnit::BlocksAndVoxels,
+            )
+        };
+
+        for constraint in producer.sketch.constraints() {
+            let document::sketch::ConstraintKind::Dimension(dimension) = constraint.kind else {
+                continue;
+            };
+            // Every authored dimension DRIVES: the family exists for quantities the author states
+            // and the solver honours. Reference rank is reserved for a derived readout, which is a
+            // different thing the drawing does not yet offer.
+            let rank = ui::gizmos::dimension::Rank::Driving;
+            let drawing = match dimension {
+                document::sketch::Dimension::Span { from, to, length } => {
+                    let (Some(from), Some(to)) = (
+                        in_plane(from).and_then(&to_px),
+                        in_plane(to).and_then(&to_px),
+                    ) else {
+                        continue;
+                    };
+                    // ABOVE the span on screen, whichever way it runs: the normal is flipped to
+                    // the side that points up, so two spans on one drawing do not sit on opposite
+                    // sides of geometry that merely happens to be drawn the other way round.
+                    let normal = egui::vec2((to - from).y, -(to - from).x);
+                    let offset = if normal.y > 0.0 {
+                        -DIMENSION_STANDOFF_PX
+                    } else {
+                        DIMENSION_STANDOFF_PX
+                    };
+                    ui::gizmos::dimension::span(from, to, offset, &voxels(length), rank)
+                }
+                document::sketch::Dimension::Radius { curve, length } => {
+                    let Some(form) = producer.sketch.circular_form(curve, context) else {
+                        continue;
+                    };
+                    let rim = [form.center[0] + form.radius, form.center[1]];
+                    let (Some(center), Some(rim)) = (to_px(form.center), to_px(rim)) else {
+                        continue;
+                    };
+                    let radius_px = center.distance(rim);
+                    // Out and up, the direction a badge on a point already goes.
+                    let away = egui::vec2(0.707, -0.707);
+                    let anchor = center + away * (radius_px + DIMENSION_STANDOFF_PX);
+                    ui::gizmos::dimension::radius(center, radius_px, anchor, &voxels(length), rank)
+                }
+                document::sketch::Dimension::Angle {
+                    first,
+                    second,
+                    degrees,
+                } => {
+                    let (Some(first), Some(second)) = (ends_in_plane(first), ends_in_plane(second))
+                    else {
+                        continue;
+                    };
+                    // The vertex is found in PLANE coordinates and only then projected: a virtual
+                    // intersection is a fact about the drawing, and finding it after a perspective
+                    // divide would make it a fact about the camera.
+                    let Some(vertex) =
+                        substrate::geom2d::line_intersection(first.0, first.1, second.0, second.1)
+                            .and_then(&to_px)
+                    else {
+                        continue;
+                    };
+                    let Some((from, to, reach)) = angle_legs(vertex, &to_px, first, second) else {
+                        continue;
+                    };
+                    let radius =
+                        (reach * 0.55).clamp(DIMENSION_STANDOFF_PX, DIMENSION_STANDOFF_PX * 2.5);
+                    let value = format!("{}\u{b0}", trim_number(degrees.to_degrees_f64()));
+                    ui::gizmos::dimension::angle(vertex, from, to, radius, reach, &value, rank)
+                }
+            };
+            self.sketch_dimension_gizmos
+                .push(ui::chrome::DimensionGizmo {
+                    drawing,
+                    constraint: constraint.id,
+                    picked: self.panel_state.selection.contains(
+                        ui::panel::SelectionTarget::SketchConstraint {
+                            sketch: target,
+                            entity: constraint.id,
+                        },
+                    ),
+                });
+        }
+    }
+
     /// The constraint badges to draw next frame: one glyph per asserted
     /// relation, anchored on the geometry the relation NAMES.
     ///
@@ -4284,11 +4449,19 @@ impl WindowedState {
         cursor_x: f64,
         cursor_y: f64,
     ) -> Option<document::sketch::EntityId> {
+        let cursor = egui::Pos2::new(cursor_x as f32, cursor_y as f32);
         sketch_constraint_badge_at(
             &self.sketch_constraint_badges,
-            egui::Pos2::new(cursor_x as f32, cursor_y as f32),
+            cursor,
             self.last_pixels_per_point,
         )
+        .or_else(|| {
+            sketch_dimension_value_at(
+                &self.sketch_dimension_gizmos,
+                cursor,
+                self.last_pixels_per_point,
+            )
+        })
     }
 
     /// Feed the entity under the cursor to the armed constraint.
@@ -4718,6 +4891,7 @@ impl WindowedState {
         self.sketch_tangent_levers.clear();
         self.sketch_face_polygons.clear();
         self.sketch_constraint_badges.clear();
+        self.sketch_dimension_gizmos.clear();
         self.sketch_insert_preview = None;
         self.sketch_draw_preview.clear();
         self.sketch_marquee_band = None;
@@ -5259,6 +5433,12 @@ impl WindowedState {
         }
 
         self.refresh_sketch_constraint_badges(
+            target,
+            view_projection,
+            viewport_px,
+            pixels_per_point,
+        );
+        self.refresh_sketch_dimension_gizmos(
             target,
             view_projection,
             viewport_px,
@@ -7349,6 +7529,61 @@ where
     )
 }
 
+/// How far a dimension stands off the geometry it measures, in egui points.
+///
+/// One number for all three members, so a span's dimension line, a radius leader's elbow and an
+/// angle's arc all sit the same distance out and read as one drawing rather than three.
+const DIMENSION_STANDOFF_PX: f32 = 26.0;
+
+/// A number for a dimension label: no trailing zeros, and no decimal point when it is whole.
+///
+/// An angle authored as 30 should read `30`, not `30.00`. Two places is where a sketch angle stops
+/// being a number the author recognises as the one they typed.
+fn trim_number(value: f64) -> String {
+    let text = format!("{value:.2}");
+    match text.trim_end_matches('0').trim_end_matches('.') {
+        // A value that rounds away to nothing IS zero, and nobody writes that as "-0".
+        "" | "-" | "-0" => "0".to_string(),
+        trimmed => trimmed.to_string(),
+    }
+}
+
+/// The two bearings an angular dimension is struck between, and how far its legs reach.
+///
+/// Both legs are read from the VERTEX outward, toward whichever of their own ends is further from
+/// it, so the arc lands in the corner the drawing actually makes rather than in whichever of the
+/// four quadrants the two segments happened to be authored pointing at. `reach` is the SHORTER of
+/// the two legs: an extension line is drawn wherever a leg falls short of the arc, and the shorter
+/// leg is the one that decides whether any are needed at all.
+fn angle_legs(
+    vertex: egui::Pos2,
+    to_px: &dyn Fn([f64; 2]) -> Option<egui::Pos2>,
+    first: ([f64; 2], [f64; 2]),
+    second: ([f64; 2], [f64; 2]),
+) -> Option<(f32, f32, f32)> {
+    let leg = |(from, to): ([f64; 2], [f64; 2])| {
+        let (from, to) = (to_px(from)?, to_px(to)?);
+        let far = if vertex.distance(from) >= vertex.distance(to) {
+            from
+        } else {
+            to
+        };
+        let away = far - vertex;
+        let reach = away.length();
+        (reach > f32::EPSILON).then(|| (away.y.atan2(away.x), reach))
+    };
+    let ((from, first_reach), (to, second_reach)) = (leg(first)?, leg(second)?);
+    // The SHORT way round. A sweep past a half turn is the same corner measured the long way, and
+    // the gizmo would strike its arc all the way around the outside of the drawing.
+    let sweep = (to - from).rem_euclid(std::f32::consts::TAU);
+    let to = if sweep > std::f32::consts::PI {
+        from + sweep - std::f32::consts::TAU
+    } else {
+        from + sweep
+    };
+    Some((from, to, first_reach.min(second_reach)))
+}
+
 /// Return the topmost generic constraint badge under a physical-pixel cursor. The badge keeps
 /// the constraint id beside its position, so every caller picks the authored relation directly.
 fn sketch_constraint_badge_at(
@@ -7368,6 +7603,29 @@ fn sketch_constraint_badge_at(
                 .contains(cursor)
         })
         .map(|badge| badge.constraint)
+}
+
+/// The constraint whose dimension VALUE is under a physical-pixel cursor.
+///
+/// The number is a dimension's only mark and therefore its only target. Later gizmos win a tie,
+/// matching the badge rule: what was drawn last is what is on top.
+fn sketch_dimension_value_at(
+    gizmos: &[ui::chrome::DimensionGizmo],
+    cursor: egui::Pos2,
+    pixels_per_point: f32,
+) -> Option<document::sketch::EntityId> {
+    let cursor = egui::Pos2::new(cursor.x / pixels_per_point, cursor.y / pixels_per_point);
+    gizmos
+        .iter()
+        .rev()
+        .find(|gizmo| {
+            gizmo
+                .drawing
+                .label_boxes()
+                .into_iter()
+                .any(|box_px| box_px.expand(3.0).contains(cursor))
+        })
+        .map(|gizmo| gizmo.constraint)
 }
 
 /// What the top bar says about a refused constraint. `offer` screens the clerical
@@ -7446,16 +7704,16 @@ fn curve_ink(construction: bool) -> ui::chrome::SketchCurveInk {
 #[allow(clippy::expect_used, clippy::float_cmp)]
 mod tests {
     use super::{
-        advance_circle_center_diameter_gesture, aggregate_marquee_picks, apply_sketch_snap,
-        circle_gesture_is_current, circle_marquee_hit, circle_ring, closest_point_on_segment,
-        complete_circle_center_diameter, concentric_badge_anchor,
+        advance_circle_center_diameter_gesture, aggregate_marquee_picks, angle_legs,
+        apply_sketch_snap, circle_gesture_is_current, circle_marquee_hit, circle_ring,
+        closest_point_on_segment, complete_circle_center_diameter, concentric_badge_anchor,
         nearest_sketch_edge_for_requirement, nearest_sketch_edge_from_candidates,
         nearest_tangent_lever, point_in_screen_polygon, point_to_segment_distance,
         pointer_left_the_press, polygon_double_area, reset_failed_sketch_constraint_completion,
         reset_refused_sketch_constraint_completion, segment_touches_rect, segments_intersect,
         select_sketch_constraint_refusal_culprits, sketch_constraint_badge_at,
         sketch_curve_from_hit, sketch_profile_edit_transaction, symmetry_badge_anchor,
-        tangent_badge_anchor, SketchEdgeHit,
+        tangent_badge_anchor, trim_number, SketchEdgeHit,
     };
     use document::sketch::{
         ConstraintKind, LineSide, PlaneAxis, Sketch, SketchCurve, SketchLength, SketchPoint,
@@ -8465,6 +8723,73 @@ mod tests {
         assert_eq!(
             polygon_double_area(&ell).abs(),
             polygon_double_area(&reversed).abs()
+        );
+    }
+    /// A dimension label shows the number the author typed, not a float's idea of it.
+    #[test]
+    fn a_dimension_value_drops_the_zeros_it_does_not_need() {
+        assert_eq!(trim_number(30.0), "30");
+        assert_eq!(trim_number(22.5), "22.5");
+        // Rust formats half-way values to EVEN, so this is 0.12 and not 0.13.
+        assert_eq!(trim_number(0.125), "0.12");
+        assert_eq!(trim_number(-0.001), "0");
+        assert_eq!(trim_number(0.0), "0");
+    }
+
+    /// **An angular dimension is struck the SHORT way round**, and its legs are read from the
+    /// vertex outward.
+    ///
+    /// The two rules together are what keep the arc inside the corner the drawing makes. Read the
+    /// legs by their authored direction instead and a segment drawn away from the vertex points
+    /// the wrong way; take the sweep as measured instead and the arc runs all the way around the
+    /// outside of the drawing.
+    #[test]
+    fn an_angle_gizmo_strikes_the_corner_its_legs_actually_make() {
+        let flat = |coord: [f64; 2]| Some(egui::Pos2::new(coord[0] as f32, coord[1] as f32));
+        let vertex = egui::Pos2::new(0.0, 0.0);
+
+        // Two legs out along +x and +y (y running DOWN on screen, so this is a quarter turn).
+        let (from, to, reach) = angle_legs(
+            vertex,
+            &flat,
+            ([0.0, 0.0], [10.0, 0.0]),
+            ([0.0, 0.0], [0.0, 4.0]),
+        )
+        .expect("two legs off one vertex");
+        assert!(from.abs() < 1e-6, "the first leg bears along +x: {from}");
+        assert!(
+            (to - std::f32::consts::FRAC_PI_2).abs() < 1e-6,
+            "a quarter turn away: {to}"
+        );
+        assert!((reach - 4.0).abs() < 1e-6, "the SHORTER leg: {reach}");
+
+        // The same corner with the second leg AUTHORED away from the vertex reads the same, and
+        // the sweep stays the short way rather than becoming three quarters.
+        let (from, to, _) = angle_legs(
+            vertex,
+            &flat,
+            ([10.0, 0.0], [0.0, 0.0]),
+            ([0.0, 4.0], [0.0, 0.0]),
+        )
+        .expect("direction is not the author's to decide here");
+        assert!(from.abs() < 1e-6, "{from}");
+        assert!((to - std::f32::consts::FRAC_PI_2).abs() < 1e-6, "{to}");
+        assert!(
+            (to - from).abs() <= std::f32::consts::PI,
+            "never the long way: {}",
+            to - from
+        );
+
+        // A leg of no length has no bearing to give, and the gizmo is skipped rather than struck
+        // about an arbitrary direction.
+        assert_eq!(
+            angle_legs(
+                vertex,
+                &flat,
+                ([0.0, 0.0], [0.0, 0.0]),
+                ([0.0, 0.0], [0.0, 4.0])
+            ),
+            None
         );
     }
 }

@@ -490,6 +490,13 @@ struct WindowedState {
     /// the only record of where one is, so what is drawn and what is clickable are one list
     ///
     sketch_constraint_badges: Vec<ui::chrome::ConstraintBadge>,
+    /// The dimension gizmos for THIS frame — the authored quantities, each drawn as the measured
+    /// mark that IS its badge. Rebuilt by the same overlay refresh, from the same projection.
+    ///
+    /// Also the shell's hit-test set for them: a dimension is picked by clicking its NUMBER, and
+    /// this is the only record of where one is, so what is drawn and what is clickable are one
+    /// list.
+    sketch_dimension_gizmos: Vec<ui::chrome::DimensionGizmo>,
     /// The Line command's connected chain and typed press/latch state. It is session-only and
     /// cleared when its sketch/tool/constraint context changes. Document edits revalidate its
     /// identities, while Line's own commits intentionally advance it.
@@ -989,6 +996,7 @@ impl WindowedState {
             sketch_edit_press: false,
             sketch_constraint_press: false,
             sketch_constraint_badges: Vec::new(),
+            sketch_dimension_gizmos: Vec::new(),
             line_gesture: line::LineGesture::default(),
             midpoint_line_gesture: midpoint_line::MidpointLineGesture::default(),
             tangent_arc_gesture: tangent_arc::TangentArcGesture::default(),
@@ -1201,6 +1209,7 @@ impl WindowedState {
             sketch_edit_press: _,
             sketch_constraint_press: _,
             sketch_constraint_badges: _,
+            sketch_dimension_gizmos: _,
             line_gesture: _,
             midpoint_line_gesture: _,
             tangent_arc_gesture: _,

@@ -210,6 +210,7 @@ enum ConstraintVerbConfig {
     Symmetry,
     Tangent,
     Curvature,
+    Dimension,
 }
 
 /// A picked entity, persisted.
@@ -242,6 +243,7 @@ impl ArmedConstraintConfig {
                 ui::panel::ConstraintVerb::Symmetry => ConstraintVerbConfig::Symmetry,
                 ui::panel::ConstraintVerb::Tangent => ConstraintVerbConfig::Tangent,
                 ui::panel::ConstraintVerb::Curvature => ConstraintVerbConfig::Curvature,
+                ui::panel::ConstraintVerb::Dimension => ConstraintVerbConfig::Dimension,
             },
             picked: if armed.verb() == ui::panel::ConstraintVerb::Tangent {
                 Vec::new()
@@ -275,6 +277,7 @@ impl ArmedConstraintConfig {
             ConstraintVerbConfig::Symmetry => ui::panel::ConstraintVerb::Symmetry,
             ConstraintVerbConfig::Tangent => ui::panel::ConstraintVerb::Tangent,
             ConstraintVerbConfig::Curvature => ui::panel::ConstraintVerb::Curvature,
+            ConstraintVerbConfig::Dimension => ui::panel::ConstraintVerb::Dimension,
         };
         let picked = self
             .picked

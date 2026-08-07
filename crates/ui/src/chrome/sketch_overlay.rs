@@ -254,6 +254,53 @@ pub struct ConstraintBadge {
     pub picked: bool,
 }
 
+/// One dimension gizmo: the laid-out drawing, and what the shell needs to treat it as a target.
+///
+/// A dimension is the one relation with NO badge — the number is the mark — so the number is also
+/// what a click lands on. The constraint id travels with the drawing for the same reason it
+/// travels with a [`ConstraintBadge`]: what is clickable is exactly what is drawn.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DimensionGizmo {
+    /// Everything to draw, already projected into egui points and laid out by
+    /// [`crate::gizmos::dimension`].
+    pub drawing: crate::gizmos::dimension::Drawing,
+    /// The constraint this gizmo stands for, so a click on its number names an entity.
+    pub constraint: document::sketch::EntityId,
+    /// Whether that constraint is in the selection.
+    pub picked: bool,
+}
+
+/// Draw the dimension gizmos: each authored quantity as its own measured mark.
+///
+/// Painted UNDER the constraint badges and over the geometry, in the same spirit: a dimension is a
+/// claim about the drawing and must not be buried by it. The paint order within one gizmo is the
+/// gizmo module's own and is not this function's to choose.
+///
+/// A PICKED dimension gets an accent plate behind its value, which is where a badge puts its
+/// plate too. The number is the only part of a dimension an author can reliably aim at, so it is
+/// the part that reports being held.
+pub fn sketch_dimension_gizmos(ui: &egui::Ui, gizmos: &[DimensionGizmo]) {
+    let painter = ui.ctx().layer_painter(LayerId::new(
+        Order::Foreground,
+        Id::new("sketch_dimension_gizmos"),
+    ));
+    for gizmo in gizmos {
+        if gizmo.picked {
+            for box_rect in gizmo.drawing.label_boxes() {
+                let plate = box_rect.expand(3.0);
+                painter.rect_filled(plate, 3.0, theme::ACCENT_FAINT);
+                painter.rect_stroke(
+                    plate,
+                    3.0,
+                    Stroke::new(1.0_f32, theme::ACCENT),
+                    StrokeKind::Inside,
+                );
+            }
+        }
+        gizmo.drawing.paint(&painter);
+    }
+}
+
 /// Draw the constraint badges: each asserted relation's own glyph, standing beside the geometry
 /// it names. Positions are shell-projected, so a badge tracks its entity
 /// through every camera move — the mark belongs to the entity graph, not to the screen.

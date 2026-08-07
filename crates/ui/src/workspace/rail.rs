@@ -347,6 +347,7 @@ const SKETCH_SNAPS: &[(Icon, &str, PositionSnap)] = &[
 /// Coincident and Horizontal/Vertical carry most of the work on a real profile, the angle pair
 /// comes next, and the two that place one thing against another sit last.
 const SKETCH_CONSTRAINTS: &[ConstraintVerb] = &[
+    ConstraintVerb::Dimension,
     ConstraintVerb::Coincident,
     ConstraintVerb::HorizontalOrVertical,
     ConstraintVerb::Parallel,

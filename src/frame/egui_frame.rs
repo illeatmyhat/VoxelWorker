@@ -242,6 +242,11 @@ pub fn run_egui_frame(
     // be buried by it. Empty unless a sketch is being edited, always empty on the headless
     // `shot` path.
     sketch_constraint_badges: &[ui::chrome::ConstraintBadge],
+    // The dimension gizmos for THIS frame — each authored quantity drawn as its own measured
+    // mark. Drawn in the same pass as the badges and for the same reason: a dimension is a claim
+    // about the drawing and must not be buried by it. Empty unless a sketch is being edited, and
+    // always empty on the headless `shot` path.
+    sketch_dimension_gizmos: &[ui::chrome::DimensionGizmo],
     // #100: whether the open viewport context menu was raised INSIDE a derived face, and if so
     // whether that face is currently picked — the shell hit-tests, the menu only labels the row.
     // `None` when the menu is closed or was raised over no face.
@@ -740,6 +745,9 @@ pub fn run_egui_frame(
             // The constraint badges, over the geometry rather than under
             // it — a badge is what tells the author a level-looking line is level BECAUSE it was
             // asserted, so a line drawn across it would take the answer away.
+            if !sketch_dimension_gizmos.is_empty() {
+                ui::chrome::sketch_dimension_gizmos(ui, sketch_dimension_gizmos);
+            }
             if !sketch_constraint_badges.is_empty() {
                 ui::chrome::sketch_constraint_badges(ui, sketch_constraint_badges);
             }

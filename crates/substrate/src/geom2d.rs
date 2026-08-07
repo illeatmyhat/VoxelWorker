@@ -104,6 +104,36 @@ fn orientation_sign(a: [f64; 2], b: [f64; 2], c: [f64; 2]) -> i32 {
     }
 }
 
+/// Where the two INFINITE lines through `p0→p1` and `q0→q1` cross, or `None` when they do not.
+///
+/// Lines, not segments: the crossing may lie well outside both spans, and for the caller that
+/// wants it — an angular dimension between two legs that stop short of their own vertex — that
+/// virtual point is exactly the answer. Use [`segments_intersect`] for the bounded question.
+///
+/// `None` covers parallel and coincident alike. Coincident lines cross everywhere, which is not
+/// an answer that fits in one point, so it is reported the same way as nowhere.
+#[must_use]
+pub fn line_intersection(
+    p0: [f64; 2],
+    p1: [f64; 2],
+    q0: [f64; 2],
+    q1: [f64; 2],
+) -> Option<[f64; 2]> {
+    let along = [p1[0] - p0[0], p1[1] - p0[1]];
+    let other = [q1[0] - q0[0], q1[1] - q0[1]];
+    let cross = along[1].mul_add(-other[0], along[0] * other[1]);
+    // Scaled by both directions' magnitudes, so the test is about the ANGLE between the lines and
+    // not about how long the caller happened to draw them.
+    let scale = along[0].hypot(along[1]) * other[0].hypot(other[1]);
+    if scale <= 0.0 || (cross / scale).abs() <= f64::EPSILON.sqrt() {
+        return None;
+    }
+    let to = [q0[0] - p0[0], q0[1] - p0[1]];
+    let at = to[1].mul_add(-other[0], to[0] * other[1]) / cross;
+    let found = [along[0].mul_add(at, p0[0]), along[1].mul_add(at, p0[1])];
+    (found[0].is_finite() && found[1].is_finite()).then_some(found)
+}
+
 /// Whether two closed segments intersect, including collinear and endpoint touches.
 /// The test combines orientation signs with a bounding-box check for collinear points.
 #[must_use]
@@ -2240,6 +2270,52 @@ mod tests {
         assert!(deepest_interior_point(&[], 1e-3).is_none());
         assert!(
             deepest_interior_point(&fill(&[[0.0, 0.0], [4.0, 0.0], [8.0, 0.0]]), 1e-3).is_none()
+        );
+    }
+
+    #[test]
+    fn two_lines_cross_where_they_cross() {
+        let found = line_intersection([0.0, 0.0], [10.0, 0.0], [4.0, -5.0], [4.0, 5.0]);
+        assert_eq!(found, Some([4.0, 0.0]));
+    }
+
+    /// The whole reason this is `line` and not `segment`: the answer may be off both spans.
+    #[test]
+    fn two_legs_that_stop_short_still_name_their_vertex() {
+        let found = line_intersection([5.0, 0.0], [10.0, 0.0], [0.0, 5.0], [0.0, 10.0])
+            .expect("two axes cross at the origin however far away they stop");
+        assert!(found[0].abs() < 1e-9 && found[1].abs() < 1e-9, "{found:?}");
+    }
+
+    #[test]
+    fn parallel_and_coincident_lines_answer_nowhere() {
+        assert_eq!(
+            line_intersection([0.0, 0.0], [10.0, 0.0], [0.0, 3.0], [10.0, 3.0]),
+            None
+        );
+        assert_eq!(
+            line_intersection([0.0, 0.0], [10.0, 0.0], [2.0, 0.0], [7.0, 0.0]),
+            None
+        );
+        assert_eq!(
+            line_intersection([0.0, 0.0], [0.0, 0.0], [2.0, 0.0], [7.0, 0.0]),
+            None
+        );
+    }
+
+    /// Near-parallel is judged by the ANGLE, so long lines do not sneak past the guard by having
+    /// a large cross product.
+    #[test]
+    fn near_parallel_long_lines_are_refused() {
+        let barely = 1e-12;
+        assert_eq!(
+            line_intersection(
+                [0.0, 0.0],
+                [1.0e6, 0.0],
+                [0.0, 1.0],
+                [1.0e6, 1.0 + barely * 1.0e6]
+            ),
+            None
         );
     }
 }
