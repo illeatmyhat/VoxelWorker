@@ -281,6 +281,109 @@ fn a_distance_dimension_is_met() {
     assert!((b[0] - 8.0).abs() < 1e-6, "{b:?}");
 }
 
+/// **An angle dimension turns one segment onto the other by the number the author wrote.**
+///
+/// It also states the two things the family exists for: the value is an angle rather than a
+/// length, and a density re-target leaves it exactly where it was, because an angle has no block
+/// term to re-target.
+#[test]
+fn an_angle_dimension_turns_one_segment_onto_the_other() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let corner = sketch.add_free_point(SketchPoint::new(0, 0));
+    let along = sketch.add_free_point(SketchPoint::new(10, 0));
+    let up = sketch.add_free_point(SketchPoint::new(10, 10));
+    // The base is pinned, so the only thing free to move is the arm the angle is measured to.
+    for (point, at) in [
+        (corner, SketchPoint::new(0, 0)),
+        (along, SketchPoint::new(10, 0)),
+    ] {
+        sketch
+            .add_constraint(ConstraintKind::Fix { point, at }, ctx(16))
+            .expect("pinning the base");
+    }
+    let base = sketch.connect(corner, along).expect("the base");
+    let arm = sketch.connect(corner, up).expect("the arm");
+
+    sketch
+        .add_constraint(
+            ConstraintKind::Dimension(Dimension::Angle {
+                first: base,
+                second: arm,
+                degrees: AngleMeasurement::from_degrees(30),
+            }),
+            ctx(16),
+        )
+        .expect("a free arm can always stand thirty degrees off a pinned base");
+
+    let (at_corner, at_up) = (position(&sketch, corner), position(&sketch, up));
+    let turn = (at_up[1] - at_corner[1])
+        .atan2(at_up[0] - at_corner[0])
+        .to_degrees();
+    assert!((turn - 30.0).abs() < 1e-6, "thirty degrees off, got {turn}");
+
+    // A quarter turn is Perpendicular's claim written as a number, and it solves to the same
+    // place — which is the whole argument for one relation covering both.
+    let mut squared = Sketch::empty(PlaneAxis::Z);
+    let corner = squared.add_free_point(SketchPoint::new(0, 0));
+    let along = squared.add_free_point(SketchPoint::new(10, 0));
+    let up = squared.add_free_point(SketchPoint::new(10, 10));
+    for (point, at) in [
+        (corner, SketchPoint::new(0, 0)),
+        (along, SketchPoint::new(10, 0)),
+    ] {
+        squared
+            .add_constraint(ConstraintKind::Fix { point, at }, ctx(16))
+            .expect("pinning the base");
+    }
+    let base = squared.connect(corner, along).expect("the base");
+    let arm = squared.connect(corner, up).expect("the arm");
+    squared
+        .add_constraint(
+            ConstraintKind::Dimension(Dimension::Angle {
+                first: base,
+                second: arm,
+                degrees: AngleMeasurement::from_degrees(90),
+            }),
+            ctx(16),
+        )
+        .expect("ninety is a right angle");
+    let (at_corner, at_up) = (position(&squared, corner), position(&squared, up));
+    assert!(
+        (at_up[0] - at_corner[0]).abs() < 1e-6,
+        "square over the corner: {at_up:?}"
+    );
+
+    // A segment cannot stand at an angle to itself, and neither can it to one that has died.
+    assert_eq!(
+        squared.add_constraint(
+            ConstraintKind::Dimension(Dimension::Angle {
+                first: base,
+                second: base,
+                degrees: AngleMeasurement::from_degrees(45),
+            }),
+            ctx(16),
+        ),
+        Err(ConstraintRefusal::Impossible)
+    );
+
+    // And the number survives a density re-target untouched: an angle has no density.
+    let before = squared.constraints().to_vec();
+    squared.retarget_density(16, 32);
+    let angle = |from: &[Constraint]| {
+        from.iter()
+            .find_map(|held| match held.kind {
+                ConstraintKind::Dimension(Dimension::Angle { degrees, .. }) => Some(degrees),
+                _ => None,
+            })
+            .expect("the angle is still there")
+    };
+    assert_eq!(angle(&before), angle(squared.constraints()));
+    assert_eq!(
+        angle(squared.constraints()),
+        AngleMeasurement::from_degrees(90)
+    );
+}
+
 /// **Unsatisfiable is refused, and refusing changes nothing.** The trial runs on a copy, so the
 /// drawing is where it was rather than where a failed solve pushed it.
 #[test]

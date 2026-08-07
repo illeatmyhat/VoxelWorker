@@ -4414,6 +4414,24 @@ impl Sketch {
                     return Err(ConstraintRefusal::Impossible);
                 }
             }
+            // An angle is between two straight curves, and the refusals are Parallel's because
+            // the claim is Parallel's with a number attached: two live segments, neither
+            // collapsed, and not the same one twice.
+            ConstraintKind::Dimension(Dimension::Angle {
+                first,
+                second,
+                degrees,
+            }) => {
+                let (Some(one), Some(other)) = (live_segment(first), live_segment(second)) else {
+                    return Err(ConstraintRefusal::UnknownEntity);
+                };
+                if one.from == one.to || other.from == other.to || first == second {
+                    return Err(ConstraintRefusal::Impossible);
+                }
+                if !degrees.to_degrees_f64().is_finite() {
+                    return Err(ConstraintRefusal::Impossible);
+                }
+            }
             ConstraintKind::Dimension(Dimension::Span { from, to, length }) => {
                 if !known_point(from) || !known_point(to) {
                     return Err(ConstraintRefusal::UnknownEntity);
@@ -6095,7 +6113,10 @@ impl Sketch {
                     *pitch = pitch.retargeted(old_density, new_density);
                     *phase = phase.retargeted(old_density, new_density);
                 }
-                ConstraintKind::Horizontal { .. }
+                // An angle has no block term and no density, so a re-target is not something it
+                // can be asked. It stays exactly the number the author wrote.
+                ConstraintKind::Dimension(Dimension::Angle { .. })
+                | ConstraintKind::Horizontal { .. }
                 | ConstraintKind::Vertical { .. }
                 | ConstraintKind::Coincident { .. }
                 | ConstraintKind::Parallel { .. }

@@ -131,6 +131,24 @@ pub enum Dimension {
         to: EntityId,
         length: SketchLength,
     },
+    /// Two segments meet at this angle, measured turning from `first` to `second`.
+    ///
+    /// The one member whose value is an [`parametric::units::AngleMeasurement`] rather than a
+    /// [`SketchLength`], which is the whole reason this family is a family: the author is stating
+    /// how big something is either way, and only the kind of quantity differs. It carries no
+    /// density and so survives a re-target untouched.
+    ///
+    /// `Parallel` and `Perpendicular` state the two angles that need no number. They stay their
+    /// own kinds — an author asking for a right angle is not authoring the number 90, and a badge
+    /// says that where a dimension line cannot.
+    ///
+    /// A stated angle and that angle plus a half turn are the same claim, because a segment has
+    /// two ends and the drawing has no opinion about which one it points from.
+    Angle {
+        first: EntityId,
+        second: EntityId,
+        degrees: parametric::units::AngleMeasurement,
+    },
     /// A curve that turns stands this far from its own center, everywhere.
     ///
     /// One member for the arc and the circle both, because it is one statement about one shape:
@@ -150,6 +168,9 @@ impl Dimension {
     pub const fn length(&self) -> Option<SketchLength> {
         match *self {
             Self::Span { length, .. } | Self::Radius { length, .. } => Some(length),
+            // An angle is a quantity, but it is not a length, and there is no length to answer
+            // with rather than one that happens to be zero.
+            Self::Angle { .. } => None,
         }
     }
 }
@@ -362,8 +383,9 @@ impl ConstraintKind {
             Self::Curvature { joint, .. } => vec![joint],
             Self::Dimension(Dimension::Span { from, to, .. }) => vec![from, to],
             Self::Coincident { first, second } => vec![first, second],
-            // A radius names a curve. The curve's own points are not what it is about.
-            Self::Dimension(Dimension::Radius { .. })
+            // Both name curves. The points those curves are drawn between are not what
+            // either one is about.
+            Self::Dimension(Dimension::Radius { .. } | Dimension::Angle { .. })
             | Self::Horizontal { .. }
             | Self::Vertical { .. }
             | Self::Parallel { .. }
@@ -412,7 +434,8 @@ impl ConstraintKind {
             Self::Horizontal { segment } | Self::Vertical { segment } => [segment, segment],
             Self::Dimension(Dimension::Span { from, to, .. }) => [from.min(to), from.max(to)],
             Self::Dimension(Dimension::Radius { curve, .. }) => [curve.id(), curve.id()],
-            Self::Coincident { first, second }
+            Self::Dimension(Dimension::Angle { first, second, .. })
+            | Self::Coincident { first, second }
             | Self::Parallel { first, second }
             | Self::Perpendicular { first, second }
             | Self::Equal { first, second }
@@ -434,7 +457,8 @@ impl ConstraintKind {
             Self::Horizontal { segment }
             | Self::Vertical { segment }
             | Self::Midpoint { segment, .. } => vec![segment],
-            Self::Parallel { first, second }
+            Self::Dimension(Dimension::Angle { first, second, .. })
+            | Self::Parallel { first, second }
             | Self::Perpendicular { first, second }
             | Self::Equal { first, second }
             | Self::Collinear { first, second } => vec![first, second],
@@ -504,7 +528,8 @@ impl ConstraintKind {
             Self::Horizontal { segment } | Self::Vertical { segment } => vec![segment],
             Self::Dimension(Dimension::Span { from, to, .. }) => vec![from, to],
             Self::Dimension(Dimension::Radius { curve, .. }) => vec![curve.id()],
-            Self::Coincident { first, second }
+            Self::Dimension(Dimension::Angle { first, second, .. })
+            | Self::Coincident { first, second }
             | Self::Parallel { first, second }
             | Self::Perpendicular { first, second }
             | Self::Equal { first, second }
@@ -1080,6 +1105,17 @@ fn relation_for(
             curve,
             length: length.value(),
         }),
+        ConstraintKind::Dimension(Dimension::Angle {
+            first,
+            second,
+            degrees,
+        }) => segment(first)
+            .zip(segment(second))
+            .map(|(first, second)| Relation::Angle {
+                first,
+                second,
+                radians: degrees.to_degrees_f64().to_radians(),
+            }),
         ConstraintKind::Coincident { first, second } => point(first)
             .zip(point(second))
             .map(|(first, second)| Relation::Coincident { first, second }),

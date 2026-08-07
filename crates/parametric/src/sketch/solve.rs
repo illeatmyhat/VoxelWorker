@@ -152,6 +152,26 @@ pub enum Relation {
     Parallel { first: SegmentId, second: SegmentId },
     /// Perpendicular uses normalized cosine for the same scale-independent reason.
     Perpendicular { first: SegmentId, second: SegmentId },
+    /// Two segments meet at a stated angle, measured turning from `first` to `second`.
+    ///
+    /// The row is `sin(turn - radians)`: dimensionless, scale independent, and zero exactly when
+    /// the turn is the one asked for. `Parallel` and `Perpendicular` are the two values of it that
+    /// need no number — at zero the row IS Parallel's cross product, and at a quarter turn it is
+    /// Perpendicular's dot product negated. They keep their own relations so the author's word for
+    /// what they asked survives into diagnostics, and so the common cases carry no float at all.
+    ///
+    /// A sine repeats every half turn, so a stated angle and that angle plus 180 degrees are the
+    /// same claim. That is not a rounding of the idea: a segment has two ends and no preferred
+    /// one, so which way it points is not something the drawing knows. It is the same ambiguity
+    /// `Parallel` already lives with, where 0 and 180 are both parallel.
+    ///
+    /// **Radians, not degrees.** Degrees are an authoring unit and stop at the adapter, the way
+    /// voxels do; what crosses into the solver is what its trigonometry takes.
+    Angle {
+        first: SegmentId,
+        second: SegmentId,
+        radians: f64,
+    },
     /// Two segments have the same length without asserting which length; that is different from
     /// two `Distance` dimensions that each carry one authored number.
     Equal { first: SegmentId, second: SegmentId },
@@ -246,6 +266,7 @@ impl Relation {
             | Self::Radius { .. }
             | Self::Parallel { .. }
             | Self::Perpendicular { .. }
+            | Self::Angle { .. }
             | Self::Equal { .. }
             | Self::Tangent { .. }
             | Self::TangentDirection { .. }
@@ -589,6 +610,7 @@ impl ProblemBuilder {
                 | Relation::Midpoint { segment, .. } => vec![segment],
                 Relation::Parallel { first, second }
                 | Relation::Perpendicular { first, second }
+                | Relation::Angle { first, second, .. }
                 | Relation::Equal { first, second }
                 | Relation::Collinear { first, second } => vec![first, second],
                 _ => Vec::new(),
@@ -924,6 +946,15 @@ impl Problem {
             Relation::Parallel { first, second } => Ok(Resolved::Parallel {
                 first: segment(first)?,
                 second: segment(second)?,
+            }),
+            Relation::Angle {
+                first,
+                second,
+                radians,
+            } => Ok(Resolved::Angle {
+                first: segment(first)?,
+                second: segment(second)?,
+                radians,
             }),
             Relation::Perpendicular { first, second } => Ok(Resolved::Perpendicular {
                 first: segment(first)?,
@@ -2749,6 +2780,11 @@ enum Resolved {
         first: SegmentSlots,
         second: SegmentSlots,
     },
+    Angle {
+        first: SegmentSlots,
+        second: SegmentSlots,
+        radians: f64,
+    },
     Equal {
         first: SegmentSlots,
         second: SegmentSlots,
@@ -3311,6 +3347,19 @@ impl ResidualSystem for Residuals<'_> {
                     // Dot(unit directions) is cosine(angle), also independent of segment length.
                     let (a, b) = (unit_along(&at, first), unit_along(&at, second));
                     into[row] = a[0] * b[0] + a[1] * b[1];
+                    row += 1;
+                }
+                Resolved::Angle {
+                    first,
+                    second,
+                    radians,
+                } => {
+                    // sin(turn - asked), expanded so no arctangent has to pick a branch: the two
+                    // pieces are Parallel's row and Perpendicular's row, mixed by the stated angle.
+                    let (a, b) = (unit_along(&at, first), unit_along(&at, second));
+                    let across = a[0] * b[1] - a[1] * b[0];
+                    let along = a[0] * b[0] + a[1] * b[1];
+                    into[row] = across * radians.cos() - along * radians.sin();
                     row += 1;
                 }
                 Resolved::Equal { first, second } => {
@@ -4868,6 +4917,7 @@ impl Problem {
             | Relation::Midpoint { segment, .. } => vec![segment],
             Relation::Parallel { first, second }
             | Relation::Perpendicular { first, second }
+            | Relation::Angle { first, second, .. }
             | Relation::Equal { first, second }
             | Relation::Collinear { first, second } => vec![first, second],
             Relation::Tangent { first, second, .. } => [first, second]
