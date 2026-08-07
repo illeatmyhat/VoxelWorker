@@ -2908,11 +2908,38 @@ impl Sketch {
             | SketchCurve::Spline(_) => return None,
         };
         let by = [to[0] - grabbed[0], to[1] - grabbed[1]];
-        let (across, reach) = self.the_part_of_a_drag_that_crosses(curve, grabbed, by)?;
-        let along = [by[0] - across[0], by[1] - across[1]];
         let hub = self
             .center_point_of(curve)
             .and_then(|id| Some((id, self.point_in_plane(id)?)));
+        // A curve that TURNS is dragged by its RIM, and the rim is the same everywhere: the cursor
+        // sits on the curve at whatever angle it likes, so the only thing the gesture can be saying
+        // is how far out the rim now stands. Read as a DISTANCE FROM THE CENTER that is the whole
+        // of it, and the cursor ends up on the curve by construction (owner, 2026-08-07). Read as
+        // a projection of the travel it is not: a projection leaves a tangential remainder, the
+        // remainder had nowhere to go but the center, and the center slid out from under the shape
+        // — grab an arc at (10,0) and pull to (14,6) and the center went to (0,6).
+        //
+        // This is the rule a circle's grip has always used, and an arc is a circle with two ends,
+        // so the same gesture on the same shape has to mean the same thing.
+        let (across, reach, along) = match hub {
+            Some((_, hub)) => {
+                let out = [grabbed[0] - hub[0], grabbed[1] - hub[1]];
+                let stood = out[0].hypot(out[1]);
+                if stood < DEGENERATE_CURVE_VOXELS {
+                    return None;
+                }
+                let reach = (to[0] - hub[0]).hypot(to[1] - hub[1]) - stood;
+                (
+                    [reach * out[0] / stood, reach * out[1] / stood],
+                    reach,
+                    [0.0, 0.0],
+                )
+            }
+            None => {
+                let (across, reach) = self.the_part_of_a_drag_that_crosses(curve, grabbed, by)?;
+                (across, reach, [by[0] - across[0], by[1] - across[1]])
+            }
+        };
         // A curve that turns deforms by GROWING about its center, so the across part scales its
         // ends; a straight one has no center and simply moves. Both ends grow by the SAME reach
         // rather than by the projection of a vector onto each, which would be zero at an end
@@ -2936,17 +2963,25 @@ impl Sketch {
             .collect();
         // The pull is the seed plus the travel, for the curve's center as much as for its ends.
         //
-        // The center is PULLED and never seeded, which is the difference between an arc standing on
-        // its own and one of an arc slot's two rails. That center is shared — the far rail, the
-        // caps and the spine are all concentric with it — so writing it would move their geometry
-        // without moving them, and measured, it did: a rail slid along its own sweep threw a point
-        // twenty units sideways and failed a tangency outright. A pull states the same wish and
-        // lets everything standing on the center come along.
+        // The center is never SEEDED, which is the difference between an arc standing on its own
+        // and one of an arc slot's two rails. That center is shared — the far rail, the caps and
+        // the spine are all concentric with it — so writing it would move their geometry without
+        // moving them, and measured, it did: a rail slid along its own sweep threw a point twenty
+        // units sideways and failed a tangency outright. A hand states the same wish and lets
+        // everything standing on the center come along.
+        //
+        // A turning curve's center is PINNED rather than carried, which says two things at once
+        // and needs both: the center holds, and the radius is the quantity the author is spending,
+        // so the carried-radius hold must not reach for it — see
+        // [`Problem::quantities_a_carry_holds_still`], which skips an arc whose center is pinned.
         let mut pulled: Vec<Hand> = seeded
             .iter()
             .map(|(point, at)| Hand::carried(*point, [at[0] + along[0], at[1] + along[1]]))
             .collect();
-        pulled.extend(hub.map(|(id, at)| Hand::carried(id, [at[0] + along[0], at[1] + along[1]])));
+        pulled.extend(hub.map(|(id, at)| match curve {
+            SketchCurve::Segment(_) => Hand::carried(id, [at[0] + along[0], at[1] + along[1]]),
+            _ => Hand::pin(id, at),
+        }));
         (!seeded.is_empty()).then_some(BodyDrag { seeded, pulled })
     }
 

@@ -7,6 +7,7 @@ use crate::sketch::{
     arc_center_radius, arc_interior_points, included_angle_through_degrees, EntityId, PlaneAxis,
     Point, PointLifetime, Sketch, SketchPoint, SketchSolid, ARC_SAGITTA_TOLERANCE_VOXELS,
 };
+use crate::sketch::{SketchCurve, SketchLength};
 use crate::voxel::VoxelProducer;
 use ::parametric::units::AngleMeasurement;
 use voxel_core::voxel::VoxelGrid;
@@ -648,4 +649,104 @@ fn a_curved_face_keeps_its_arc() {
     // Faces are identified by lineage, not geometry.
     let key = sketch.identified_faces(ctx(16)).first().expect("a face").1;
     assert!(sketch.face_is_picked(&key, ctx(16)));
+}
+
+/// A rim drag says ONE thing: how far out the rim now stands. It never moves the center.
+///
+/// An arc and a circle are the same shape as far as this gesture is concerned, so they are held to
+/// the same answer here rather than to two answers that happen to look alike. The arc used to
+/// project the travel onto the radial direction and hand the tangential remainder to the center,
+/// which slid out from under the shape — pull the rim of a unit-10 arc from `(10,0)` to `(14,6)`
+/// and the center went to `(0,6)`; pull it straight sideways to `(10,6)` and the whole arc
+/// travelled, radius untouched.
+#[test]
+fn a_rim_drag_sets_the_radius_from_the_cursor_and_holds_the_center() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let from = sketch.add_free_point(SketchPoint::new(10, 0));
+    let to = sketch.add_free_point(SketchPoint::new(0, 10));
+    let arc = sketch
+        .connect_arc(from, to, AngleMeasurement::from_degrees(90))
+        .expect("a quarter arc of radius 10 about the origin");
+    let circle = sketch
+        .add_circle(SketchPoint::new(40, 0), SketchLength::new(10))
+        .expect("a lone circle of radius 10");
+    let seat = |sketch: &Sketch, id: EntityId| {
+        sketch
+            .points()
+            .iter()
+            .find(|point| point.id == id)
+            .map(|point| point.at.in_plane())
+            .expect("the center survives its own rim drag")
+    };
+    let center = sketch
+        .arcs()
+        .iter()
+        .find(|held| held.id == arc)
+        .map(|held| held.center)
+        .expect("the arc center");
+    let hub = sketch
+        .circles()
+        .iter()
+        .find(|held| held.id == circle)
+        .map(|held| held.center)
+        .expect("the circle center");
+
+    // Grabbed on the rim at (10,0) — or (50,0) for the circle, which is the same place relative to
+    // its own center — and pulled out, out-and-along, and purely along. The answer each time is
+    // the distance from the center to the cursor.
+    for (name, pull, want) in [
+        ("straight out", [4.0, 0.0], 14.0),
+        ("out and along", [4.0, 6.0], 14.0_f64.hypot(6.0)),
+        ("purely along", [0.0, 6.0], 10.0_f64.hypot(6.0)),
+    ] {
+        let mut moved = sketch.clone();
+        assert_eq!(
+            moved.drag_curve_through(
+                SketchCurve::Arc(arc),
+                [10.0, 0.0],
+                [10.0 + pull[0], pull[1]],
+                ctx(16),
+            ),
+            Ok(true),
+            "the arc rim drag {name} was refused"
+        );
+        let at = seat(&moved, center);
+        assert!(
+            at[0].hypot(at[1]) < 1.0e-9,
+            "an arc rim drag {name} moved the center to {at:?}"
+        );
+        let end = seat(&moved, from);
+        let radius = (end[0] - at[0]).hypot(end[1] - at[1]);
+        assert!(
+            (radius - want) < 1.0e-6 && (want - radius) < 1.0e-6,
+            "an arc rim drag {name} answered radius {radius}, not the {want} the cursor stood at"
+        );
+
+        let mut moved = sketch.clone();
+        assert_eq!(
+            moved.drag_curve_through(
+                SketchCurve::Circle(circle),
+                [50.0, 0.0],
+                [50.0 + pull[0], pull[1]],
+                ctx(16),
+            ),
+            Ok(true),
+            "the circle rim drag {name} was refused"
+        );
+        let at = seat(&moved, hub);
+        assert!(
+            (at[0] - 40.0).hypot(at[1]) < 1.0e-6,
+            "a circle rim drag {name} moved the hub to {at:?}"
+        );
+        let radius = moved
+            .circles()
+            .iter()
+            .find(|held| held.id == circle)
+            .map(|held| held.resolved_radius(ctx(16)))
+            .expect("the circle survives its own rim drag");
+        assert!(
+            (radius - want) < 1.0e-6 && (want - radius) < 1.0e-6,
+            "a circle rim drag {name} answered radius {radius}, not {want}"
+        );
+    }
 }

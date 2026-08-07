@@ -4670,17 +4670,23 @@ impl WindowedState {
     /// answered a conic body drag as a rho drag since the shoulder was removed, and the press
     /// simply never arrived.
     ///
-    /// A circle is still not offered: dragging its rim already means growing it, through its own
-    /// handles. The remaining higher curves are fixed-arity handles the author moves one at a time.
+    /// A CIRCLE is offered for the same reason a conic is: the gesture already means something the
+    /// press never arrived to deliver. Dragging a rim grows the shape about a center it holds, and
+    /// since 2026-08-07 an arc reads its rim exactly the way a circle's grip always has — as the
+    /// distance out from the center — so the two shapes now answer the same gesture the same way
+    /// and there is nothing left to tell the author apart. It was withheld while they differed.
+    ///
+    /// The remaining higher curves are fixed-arity handles the author moves one at a time.
     fn grabbable_sketch_curve_at(&self, cursor_x: f64, cursor_y: f64) -> Option<SketchGrab> {
         let curve = match self.nearest_sketch_edge(cursor_x, cursor_y)? {
             SketchEdgeHit::Segment(id) => document::sketch::SketchCurve::Segment(id),
             SketchEdgeHit::Arc(id) => document::sketch::SketchCurve::Arc(id),
+            SketchEdgeHit::Circle(id) => document::sketch::SketchCurve::Circle(id),
             SketchEdgeHit::HigherCurve(
                 curve @ (document::sketch::SketchCurve::Spline(_)
                 | document::sketch::SketchCurve::Conic(_)),
             ) => curve,
-            SketchEdgeHit::Circle(_) | SketchEdgeHit::HigherCurve(_) => return None,
+            SketchEdgeHit::HigherCurve(_) => return None,
         };
         Some(SketchGrab::Translate { curve, from: None })
     }
