@@ -3068,7 +3068,12 @@ impl<'a> Residuals<'a> {
                     // NOT `flexible_arc`. Loosening is about the chord, and an arc grabbed by
                     // one end keeps its radius. Only a gesture holding the arc ENTIRE is authoring
                     // that radius, and then the hands say what it becomes and a hold could only
-                    // fight them.
+                    // fight them. Where the hands CARRY the arc instead, the radius is not priced
+                    // here either — a row in this sum is traded against every other row in it, and
+                    // measured on the slot that prompted all this it lost outright: held as a
+                    // preference the cap still went 7.33 to 0.05, within a thousandth of holding
+                    // nothing at all. It is held by `radii_a_carry_holds_still` instead, which
+                    // takes the column away for the hand's passes rather than bidding for it.
                     let _ = index;
                     if [arc.center, arc.from, arc.to].iter().copied().all(in_hand) {
                         continue;
@@ -4295,6 +4300,9 @@ impl Problem {
         positions: &mut Vec<[f64; 2]>,
         scalar_coordinates: &mut Vec<f64>,
     ) -> Result<Frame, RequestError> {
+        /// The share of the travel a drawing can cover that a radius hold may give back before it
+        /// is dropped. See where it is read for the two measurements that put it here.
+        const MOST_OF_THE_TRAVEL: f64 = 0.5;
         // Whose gesture this is, said by the caller rather than measured here. A reshape names
         // what it turns ABOUT, so a set with a pin in it is one — and the drawing has to hold
         // still around the moving vertex, or the whole slot slides over to meet the cursor and
@@ -4343,23 +4351,186 @@ impl Problem {
         // weigh carrying it: anchoring drops it out of the pass entirely rather than leaving the
         // spans to argue with the relation and lose the drag to a conflict neither one meant.
         let held = self.points_the_author_fixed();
-        run(
-            &pulled,
-            positions,
-            scalar_coordinates,
-            Rigidity::Preferred {
-                anchored: &held,
-                flexible_curves: loosened,
-                was,
-                opening,
-                reshaping,
-            },
-        );
-        run(&pulled, positions, scalar_coordinates, Rigidity::Ignored);
-        Ok(Frame {
-            report: run(self, positions, scalar_coordinates, Rigidity::Ignored),
-            kept,
-        })
+        let gesture = |hand_problem: &Self,
+                       drawing: &Self,
+                       positions: &mut Vec<[f64; 2]>,
+                       scalars: &mut Vec<f64>| {
+            run(
+                hand_problem,
+                positions,
+                scalars,
+                Rigidity::Preferred {
+                    anchored: &held,
+                    flexible_curves: loosened,
+                    was,
+                    opening,
+                    reshaping,
+                },
+            );
+            run(hand_problem, positions, scalars, Rigidity::Ignored);
+            run(drawing, positions, scalars, Rigidity::Ignored)
+        };
+        // The gesture is run as the drawing has always run it, and then run again with the radius
+        // of every carried arc taken out of the solve. A drawing that does not dimension its own
+        // width has a FAMILY of exact answers under the hand — the slot that prompted this settles
+        // to 5e-11 with the cap 7.3271 wide and to 5e-11 with it 1.7792 wide, both satisfying every
+        // relation it has — and left alone the passes walk to whichever member lies nearest a seed
+        // they have already dragged far from the drawing. Holding the radius overrules nothing; it
+        // picks the member the author drew out of answers the drawing calls equally good.
+        //
+        // WHICH IS WHY THE TWO ARE JUDGED AT THE HANDS AND NOT BY THEIR OWN RESIDUALS. A held
+        // radius can reach a perfectly converged answer by spending the gesture instead: fix one
+        // end of an arc and carry its center, and the drawing honours both the fix and the old
+        // radius by putting the center back where it started. That converges to 5e-11, and it is
+        // the drag thrown away. Kept only when it costs the author nothing at the cursor, the hold
+        // yields to everything the author actually asserted without being ranked against any of it.
+        //
+        // The held run goes first and the loose one is only paid for when the held one fell
+        // short, because a hold that put the lead ON the cursor cannot be beaten by dropping it.
+        // Most gestures are that case, and running both regardless cost the suite two and a half
+        // times its wall clock for answers that never differed.
+        let (seed, seed_scalars) = (positions.clone(), scalar_coordinates.clone());
+        let report = match self.radii_a_carry_holds_still(hands, opening) {
+            None => gesture(&pulled, self, positions, scalar_coordinates),
+            Some(carried) => {
+                let pulled_held = pulled
+                    .radii_a_carry_holds_still(hands, opening)
+                    .unwrap_or_else(|| pulled.clone());
+                let held_report = gesture(&pulled_held, &carried, positions, scalar_coordinates);
+                // The LEAD hand alone, because the cursor is the lead's and no other hand's. Asked
+                // of every hand at once the question is drowned by the ones that structurally
+                // cannot answer it: carry an arc whose end the author fixed and that end misses its
+                // carried place by the whole drag, identically either way, leaving the three
+                // thousandths between them to decide it.
+                let reached = |settled: &[[f64; 2]]| {
+                    hands
+                        .iter()
+                        .filter(|hand| hand.role == HandRole::Lead)
+                        .filter_map(|hand| {
+                            let here = settled.get(hand.point.index)?;
+                            Some((here[0] - hand.to[0]).hypot(here[1] - hand.to[1]))
+                        })
+                        .fold(0.0_f64, f64::max)
+                };
+                if held_report.is_some() && reached(positions) <= SATISFIED_RESIDUAL {
+                    held_report
+                } else {
+                    let (held, held_scalars) = (positions.clone(), scalar_coordinates.clone());
+                    *positions = seed;
+                    *scalar_coordinates = seed_scalars;
+                    let loose_report = gesture(&pulled, self, positions, scalar_coordinates);
+                    // Judged on how much of the DRAG survives, not on whether the hold cost
+                    // anything. Holding a width costs the lead something almost always — carried to
+                    // twelve a slot lands 4.93 short holding its width and 5.00 short giving it up
+                    // — so a hold that has to be free never survives its first gesture. Nor can it
+                    // be judged on arriving, because the gestures worth arguing about are the ones
+                    // where nobody arrives.
+                    //
+                    // What separates them is the share of the reachable travel the hold gives back,
+                    // and the two cases are nowhere near each other: an arc whose end the author
+                    // fixed cannot move its center at all with the radius held, giving back ALL of
+                    // the 2.67 the drawing would otherwise have covered, while the slot dragged 163
+                    // out gives back 5.2 of 155.3. A hundred percent against three, and the suite
+                    // is unchanged at a tenth and at nine tenths.
+                    let asked = hands
+                        .iter()
+                        .filter(|hand| hand.role == HandRole::Lead)
+                        .filter_map(|hand| {
+                            let stood = opening.get(hand.point.index)?;
+                            Some((stood[0] - hand.to[0]).hypot(stood[1] - hand.to[1]))
+                        })
+                        .fold(0.0_f64, f64::max);
+                    let covered = |settled: &[[f64; 2]]| asked - reached(settled);
+                    if held_report.is_some()
+                        && covered(&held) >= MOST_OF_THE_TRAVEL * covered(positions)
+                    {
+                        *positions = held;
+                        *scalar_coordinates = held_scalars;
+                        held_report
+                    } else {
+                        loose_report
+                    }
+                }
+            }
+        };
+        Ok(Frame { report, kept })
+    }
+
+    /// This problem with the radius of every arc the hands CARRY taken out of the solve, or `None`
+    /// when they carry none and the problem is already the right one to hand on.
+    ///
+    /// Taking the column away rather than bidding for it, because a bid in this system is traded
+    /// against every other bid in the same sum and this one always loses. A slot's cap is tangent
+    /// to two rails; pull the cap's center a long way and the arithmetic can either turn the rails,
+    /// which moves four points, or widen the cap, which moves two — so it widens the cap. Held as a
+    /// preference the cap went 7.33 to 0.05 across the drag that prompted this, against 7.33 to
+    /// 0.05 holding nothing: the preference bought a thousandth. With no column there is nothing to
+    /// spend, and the arc's own equal-radius rows carry its ends along instead.
+    ///
+    /// It is NOT rigidity, and the difference is which pass sees it. This applies to the hand's
+    /// problem only — the two passes where a preference already outranks the cursor — and never to
+    /// the drawing's own, which runs last and alone and has the final word. So an undimensioned
+    /// radius holds against the gesture and yields to anything the author actually asserted: put a
+    /// `Distance` or a radius on that arc and the last pass enforces it over this, exactly as it
+    /// already does over every span preference in the pass before.
+    ///
+    /// A carry is told from an authoring gesture by what the hands DECLARE, never by measuring
+    /// where they went (ADR 0042). Two gestures hold an arc entire and they are opposites, so
+    /// counting hands cannot separate them — the ROLE of the hand on the center does. Widening a
+    /// curve by its body PINS the center and carries the two ends outward along their own radii:
+    /// that gesture's whole meaning is the radius, and holding it makes the drawing travel instead
+    /// of widen. A carry LEADS or CARRIES the center along with the ends, and then nobody is
+    /// authoring the radius at all.
+    ///
+    /// Measuring instead of asking was tried and cannot work: a point's fraction is stored in an
+    /// `f32`, so the radius a carried point reconstructs to disagrees with the one it was carried
+    /// from by more than any threshold worth setting, and by an amount that grows with the
+    /// drawing's magnitude — a fourfold zoom changed which gesture the arithmetic thought it was
+    /// looking at.
+    fn radii_a_carry_holds_still(&self, hands: &[Hand], opening: &[[f64; 2]]) -> Option<Self> {
+        let reaching = |role: HandRole| -> Vec<PointId> {
+            hands
+                .iter()
+                .filter(|hand| hand.role == role)
+                .flat_map(|hand| self.standing_together(hand.point))
+                .collect()
+        };
+        let in_hand: Vec<PointId> = hands
+            .iter()
+            .flat_map(|hand| self.standing_together(hand.point))
+            .collect();
+        let pinned = reaching(HandRole::Pin);
+        // Measured at the OPENING, never off the column. By the time this pass runs, two passes
+        // have already dragged the drawing about and the column has followed them — on the slot
+        // that prompted this the far cap's went 7.3271 to 0.6141 before the drawing was ever asked.
+        // The radius the author drew is the only one worth keeping, and `opening` is where it is.
+        let drawn = |arc: &ArcCenter| {
+            let hub = opening.get(arc.center.index)?;
+            let end = opening.get(arc.from.index)?;
+            Some((end[0] - hub[0]).hypot(end[1] - hub[1]))
+        };
+        let carried: Vec<(ParameterId, f64)> = self
+            .arc_centers
+            .iter()
+            .filter(|arc| {
+                [arc.center, arc.from, arc.to]
+                    .iter()
+                    .all(|point| in_hand.contains(point))
+            })
+            .filter(|arc| !pinned.contains(&arc.center))
+            .filter_map(|arc| Some((arc.radius?, drawn(arc)?)))
+            .collect();
+        if carried.is_empty() {
+            return None;
+        }
+        let mut held = self.clone();
+        for (radius, at) in carried {
+            if let Some(parameter) = held.parameters.get_mut(radius.index) {
+                parameter.stored = at;
+                parameter.free = false;
+            }
+        }
+        Some(held)
     }
 
     /// The points pinned outright, which a shape-holding preference has to leave where they are.

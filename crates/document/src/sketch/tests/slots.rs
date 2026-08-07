@@ -462,6 +462,160 @@ fn an_overall_slot_keeps_its_extremes_on_a_construction_line() {
         .expect("the rail drag is answered"));
 }
 
+/// A slot's WIDTH is its cap radius, and nothing in the drawing dimensions it: four tangents and a
+/// parallel force the two caps equal to each other and to half the rail separation, but leave the
+/// separation itself free. So a cap carried far enough used to be paid for by widening the cap —
+/// two points moved, against the four a rail turn would cost — and the slot changed shape while
+/// being moved.
+///
+/// The radius holds because a hand that carries a cap ENTIRE — its center led, its two ends
+/// following — is not authoring the radius, so the solve is given no column to spend on it.
+/// Dragging the cap's BODY pins the center instead, and that gesture keeps its column.
+///
+/// Both halves are measured against what the drawing did before. An `Overall` cap pulled back to
+/// twelve came out 8.5630 wide; it now comes out 8.0000, landing in the same place either way,
+/// because the far cap is what stops it rather than the width. A `CenterToCenter` cap dragged
+/// clean through its partner to −120 used to answer `Ok` with the cap 11.87 wide — the drawing
+/// changing shape to buy an inversion — and now declines. Declining is what the same drag already
+/// did at −20 and −60 before any of this: a slot cannot turn through itself, and the two targets
+/// that answered were the arithmetic finding a shape the author never asked for.
+#[test]
+fn carrying_a_slots_cap_keeps_the_width_it_was_drawn_with() {
+    let slot = |kind| {
+        source()
+            .with_linear_slot(
+                kind,
+                SketchPoint::new(8, 0),
+                SketchPoint::new(32, 0),
+                SketchPoint::new(8, 8),
+                ctx(16),
+            )
+            .expect("a straight slot")
+    };
+    let position = |sketch: &Sketch, id: EntityId| {
+        sketch
+            .points()
+            .iter()
+            .find(|point| point.id == id)
+            .map(|point| point.at.in_plane())
+            .expect("the point survives the drag")
+    };
+    // The cap furthest along the spine, and the radius its own arc draws.
+    let far_cap = |sketch: &Sketch| {
+        sketch
+            .arcs()
+            .iter()
+            .map(|arc| arc.center)
+            .max_by(|first, second| {
+                position(sketch, *first)[0].total_cmp(&position(sketch, *second)[0])
+            })
+            .expect("a cap center")
+    };
+    let width_of = |sketch: &Sketch, cap| {
+        sketch
+            .arcs()
+            .iter()
+            .find(|arc| arc.center == cap)
+            .map(|arc| {
+                let (hub, end) = (position(sketch, cap), position(sketch, arc.from));
+                (end[0] - hub[0]).hypot(end[1] - hub[1])
+            })
+            .expect("the cap survives its own drag")
+    };
+
+    let mut carried = slot(::parametric::sketch::LinearSlotKind::Overall);
+    let cap = far_cap(&carried.sketch);
+    let drawn = width_of(&carried.sketch, cap);
+    assert!((drawn - 8.0).abs() < 1.0e-6, "the slot drew {drawn} wide");
+    assert!(carried
+        .sketch
+        .move_point(cap, SketchPoint::from_continuous(12.0, 0.0), ctx(16))
+        .expect("the cap drag is answered"));
+    let after = width_of(&carried.sketch, cap);
+    assert!(
+        (after - drawn).abs() < 1.0e-6,
+        "a carried cap came out {after} wide, not the {drawn} it was drawn"
+    );
+
+    // Through its partner, and the drawing declines rather than reshaping itself to allow it.
+    let mut inverted = slot(::parametric::sketch::LinearSlotKind::CenterToCenter);
+    let cap = far_cap(&inverted.sketch);
+    let refused =
+        inverted
+            .sketch
+            .move_point(cap, SketchPoint::from_continuous(-120.0, 0.0), ctx(16));
+    assert!(
+        refused.is_err(),
+        "a slot turned through itself answered {refused:?} with the cap {} wide",
+        width_of(&inverted.sketch, cap)
+    );
+}
+
+/// What the author ASSERTED outranks what the gesture merely keeps.
+///
+/// An undimensioned radius is held through a carry, but the hold is not a constraint and must never
+/// read as one. Here one end of the arc is fixed outright, so carrying the center cannot leave the
+/// radius alone — the end is not coming along. The drawing wins, and it wins by measurement rather
+/// than by rank: the pass that holds the radius simply cannot converge, so its answer is dropped
+/// and the pass without the hold stands.
+#[test]
+fn a_fixed_end_outranks_the_radius_a_carry_would_have_kept() {
+    let arc_about_the_origin = || {
+        let mut sketch = Sketch::empty(PlaneAxis::Z);
+        let from = sketch.add_free_point(SketchPoint::new(40, 0));
+        let to = sketch.add_free_point(SketchPoint::new(0, 40));
+        let _ = sketch
+            .connect_arc(from, to, AngleMeasurement::from_degrees(90))
+            .expect("a quarter turn about the origin");
+        let center = sketch.arcs().first().expect("the arc").center;
+        (sketch, center, from)
+    };
+    let position = |sketch: &Sketch, id: EntityId| {
+        sketch
+            .points()
+            .iter()
+            .find(|point| point.id == id)
+            .map(|point| point.at.in_plane())
+            .expect("the point survives the drag")
+    };
+    let carry_the_center = |sketch: &mut Sketch, center, from| {
+        assert!(sketch
+            .move_point(center, SketchPoint::from_continuous(6.0, 0.0), ctx(16))
+            .expect("the carry is answered"));
+        let (hub, end) = (position(sketch, center), position(sketch, from));
+        ((end[0] - hub[0]).hypot(end[1] - hub[1]), end)
+    };
+
+    let (mut loose, center, from) = arc_about_the_origin();
+    let (kept, _) = carry_the_center(&mut loose, center, from);
+    assert!(
+        (kept - 40.0).abs() < 1.0e-6,
+        "a carried arc should still be 40 across, not {kept}"
+    );
+
+    let (mut asserted, center, from) = arc_about_the_origin();
+    asserted
+        .add_constraint(
+            ConstraintKind::Fix {
+                point: from,
+                at: SketchPoint::new(40, 0),
+            },
+            ctx(16),
+        )
+        .expect("nothing else is asserted, so it cannot conflict");
+    let (given_up, stayed) = carry_the_center(&mut asserted, center, from);
+    assert!(
+        (stayed[0] - 40.0).hypot(stayed[1]) < 1.0e-6,
+        "the fixed end moved to {stayed:?}"
+    );
+    // The drawing's own answer, to the digit: dropping the hold hands the gesture back exactly
+    // as it ran before any of this existed, rather than to something reconstructed afterwards.
+    assert!(
+        (given_up - 36.952_184_332_805_295).abs() < 1.0e-9,
+        "the hold should have given way to the fix, not held {given_up} across"
+    );
+}
+
 #[test]
 fn dragging_a_rail_widens_the_slot_without_moving_its_spine() {
     let mut made = arc_slot();
