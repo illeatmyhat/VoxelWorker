@@ -1057,6 +1057,14 @@ pub struct PanelResponse {
     /// in is a screen-space hit-test only the shell can answer, and it already answered it to
     /// decide whether to offer the row at all. `false` when the row was not chosen.
     pub toggle_sketch_face: bool,
+    /// A dimension's value was restated in the sketch rail this frame → the shell releases the
+    /// old assertion and makes the new one through the same door a fresh dimension comes in by.
+    ///
+    /// The whole [`Dimension`](document::sketch::Dimension) travels, not just the number: the rail
+    /// read the geometry off the constraint it is editing, and re-deriving it shell-side would be
+    /// a second place that has to agree about which points a span is between. `None` when no
+    /// value was committed.
+    pub restate_sketch_dimension: Option<(document::sketch::EntityId, document::sketch::Dimension)>,
     /// The sketch rail's Construction command was pressed. The shell owns the selected entity
     /// ids and commits their role changes through the normal anchor-preserving sketch edit door.
     pub toggle_sketch_construction: bool,

@@ -947,6 +947,22 @@ impl SketchLength {
         }
     }
 
+    /// A length the author wrote as an EXPRESSION, retained whole, at the voxel value it lands
+    /// on right now.
+    ///
+    /// The door a measurement field commits through. Both halves are carried because neither is
+    /// derivable from the other at the call site: the expression is the truth and survives a
+    /// density re-target, while `voxels` is the canonical value the resolve reads today.
+    /// [`retained_voxels`](Self::retained_voxels) is the special case where the expression the
+    /// author wrote WAS a voxel count.
+    pub fn retained(authored: Measurement, voxels: i64) -> Self {
+        Self {
+            voxels,
+            local_voxels: 0.0,
+            measurement: Some(authored),
+        }
+    }
+
     /// A voxel-authored length whose unit survives a density retarget. This differs from
     /// [`new`](Self::new): a plain stored length scales with the drawing, while this retained
     /// source continues to mean exactly `voxels` at the new density.

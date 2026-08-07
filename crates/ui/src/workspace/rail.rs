@@ -794,6 +794,7 @@ fn build_sketch_rail(ui: &mut egui::Ui, state: &mut PanelState, response: &mut P
             state.sketch_constraint_refusal = None;
         }
     }
+    sketch_dimension_value(ui, state, response);
     rail_heading(ui, "Op");
     for &(icon, tip, reserved) in SKETCH_OPS {
         let active = op_is_active(icon);
@@ -843,6 +844,108 @@ fn producer_switched_to(
 }
 
 /// A rail section heading: UPPERCASE micro-label over a hairline.
+/// The value of the ONE selected dimension, editable.
+///
+/// A dimension is the only relation that carries a number, so it is the only one with anything to
+/// say here. It appears when exactly one is picked and is absent otherwise, rather than sitting
+/// permanently empty: a field with nothing in it reads as a thing the author failed to fill in.
+///
+/// **Restating is release-and-assert, and the id changes.** The shell re-points the selection at
+/// the new one, so the field the author is typing in stays on screen across their own commit.
+fn sketch_dimension_value(ui: &mut egui::Ui, state: &mut PanelState, response: &mut PanelResponse) {
+    let Some(sketch) = state.sketch_mode else {
+        return;
+    };
+    let picked: Vec<document::sketch::EntityId> =
+        state.selection.sketch_constraints(sketch).collect();
+    let [constraint] = picked[..] else {
+        return;
+    };
+    let Some(document::scene::NodeContent::SketchTool { producer, .. }) =
+        state.scene.node_by_id(sketch).map(|node| &node.content)
+    else {
+        return;
+    };
+    let Some(document::sketch::ConstraintKind::Dimension(dimension)) = producer
+        .sketch
+        .constraints()
+        .iter()
+        .find(|held| held.id == constraint)
+        .map(|held| held.kind)
+    else {
+        return;
+    };
+    let density = state.geometry.voxels_per_block;
+    let id_base = egui::Id::new(("sketch_dimension", constraint));
+
+    rail_heading(ui, "Dimension");
+    let restated = match dimension {
+        document::sketch::Dimension::Span { from, to, length } => {
+            crate::widgets::MeasurementField::new(
+                id_base,
+                "Length",
+                length.value().round() as i64,
+                density,
+            )
+            // A span of nothing is two points in one place, which Coincident already says.
+            .min_voxels(1, "a span is at least one voxel")
+            .show(ui)
+            .map(|commit| document::sketch::Dimension::Span {
+                from,
+                to,
+                length: document::sketch::SketchLength::retained(commit.measurement, commit.voxels),
+            })
+        }
+        document::sketch::Dimension::Radius { curve, length } => {
+            crate::widgets::MeasurementField::new(
+                id_base,
+                "Radius",
+                length.value().round() as i64,
+                density,
+            )
+            // A curve of no size is not a smaller curve, it is a point.
+            .min_voxels(1, "a radius is at least one voxel")
+            .show(ui)
+            .map(|commit| document::sketch::Dimension::Radius {
+                curve,
+                length: document::sketch::SketchLength::retained(commit.measurement, commit.voxels),
+            })
+        }
+        document::sketch::Dimension::Angle {
+            first,
+            second,
+            degrees,
+        } => {
+            let mut turn = degrees.to_degrees_f64();
+            let changed = ui
+                .horizontal(|ui| {
+                    ui.label("Angle");
+                    ui.add(
+                        egui::DragValue::new(&mut turn)
+                            .speed(0.5)
+                            .range(0.0..=180.0)
+                            .suffix("\u{b0}"),
+                    )
+                    .changed()
+                })
+                .inner;
+            // Degrees are a plain number rather than a blocks+voxels expression, so the field is a
+            // drag rather than a text commit — and the guard is the same one every angle takes.
+            changed
+                .then(|| parametric::units::AngleMeasurement::try_from_degrees_f64(turn).ok())
+                .flatten()
+                .map(|degrees| document::sketch::Dimension::Angle {
+                    first,
+                    second,
+                    degrees,
+                })
+        }
+    };
+    if let Some(restated) = restated {
+        response.restate_sketch_dimension = Some((constraint, restated));
+    }
+}
+
 fn rail_heading(ui: &mut egui::Ui, title: &str) {
     ui.add_space(9.0);
     let galley = theme::letter_spaced(ui, title, theme::TEXT_HINT, 8.0, 1.2);

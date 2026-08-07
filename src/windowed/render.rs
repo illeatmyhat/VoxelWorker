@@ -437,6 +437,9 @@ impl WindowedState {
         if prepared.panel_response.toggle_sketch_construction {
             self.toggle_sketch_selection_construction();
         }
+        if let Some((constraint, restated)) = prepared.panel_response.restate_sketch_dimension {
+            self.restate_sketch_dimension(constraint, restated);
+        }
         // The context menu's orbit-center rows. Not an `Intent` and not undoable — the camera
         // is not the document (this is view state).
         match prepared.panel_response.orbit_center_request {
@@ -4033,6 +4036,51 @@ impl WindowedState {
     /// Flip the selected sketch geometry between real and construction as one undoable edit.
     /// Constraints are selection entities too but are intentionally excluded; structural arc and
     /// circle centers are filtered again by the document invariant.
+    /// Restate a picked dimension's value, and keep the author's hold on it.
+    ///
+    /// The restatement releases the old assertion and makes the new one, so the constraint comes
+    /// back with a NEW id — and the selection is re-pointed at it, because the rail field the
+    /// author just typed in is drawn only while its dimension is picked. Losing the selection on
+    /// commit would make the field vanish out from under the value it had just accepted.
+    ///
+    /// A refused number leaves the drawing and the selection exactly as they were, and says why
+    /// on the viewport notice — the same place a refused constraint says it.
+    fn restate_sketch_dimension(
+        &mut self,
+        constraint: document::sketch::EntityId,
+        restated: document::sketch::Dimension,
+    ) {
+        let (Some(target), Some(context)) = (
+            self.panel_state.sketch_mode,
+            self.sketch_evaluation_context(),
+        ) else {
+            return;
+        };
+        let Some((producer, _)) = self.sketch_node_state(target) else {
+            return;
+        };
+        match producer.with_dimension_restated(constraint, restated, context) {
+            Ok((next, id)) => {
+                self.commit_sketch_profile_edit(target, next);
+                self.panel_state.selection.clear_sketch_entities();
+                self.panel_state
+                    .selection
+                    .toggle(ui::panel::SelectionTarget::SketchConstraint {
+                        sketch: target,
+                        entity: id,
+                    });
+            }
+            Err(refusal) => {
+                self.panel_state.sketch_constraint_refusal = Some(refusal_text(&refusal));
+                select_sketch_constraint_refusal_culprits(
+                    &mut self.panel_state.selection,
+                    target,
+                    &refusal,
+                );
+            }
+        }
+    }
+
     pub(super) fn toggle_sketch_selection_construction(&mut self) {
         let Some(target) = self.panel_state.sketch_mode else {
             return;

@@ -644,6 +644,100 @@ fn the_producer_door_asserts_without_touching_the_original() {
     );
 }
 
+/// **Restating a dimension is release-and-assert, so the number goes in by the door that knows how
+/// to refuse it** — and the id changes, which is the cost the caller pays for that.
+#[test]
+fn restating_a_dimension_moves_the_drawing_and_mints_a_new_id() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let tail = sketch.add_free_point(SketchPoint::new(0, 0));
+    let head = sketch.add_free_point(SketchPoint::new(10, 0));
+    let span = |length: i64| Dimension::Span {
+        from: tail,
+        to: head,
+        length: SketchLength::new(length),
+    };
+    let asserted = sketch
+        .add_constraint(ConstraintKind::Dimension(span(10)), ctx(16))
+        .expect("the drawing already stands ten apart");
+    let before = SketchSolid::extrude(sketch, 3);
+
+    let (after, restated) = before
+        .with_dimension_restated(asserted, span(6), ctx(16))
+        .expect("two points with nothing else asserted can be six apart");
+    assert_ne!(restated, asserted, "a fresh assertion carries a fresh id");
+    assert_eq!(
+        after.sketch.constraints().len(),
+        1,
+        "the old one went, exactly one dimension remains"
+    );
+    assert_eq!(after.sketch.constraints()[0].id, restated);
+    let (a, b) = (position(&after.sketch, tail), position(&after.sketch, head));
+    assert!(
+        ((b[0] - a[0]).hypot(b[1] - a[1]) - 6.0).abs() < 1e-6,
+        "the drawing moved to the new number: {a:?} to {b:?}"
+    );
+
+    // And the original is untouched, because the door is pure like every other one here.
+    let (a, b) = (
+        position(&before.sketch, tail),
+        position(&before.sketch, head),
+    );
+    assert!(((b[0] - a[0]).hypot(b[1] - a[1]) - 10.0).abs() < 1e-6);
+}
+
+/// A number the drawing cannot reach is refused, and the refusal costs the author nothing — not
+/// the geometry, and not the dimension they were editing. Poking the value in place could not
+/// promise that; releasing and re-asserting a COPY can.
+#[test]
+fn a_restatement_the_drawing_cannot_reach_keeps_the_one_it_had() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let tail = sketch.add_free_point(SketchPoint::new(0, 0));
+    let head = sketch.add_free_point(SketchPoint::new(10, 0));
+    for (point, at) in [
+        (tail, SketchPoint::new(0, 0)),
+        (head, SketchPoint::new(10, 0)),
+    ] {
+        sketch
+            .add_constraint(ConstraintKind::Fix { point, at }, ctx(16))
+            .expect("pinning a point that is already there");
+    }
+    let asserted = sketch
+        .add_constraint(
+            ConstraintKind::Dimension(Dimension::Span {
+                from: tail,
+                to: head,
+                length: SketchLength::new(10),
+            }),
+            ctx(16),
+        )
+        .expect("ten apart is what the pins already say");
+    let before = SketchSolid::extrude(sketch, 3);
+
+    assert!(
+        before
+            .with_dimension_restated(
+                asserted,
+                Dimension::Span {
+                    from: tail,
+                    to: head,
+                    length: SketchLength::new(4),
+                },
+                ctx(16),
+            )
+            .is_err(),
+        "both ends are pinned ten apart, so four is not on offer"
+    );
+    assert_eq!(before.sketch.constraints().len(), 3, "nothing was released");
+    assert!(
+        before
+            .sketch
+            .constraints()
+            .iter()
+            .any(|held| held.id == asserted),
+        "including the one being edited"
+    );
+}
+
 /// A refusal at the producer door hands back nothing, so the shell cannot commit half an edit.
 #[test]
 fn the_producer_door_refuses_without_a_partial_result() {

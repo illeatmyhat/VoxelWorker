@@ -1631,6 +1631,34 @@ impl SketchSolid {
         Ok((next, id))
     }
 
+    /// This producer with the dimension `constraint_id` RESTATED at a new value, the drawing
+    /// moved to where the solve put it, and the restated constraint's new id.
+    ///
+    /// Written as a release and a fresh assertion rather than as a value poked in place, because
+    /// what makes a dimension acceptable is the trial solve — a number the drawing cannot reach is
+    /// refused exactly the way it would be refused on the way in, by the one door that knows how
+    /// to refuse it. The id therefore CHANGES, and the caller re-points whatever was holding the
+    /// old one; that is a smaller cost than a second copy of the admission protocol.
+    ///
+    /// `Err` leaves nothing changed, including the dimension that was already there.
+    ///
+    /// # Errors
+    ///
+    /// Whatever [`Sketch::add_constraint`] refuses the restated value for — most usefully an
+    /// unsatisfiable number, which names the constraints it fights.
+    pub fn with_dimension_restated(
+        &self,
+        constraint_id: EntityId,
+        dimension: super::Dimension,
+        context: EvaluationContext,
+    ) -> Result<(SketchSolid, EntityId), ConstraintRefusal> {
+        let mut next = self.with_constraint_deleted(constraint_id);
+        let id = next
+            .sketch
+            .add_constraint(ConstraintKind::Dimension(dimension), context)?;
+        Ok((next, id))
+    }
+
     /// This producer with the constraint `constraint_id` released. The geometry stays where the
     /// last solve left it — dropping an assertion stops re-asserting it, it does not undo it.
     /// No-op if unknown. Pure.
