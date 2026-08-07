@@ -1506,8 +1506,9 @@ pub struct Arc {
 pub struct Circle {
     /// Stable identity.
     pub id: EntityId,
-    /// The [`Point`] entity at the circle's center. Unlike an [`Arc`]'s center this is AUTHORED,
-    /// not derived: it is where the author put it, and nothing recomputes it.
+    /// The [`Point`] entity at the circle's center. Authored, like an [`Arc`]'s: it is where the
+    /// author put it, and nothing recomputes it. The arc's was derived until ADR 0038 placed it,
+    /// and the two have read the same ever since.
     pub center: EntityId,
     /// The one authoritative radius: a free exact solved length or a fixed measurement source.
     #[serde(deserialize_with = "deserialize_circle_radius")]
