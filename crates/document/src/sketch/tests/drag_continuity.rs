@@ -168,6 +168,54 @@ fn a_scaffold_span_offers_no_quantity_to_hold() {
     );
 }
 
+/// A shape's handle is DECLARED by the tool that draws it, never inferred from the drawing.
+///
+/// The inference this replaced read a hub off the curves turning about a point, so it could only
+/// ever fire on a shape built from arcs. Nobody in the field infers it: FreeCAD's sketcher stores a
+/// handle geoId on a `Group` constraint and swaps any grabbed member for it, and D-Cubed calls the
+/// same thing a declared rigid set. A turning slot's rails and centerline share one middle and the
+/// tool declares it; a straight slot has no such place, declares nothing, and is translated by its
+/// body like any other drawing that names no hub.
+#[test]
+fn only_the_tool_that_drew_a_shape_says_what_its_handle_is() {
+    let curved = curved_slot();
+    let hub = curved
+        .points()
+        .iter()
+        .find(|point| point.handle == PointHandle::ShapeHub)
+        .map(|point| point.id)
+        .expect("a turning slot declares its hub");
+    assert!(
+        curved.pivot_a_reshape_turns_about(hub).is_none(),
+        "the declared hub named a pivot, so dragging it would reshape instead of move"
+    );
+    let cap = spine_end(&curved, [40.0, 0.0]);
+    assert!(
+        curved.pivot_a_reshape_turns_about(cap).is_some(),
+        "a cap center named no pivot, so the slot would follow the hand whole"
+    );
+
+    let straight = SketchSolid::extrude(Sketch::empty(PlaneAxis::Z), 4)
+        .with_linear_slot(
+            ::parametric::sketch::LinearSlotKind::CenterToCenter,
+            SketchPoint::new(8, 0),
+            SketchPoint::new(32, 0),
+            SketchPoint::new(8, 8),
+            ctx(16),
+        )
+        .expect("a straight slot")
+        .sketch
+        .as_ref()
+        .clone();
+    assert!(
+        !straight
+            .points()
+            .iter()
+            .any(|point| point.handle == PointHandle::ShapeHub),
+        "a straight slot has no one place its parts turn about, so it may declare no hub"
+    );
+}
+
 fn spine_end(sketch: &Sketch, at: [f64; 2]) -> EntityId {
     sketch
         .points()

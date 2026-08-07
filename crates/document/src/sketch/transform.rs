@@ -432,6 +432,7 @@ impl Sketch {
                 id,
                 at,
                 lifetime: source.lifetime,
+                handle: source.handle,
             });
             points.insert(source.id, id);
         }

@@ -1105,6 +1105,13 @@ impl SketchSolid {
             next.sketch
                 .tie_arc_centers(&[first_rail, second_rail, spine]);
         }
+        // The tool DECLARES the slot's handle, because the tool is the only thing that knows. A
+        // turning slot's rails and centerline all turn about one place, and that place is what the
+        // whole slot is dragged by; a straight slot has no such place and declares none, so it is
+        // translated by its body like any other drawing that names no hub.
+        if let Some(&hub) = spine.get(2) {
+            next.sketch.declare_shape_hub(hub);
+        }
         let spine_line =
             slot_spine_line(&mut next.sketch, placement, &spine, [start_cap, end_cap])?;
         let tangencies = placement

@@ -292,9 +292,6 @@ struct ArcCenter {
     /// `None` only for an arc whose seed geometry is degenerate — an end sitting on the center —
     /// where there is no positive radius to name. That arc keeps the single equal-radius row.
     radius: Option<ParameterId>,
-    /// Construction geometry: solved like any other curve, but it names no quantity a drag could
-    /// be asked to keep. See [`Problem::quantities_a_hand_could_keep`].
-    scaffolding: bool,
 }
 
 /// One scalar represented in a topology-safe solver coordinate.
@@ -463,24 +460,6 @@ impl ProblemBuilder {
     /// a derived quantity, and why naming it here does not persist one. `planegcs` reaches the same
     /// arrangement from the other side, its `Arc` inheriting `rad` from its `Circle`.
     pub fn add_arc(&mut self, center: PointId, from: PointId, to: PointId) -> ArcId {
-        self.push_arc(center, from, to, false)
-    }
-
-    /// An arc that exists to place other geometry rather than to be part of the drawing.
-    ///
-    /// The scaffolding counterpart of `add_arc` — see `add_scaffolding_segment` for why the
-    /// distinction is a snap's business only.
-    pub fn add_scaffolding_arc(&mut self, center: PointId, from: PointId, to: PointId) -> ArcId {
-        self.push_arc(center, from, to, true)
-    }
-
-    fn push_arc(
-        &mut self,
-        center: PointId,
-        from: PointId,
-        to: PointId,
-        scaffolding: bool,
-    ) -> ArcId {
         let key = ArcId {
             owner: self.owner,
             index: self.arc_centers.len(),
@@ -493,7 +472,6 @@ impl ProblemBuilder {
             from,
             to,
             radius,
-            scaffolding,
         });
         key
     }

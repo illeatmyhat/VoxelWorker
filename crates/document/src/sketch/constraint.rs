@@ -1220,11 +1220,9 @@ pub(super) fn prepare_scoped(
         else {
             return Err(PrepareError::InvalidDocumentGeometry);
         };
-        let local = match arc.role {
-            EntityRole::Real => builder.add_arc(center, from, to),
-            EntityRole::Construction => builder.add_scaffolding_arc(center, from, to),
-        };
-        local_arcs.push((arc.id, local));
+        // An arc's RADIUS survives travel around it, so a scaffolding arc still offers one —
+        // see `Problem::add_scaffolding_segment` for why only spans are withheld.
+        local_arcs.push((arc.id, builder.add_arc(center, from, to)));
     }
 
     let mut circles: Vec<&Circle> = sketch.circles.iter().collect();

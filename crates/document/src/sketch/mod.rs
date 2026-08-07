@@ -1413,6 +1413,32 @@ pub struct Point {
     /// while a point still carried an [`EntityRole`].
     #[serde(default, alias = "role")]
     pub lifetime: PointLifetime,
+    /// What a drag that grabs this point is a statement ABOUT.
+    #[serde(default)]
+    pub handle: PointHandle,
+}
+
+/// What a drag that grabs a point is a statement about.
+///
+/// A shape's hub is DECLARED by the tool that draws the shape, because the tool is the only thing
+/// that knows. It used to be inferred — a center was a hub when several curves turned about it —
+/// and inference cannot see a shape whose parts do not turn about anything, which is why a
+/// straight slot could never be dragged whole while a curved one could.
+///
+/// Nobody in the field infers this. FreeCAD's sketcher carries a `Group` constraint whose first
+/// element is the handle geometry and swaps any grabbed member for it before a drag list is built;
+/// D-Cubed, under Fusion, calls the same thing a declared RIGID SET. SolveSpace deletes the
+/// question instead — drag a curve's body to translate, drag a point to reshape — which is the
+/// answer for every shape that declares no hub.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum PointHandle {
+    /// A point of the drawing. Grabbing it is a statement about the curves that meet or turn about
+    /// it, and no further.
+    #[default]
+    Ordinary,
+    /// The point a whole shape is dragged BY. Grabbing it translates every curve the shape walk
+    /// reaches, and it names no pivot, because moving a shape is not reshaping it.
+    ShapeHub,
 }
 
 /// A line-segment entity joining two [`Point`]s **by id**. Coincidence IS shared
@@ -2294,6 +2320,7 @@ impl Sketch {
             id,
             at,
             lifetime: PointLifetime::Freestanding,
+            handle: PointHandle::Ordinary,
         });
         id
     }
@@ -2305,8 +2332,20 @@ impl Sketch {
             id,
             at,
             lifetime: PointLifetime::CurveAnchored,
+            handle: PointHandle::Ordinary,
         });
         id
+    }
+
+    /// Name the point a whole shape is dragged by — see [`PointHandle::ShapeHub`].
+    ///
+    /// Only the tool that draws a shape may call this, at the moment it draws it. Nothing infers a
+    /// hub afterwards, and nothing revokes one: a hub is a fact about how the shape was authored,
+    /// so it survives every later edit that keeps the point.
+    fn declare_shape_hub(&mut self, point: EntityId) {
+        if let Some(index) = self.point_index(point) {
+            self.points[index].handle = PointHandle::ShapeHub;
+        }
     }
 
     /// Allocate a segment `from → to`, its `origin` set to its own id (a root of its
@@ -3460,7 +3499,7 @@ impl Sketch {
         if seeds.is_empty() {
             return Vec::new();
         }
-        let reach = if self.names_a_whole_shape(&seeds) {
+        let reach = if self.is_a_shape_hub(held) {
             self.shape_holding(seeds)
         } else {
             seeds
@@ -3495,13 +3534,12 @@ impl Sketch {
     /// so the hub it was supposed to turn about drifted along behind the cursor.
     ///
     /// **A shape need not have a hub for a drag of it to be a reshape**, and asking for one is what
-    /// left a STRAIGHT slot unable to lengthen. [`names_a_whole_shape`](Self::names_a_whole_shape)
-    /// recognises a hub by the curves that turn about it, so it can only ever fire where the shape
-    /// is built from arcs: a turning slot's two rails and its centerline share one middle, and a
-    /// straight one's rails are SEGMENTS, which have no middle to share. No point on it qualified,
-    /// no pivot was found, and with no pivot the gesture read as the drawing being moved — so the
-    /// author pulled an end cap and the whole slot followed. The blind spot is not the slot's: it
-    /// belongs to every shape drawn as straight runs between arc caps.
+    /// left a STRAIGHT slot unable to lengthen. A hub is DECLARED by the tool that draws the shape
+    /// ([`PointHandle::ShapeHub`]), and a straight slot has no one place its parts turn about for a
+    /// tool to declare — so no point on it qualified, no pivot was found, and with no pivot the
+    /// gesture read as the drawing being moved. The author pulled an end cap and the whole slot
+    /// followed. The blind spot is not the slot's: it belongs to every shape drawn as straight runs
+    /// between arc caps.
     ///
     /// So the hub is preferred and no longer required. Where the shape has one the answer is
     /// unchanged, which is what keeps a turning slot behaving exactly as it did; where it has none,
@@ -3510,7 +3548,7 @@ impl Sketch {
     /// answer is a property of the drawing rather than of the order its curves were stored in.
     fn pivot_a_reshape_turns_about(&self, held: EntityId) -> Option<EntityId> {
         let centered = self.curves_centered_on(held);
-        if self.names_a_whole_shape(&centered) {
+        if self.is_a_shape_hub(held) {
             return None;
         }
         let seeds = if centered.is_empty() {
@@ -3531,10 +3569,7 @@ impl Sketch {
                 candidates.push(point);
             }
         }
-        if let Some(hub) = candidates
-            .iter()
-            .find(|point| self.names_a_whole_shape(&self.curves_centered_on(**point)))
-        {
+        if let Some(hub) = candidates.iter().find(|point| self.is_a_shape_hub(**point)) {
             return Some(*hub);
         }
         let stood = self.point_in_plane(held)?;
@@ -3563,20 +3598,10 @@ impl Sketch {
             .collect()
     }
 
-    /// Whether curves turning about one center name a whole shape rather than one end of it.
-    ///
-    /// Only a SHARED center does. An unshared one names a single end cap, and its handle is for
-    /// reshaping: carrying the cap's own corners with it would fix the cap's orientation, and the
-    /// shape could then only slide to follow rather than swing round. Sharing can be either kind:
-    /// the same center entity, or separate centers held together by
-    /// [`Concentric`](ConstraintKind::Concentric), which is how two rails share one without merging
-    /// their points.
-    fn names_a_whole_shape(&self, seeds: &[SketchCurve]) -> bool {
-        !seeds.is_empty()
-            && (seeds.len() > 1
-                || seeds
-                    .iter()
-                    .any(|curve| self.stands_in_a_concentric_relation(*curve)))
+    /// Whether this point was DECLARED the handle of a whole shape — see [`PointHandle::ShapeHub`].
+    fn is_a_shape_hub(&self, point: EntityId) -> bool {
+        self.point_index(point)
+            .is_some_and(|index| self.points[index].handle == PointHandle::ShapeHub)
     }
 
     /// Every curve reachable from these by the relations that make curves behave as one shape.
@@ -3634,16 +3659,6 @@ impl Sketch {
                 _ => None,
             })
             .collect()
-    }
-
-    /// Whether this curve is held to another about a shared center.
-    fn stands_in_a_concentric_relation(&self, curve: SketchCurve) -> bool {
-        self.constraints.iter().any(|constraint| {
-            matches!(
-                constraint.kind,
-                ConstraintKind::Concentric { first, second } if first == curve || second == curve
-            )
-        })
     }
 
     /// Every circular curve turning about this point.
