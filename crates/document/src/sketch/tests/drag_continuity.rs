@@ -882,8 +882,29 @@ fn the_snap_ring_is_inked_from_the_room_left_in_the_cone() {
 /// **This asserts the defect, so the day it is fixed this test fails and gets renamed.** See
 /// [ADR 0043](../../../../../docs/adr/0043-a-snap-lets-go-gradually.md) for the four approaches
 /// that were measured and rejected, so they are not tried a second time.
+/// An unsnapped walk is smooth in EVERY direction, not just the ones that happened to be smooth.
+///
+/// The curved slot's end is walked radially outward at five headings, a two-hundredth of a unit at
+/// a time, and the whole drawing's displacement per step is measured. Two of those directions used
+/// to swing by hundreds of times the cursor step, and not as an isolated frame: at sixty degrees,
+/// **118 of the 200 steps** moved the drawing by more than ten times the cursor.
+///
+/// | heading | before | after |
+/// | ------- | -----: | ----: |
+/// | 0°      |   2.46 |  2.46 |
+/// | 60°     | **191.13** |  1.52 |
+/// | 90°     |   1.70 |  1.70 |
+/// | 120°    |   1.76 |  1.76 |
+/// | 180°    | **1317.86** |  2.46 |
+///
+/// What fixed it was not a preference, a damper or a snap. The solve was forming `JᵀJ`, which
+/// squares the condition number past what a `f64` holds, and taking every step out of the damping
+/// repair that failure falls through to — so the sweep, being the direction the constraints pinned
+/// down least, was where the perturbation landed. See `substrate`'s `gauss_newton_step`. The
+/// directions that were already smooth are unchanged to three decimals, which is what says the
+/// change removed noise rather than adding a bias.
 #[test]
-fn the_unsnapped_free_sweep_is_still_spent_arbitrarily() {
+fn an_unsnapped_walk_is_smooth_in_every_direction() {
     let slot = curved_slot();
     let end = spine_end(&slot, [40.0, 0.0]);
     let gain_at = |heading: f64| {
@@ -914,18 +935,11 @@ fn the_unsnapped_free_sweep_is_still_spent_arbitrarily() {
         }
         worst
     };
-    // Pulled straight back toward the hub, and out at sixty degrees, the drawing swings by
-    // hundreds of times the cursor step.
-    assert!(
-        gain_at(180.0) > 500.0 && gain_at(60.0) > 100.0,
-        "the free sweep steadied on its own: 180 deg {}, 60 deg {}",
-        gain_at(180.0),
-        gain_at(60.0)
-    );
-    // While the same walk in three other directions stays under three, which is what says the
-    // spikes are a defect of the solve rather than the shape of the gesture.
-    for heading in [0.0, 90.0, 120.0] {
+    for heading in [0.0, 60.0, 90.0, 120.0, 180.0] {
         let gain = gain_at(heading);
-        assert!(gain < 3.0, "{heading} deg is no longer smooth: {gain}");
+        assert!(
+            gain < 3.0,
+            "{heading} deg swings {gain} times the cursor step"
+        );
     }
 }

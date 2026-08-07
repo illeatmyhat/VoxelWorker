@@ -64,11 +64,17 @@
 //!   crossing changes the topology of the answer rather than its precision.
 //! - [`noise`] — a procedural-generation kit: the [`SmallRng`](noise::SmallRng) LCG and
 //!   [`PerlinNoise`](noise::PerlinNoise) gradient noise with fBm.
-//! - [`nonlinear_least_squares`] — Powell's Dog Leg with a Levenberg–Marquardt fallback:
+//! - [`nonlinear_least_squares`] — Powell's Dog Leg over a rank-revealing linear solve:
 //!   [`solve`](nonlinear_least_squares::solve) drives a
 //!   [`ResidualSystem`](nonlinear_least_squares::ResidualSystem) to its nearest solution, and the
 //!   [`SolveReport`](nonlinear_least_squares::SolveReport) carries the Jacobian's rank as degrees
 //!   of freedom and redundant residuals — the numerical core a constraint solver runs on.
+//! - [`complete_orthogonal_decomposition`] — LAPACK's `xGELSY`:
+//!   [`minimum_norm_least_squares`](complete_orthogonal_decomposition::minimum_norm_least_squares)
+//!   answers `Ax ≈ b` for any shape and any rank, by pivoted Householder QR and a trapezoidal
+//!   reduction, never forming `AᵀA` and so never squaring its conditioning. Picking the shortest of
+//!   a rank-deficient system's equally good answers is a stated GAUGE CHOICE — `docs/adr/`
+//!   ADR 0047 records what leaving it to a damped factorisation cost.
 //! - [`interval`] — [`FieldInterval`](interval::FieldInterval),
 //!   [`DisjointIntervalSet`](interval::DisjointIntervalSet), and [`Rational`](interval::Rational).
 //! - [`occupancy`] — the bit/atlas kit: [`BitCube`](occupancy::BitCube) and its payload sibling
@@ -91,6 +97,7 @@
 // call site (`substrate::spatial::LatticeAabb`, `substrate::occupancy::BitCube`);
 // each category module re-exports its own types. `supersede` and `srgb` belong to
 // no family and stay at the crate root.
+pub mod complete_orthogonal_decomposition;
 pub mod curve_intersection;
 pub mod geom2d;
 pub mod interval;

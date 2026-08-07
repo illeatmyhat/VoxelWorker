@@ -283,3 +283,20 @@ The physics is untouched — `pull` still scales the correction, the plateau is 
 drag the author says feels fine answers exactly as it did. Only the ink changed. Bound end to end in
 `the_snap_ring_is_inked_from_the_room_left_in_the_cone`, which walks a real drag radially out of its
 cone and checks the closed form against every step of it.
+
+## Amendment, 2026-08-06 — the explanation was wrong, and the fix was one level down
+
+Everything above about the free sweep being "spent arbitrarily" described the symptom correctly and
+attributed it to the wrong layer. It is not that the authoring vocabulary leaves the sweep unpriced.
+It is that the solve formed `JᵀJ`, which squares the condition number past what a `f64` can
+factorise, so every step came out of the damping repair — and a damped normal matrix is perturbed
+hardest in exactly the directions the constraints pinned down least, which is where the sweep lives.
+
+Two ten-minute experiments would have said so at any point: changing the trust region's initial
+radius from 1.0 to 0.25 removes the 1318 spike outright, and raising the iteration budget makes the
+191 one worse. Neither knob has any geometric meaning, so neither should have been able to move the
+answer.
+
+[ADR 0047](0047-a-free-direction-is-settled-by-a-gauge-not-by-damping.md) has the fix and the
+measurements. The six rejections above keep their numbers; the four penalty-row ones lose their
+stated cause, because the branch choice they were breaking no longer exists.
