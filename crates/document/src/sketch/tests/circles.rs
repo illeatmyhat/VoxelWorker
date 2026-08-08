@@ -76,9 +76,9 @@ fn a_circle_bounds_a_face_on_its_own() {
     assert_eq!(faces.len(), 1, "one closed curve, one face");
     let expected = std::f64::consts::PI * 16.0;
     assert!(
-        (faces[0].area_voxels - expected).abs() < 1e-9,
+        (faces[0].area - expected).abs() < 1e-9,
         "the area is the disc's, exactly — got {}, want {expected}",
-        faces[0].area_voxels
+        faces[0].area
     );
 }
 
@@ -146,7 +146,7 @@ fn an_unpicked_circle_inside_a_square_is_a_hole() {
     let disc = sketch
         .identified_faces(ctx(16))
         .into_iter()
-        .min_by(|a, b| a.0.area_voxels.total_cmp(&b.0.area_voxels))
+        .min_by(|a, b| a.0.area.total_cmp(&b.0.area))
         .expect("a face")
         .1;
     sketch.set_face_picked(disc, false, ctx(16));
@@ -192,7 +192,7 @@ fn two_overlapping_circles_bound_three_faces() {
     // 2r^2*acos(d/2r) - (d/2)*sqrt(4r^2 - d^2), and a crescent is a disc less the lens.
     let lens = 200.0 * (0.6f64).acos() - 6.0 * (400.0f64 - 144.0).sqrt();
     let crescent = std::f64::consts::PI * 100.0 - lens;
-    let mut areas: Vec<f64> = faces.iter().map(|face| face.area_voxels).collect();
+    let mut areas: Vec<f64> = faces.iter().map(|face| face.area).collect();
     areas.sort_by(f64::total_cmp);
     for (got, want) in areas.iter().zip([lens, crescent, crescent]) {
         assert!(
@@ -212,7 +212,7 @@ fn two_overlapping_circles_bound_three_faces() {
     let lens_face = sketch
         .identified_faces(ctx(16))
         .into_iter()
-        .min_by(|a, b| a.0.area_voxels.total_cmp(&b.0.area_voxels))
+        .min_by(|a, b| a.0.area.total_cmp(&b.0.area))
         .expect("a face")
         .1;
     sketch.set_face_picked(lens_face, false, ctx(16));
@@ -243,9 +243,9 @@ fn a_tangent_line_re_seams_the_circle_without_opening_it() {
     assert_eq!(faces.len(), 1, "the disc, touched but not cut open");
     let expected = std::f64::consts::PI * 25.0;
     assert!(
-        (faces[0].area_voxels - expected).abs() < 1e-9,
+        (faces[0].area - expected).abs() < 1e-9,
         "the whole disc survives the tangency — got {}, want {expected}",
-        faces[0].area_voxels
+        faces[0].area
     );
     assert_eq!(faces[0].boundary.len(), 1, "still one edge");
     assert!(faces[0].boundary[0].is_closed(), "still closed");
@@ -668,14 +668,8 @@ fn fixed_radius_context_drives_region_bounds_field_and_resolve_together() {
 
     assert_eq!(sketch.circles()[0].resolved_radius(d16), 16.0);
     assert_eq!(sketch.circles()[0].resolved_radius(d32), 32.0);
-    assert_eq!(
-        sketch.faces(d16)[0].area_voxels,
-        std::f64::consts::PI * 256.0
-    );
-    assert_eq!(
-        sketch.faces(d32)[0].area_voxels,
-        std::f64::consts::PI * 1024.0
-    );
+    assert_eq!(sketch.faces(d16)[0].area, std::f64::consts::PI * 256.0);
+    assert_eq!(sketch.faces(d32)[0].area, std::f64::consts::PI * 1024.0);
     assert!(
         substrate::geom2d::point_in_region(&sketch.region_field_loops(d32), [31.5, 0.0]),
         "the field borrows the d32-resolved curve"

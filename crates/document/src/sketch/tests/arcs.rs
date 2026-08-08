@@ -333,7 +333,7 @@ fn a_chord_and_its_arc_bound_a_d_shape() {
     // Half a radius-2 disc, EXACTLY: the area integrates the arc itself (Green's theorem over the
     // circle), where a tessellated boundary could only inscribe it and land just under.
     let half_disc = std::f64::consts::PI * 2.0;
-    let area = faces[0].area_voxels;
+    let area = faces[0].area;
     assert!(
         (area - half_disc).abs() < 1e-9,
         "the exact half-disc, got {area} against {half_disc}"
@@ -366,7 +366,7 @@ fn two_arcs_over_one_pair_bound_a_lens() {
         .expect("the other side is a different curve");
     let faces = sketch.faces(ctx(16));
     assert_eq!(faces.len(), 1, "the lens is one bounded face");
-    assert!(faces[0].area_voxels > 0.0);
+    assert!(faces[0].area > 0.0);
 }
 
 /// The full turn is a POLE of the endpoint-plus-bulge form, not a policy line. As the sweep

@@ -916,7 +916,7 @@ pub(crate) fn build_demo_sketch_donut(voxels_per_block: u32) -> DemoScene {
     let disc = sketch
         .identified_faces(context)
         .into_iter()
-        .min_by(|a, b| a.0.area_voxels.total_cmp(&b.0.area_voxels))
+        .min_by(|a, b| a.0.area.total_cmp(&b.0.area))
         .expect("the square and the disc")
         .1;
     sketch.set_face_picked(disc, false, context);
@@ -959,7 +959,7 @@ pub(crate) fn build_demo_sketch_lens(voxels_per_block: u32) -> DemoScene {
     let lens = sketch
         .identified_faces(context)
         .into_iter()
-        .min_by(|a, b| a.0.area_voxels.total_cmp(&b.0.area_voxels))
+        .min_by(|a, b| a.0.area.total_cmp(&b.0.area))
         .expect("two crescents and a lens")
         .1;
     sketch.set_face_picked(lens, false, context);

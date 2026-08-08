@@ -241,20 +241,20 @@ pub struct RectanglePlacement {
     pub corners: [SketchPoint; 4],
 }
 
-/// How far a body drag is allowed to ask for in one solve, in voxels.
+/// How far a body drag is allowed to ask for in one solve, in the plane's own units.
 ///
 /// A relation web has a FAMILY of exact answers, not one, and a solve reaches whichever it walks
 /// to. Asked for a small motion it walks to the answer beside the drawing, which is the one the
 /// author meant; asked for a large one it can cross to a distant member of the same family that
 /// satisfies everything equally well and looks nothing like the shape they drew. Measured on a
-/// curved slot of radius forty: a quarter-voxel pull widened it by exactly a quarter voxel, while
-/// the same pull delivered as one two-voxel jump threw its inner rail twenty-four voxels inward
+/// curved slot of radius forty: a quarter-unit pull widened it by exactly a quarter unit, while
+/// the same pull delivered as one two-unit jump threw its inner rail twenty-four units inward
 /// and then failed a tangency outright.
 ///
 /// So a long displacement is delivered as a run of short ones, each read off the geometry the last
 /// one left. This is continuation, and it is the ordinary remedy: every intermediate drawing is a
 /// real drawing, so the search never has to cross ground where the answer is ambiguous.
-const NUDGE_A_DRAG_WALKS_IN_VOXELS: f64 = 0.25;
+const NUDGE_A_DRAG_WALKS: f64 = 0.25;
 
 /// The ceiling on how many nudges one drag is broken into.
 ///
@@ -264,7 +264,7 @@ const NUDGE_A_DRAG_WALKS_IN_VOXELS: f64 = 0.25;
 const MOST_NUDGES_A_DRAG_WALKS: usize = 24;
 
 /// Break the displacement from `grabbed` to `to` into the nudges a drag is delivered in, each a
-/// (from, to) pair. See [`NUDGE_A_DRAG_WALKS_IN_VOXELS`] for why a drag walks rather than jumps.
+/// (from, to) pair. See [`NUDGE_A_DRAG_WALKS`] for why a drag walks rather than jumps.
 ///
 /// The pairs are struck off the STRAIGHT line the cursor travelled, not off the curve as it moves.
 /// Where the drawing carries the curve somewhere else along the way, the next nudge is read
@@ -273,7 +273,7 @@ const MOST_NUDGES_A_DRAG_WALKS: usize = 24;
 fn nudges_a_drag_is_delivered_in(grabbed: [f64; 2], to: [f64; 2]) -> Vec<([f64; 2], [f64; 2])> {
     let by = [to[0] - grabbed[0], to[1] - grabbed[1]];
     let reach = by[0].hypot(by[1]);
-    if !reach.is_finite() || reach <= NUDGE_A_DRAG_WALKS_IN_VOXELS {
+    if !reach.is_finite() || reach <= NUDGE_A_DRAG_WALKS {
         return vec![(grabbed, to)];
     }
     #[expect(
@@ -281,8 +281,7 @@ fn nudges_a_drag_is_delivered_in(grabbed: [f64; 2], to: [f64; 2]) -> Vec<([f64; 
         clippy::cast_sign_loss,
         reason = "a positive finite ratio, and the ceiling below bounds it either way"
     )]
-    let count =
-        ((reach / NUDGE_A_DRAG_WALKS_IN_VOXELS).ceil() as usize).clamp(1, MOST_NUDGES_A_DRAG_WALKS);
+    let count = ((reach / NUDGE_A_DRAG_WALKS).ceil() as usize).clamp(1, MOST_NUDGES_A_DRAG_WALKS);
     let mut walked = Vec::with_capacity(count);
     let mut stood = grabbed;
     for nudge in 1..=count {
@@ -303,7 +302,7 @@ fn nudges_a_drag_is_delivered_in(grabbed: [f64; 2], to: [f64; 2]) -> Vec<([f64; 
 
 /// Below this a curve is too small for the direction across it to be read from its own points,
 /// and a drag of it would report a wild displacement out of a rounding difference.
-const DEGENERATE_CURVE_VOXELS: f64 = 1.0e-9;
+const DEGENERATE_CURVE: f64 = 1.0e-9;
 
 /// What a drag answered: whether it stood, and the quantity it was pulled onto if it snapped.
 ///
@@ -1794,12 +1793,12 @@ pub struct Sketch {
     region_memo: region_memo::RegionMemo,
 }
 
-/// How close two dots have to be before they are one dot, in voxels.
+/// How close two dots have to be before they are one dot, in plane units.
 ///
-/// A thousandth of a voxel is nowhere near drawable and nowhere near authorable — it exists to
+/// A thousandth of a unit is nowhere near drawable and nowhere near authorable — it exists to
 /// absorb the residual a solved coincidence leaves behind, not to forgive a near miss. See
 /// [`Sketch::point_draws_at_rest`].
-const STACKED_DOT_VOXELS: f64 = 1.0e-3;
+const STACKED_DOT_TOLERANCE: f64 = 1.0e-3;
 
 impl Sketch {
     fn incoming_tangent_at(
@@ -2610,7 +2609,7 @@ impl Sketch {
     fn nested_faces(faces: &[Face]) -> Vec<Face> {
         let mut nested = faces.to_vec();
         // Ties keep `derive`'s deterministic order, so the region is stable across derivations.
-        nested.sort_by(|first, second| first.area_voxels.total_cmp(&second.area_voxels));
+        nested.sort_by(|first, second| first.area.total_cmp(&second.area));
         nested
     }
 
@@ -3032,7 +3031,7 @@ impl Sketch {
             Some((_, hub)) => {
                 let out = [grabbed[0] - hub[0], grabbed[1] - hub[1]];
                 let stood = out[0].hypot(out[1]);
-                if stood < DEGENERATE_CURVE_VOXELS {
+                if stood < DEGENERATE_CURVE {
                     return None;
                 }
                 let reach = (to[0] - hub[0]).hypot(to[1] - hub[1]) - stood;
@@ -3055,7 +3054,7 @@ impl Sketch {
             Some((_, hub)) => {
                 let out = [at[0] - hub[0], at[1] - hub[1]];
                 let radius = out[0].hypot(out[1]);
-                let grown = if radius > DEGENERATE_CURVE_VOXELS {
+                let grown = if radius > DEGENERATE_CURVE {
                     1.0 + reach / radius
                 } else {
                     1.0
@@ -3112,7 +3111,7 @@ impl Sketch {
                 let head = self.point_in_plane(segment.to)?;
                 let span = [head[0] - tail[0], head[1] - tail[1]];
                 let length = span[0].hypot(span[1]);
-                if length < DEGENERATE_CURVE_VOXELS {
+                if length < DEGENERATE_CURVE {
                     return None;
                 }
                 [-span[1] / length, span[0] / length]
@@ -3122,7 +3121,7 @@ impl Sketch {
                 let center = self.point_in_plane(arc.center)?;
                 let out = [grabbed[0] - center[0], grabbed[1] - center[1]];
                 let reach = out[0].hypot(out[1]);
-                if reach < DEGENERATE_CURVE_VOXELS {
+                if reach < DEGENERATE_CURVE {
                     return None;
                 }
                 [out[0] / reach, out[1] / reach]
@@ -3488,7 +3487,7 @@ impl Sketch {
     fn hands_moving_a_curve(&self, curve: SketchCurve, at: [f64; 2]) -> Option<Vec<Hand>> {
         // Below this the direction the offset is measured along stops being meaningful, and the
         // drag would report a wild displacement from a rounding difference.
-        const DEGENERATE_SPAN_VOXELS: f64 = 1.0e-9;
+        const DEGENERATE_SPAN: f64 = 1.0e-9;
         match curve {
             SketchCurve::Segment(id) => {
                 let segment = self.segments.iter().find(|segment| segment.id == id)?;
@@ -3496,7 +3495,7 @@ impl Sketch {
                 let head = self.point_in_plane(segment.to)?;
                 let span = [head[0] - tail[0], head[1] - tail[1]];
                 let length = span[0].hypot(span[1]);
-                if length < DEGENERATE_SPAN_VOXELS {
+                if length < DEGENERATE_SPAN {
                     return None;
                 }
                 let outward = [-span[1] / length, span[0] / length];
@@ -3519,7 +3518,7 @@ impl Sketch {
                 let head = self.point_in_plane(arc.to)?;
                 let radius = (tail[0] - center[0]).hypot(tail[1] - center[1]);
                 let reach = (at[0] - center[0]).hypot(at[1] - center[1]);
-                if radius < DEGENERATE_SPAN_VOXELS || reach < DEGENERATE_SPAN_VOXELS {
+                if radius < DEGENERATE_SPAN || reach < DEGENERATE_SPAN {
                     return None;
                 }
                 // Both endpoints stand at `radius` by definition of an arc, so scaling each about
@@ -5880,7 +5879,7 @@ impl Sketch {
     /// difference between a profile that closes into a region and one that does not, and the author
     /// can only see it because the drawing declines to merge them.
     ///
-    /// Position is compared within [`STACKED_DOT_VOXELS`] rather than exactly, because these stacks
+    /// Position is compared within [`STACKED_DOT_TOLERANCE`] rather than exactly, because these stacks
     /// are SOLVED rather than authored: a handle is tied to a center by a relation, and a relation
     /// holds to the solver's residual, not to the bit. A three-point arc slot's three centers land
     /// within 3e-11 of each other and are one dot by any reading an author could have of them.
@@ -5900,7 +5899,7 @@ impl Sketch {
                 return false;
             };
             other.id != id
-                && (stood[0] - mine[0]).hypot(stood[1] - mine[1]) < STACKED_DOT_VOXELS
+                && (stood[0] - mine[0]).hypot(stood[1] - mine[1]) < STACKED_DOT_TOLERANCE
                 && (!self.is_arc_center(other.id) || rank(other.id) < rank(id))
         })
     }

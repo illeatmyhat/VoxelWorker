@@ -58,7 +58,7 @@ use super::{EntityId, EntityRole, ProfileArc, ProfileEdge, Sketch, SketchPoint};
 /// pretends to know more than it does.
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct FaceKey {
-    /// A point strictly inside the face, in profile voxels.
+    /// A point strictly inside the face, in the plane's own units.
     pub interior_point: [f32; 2],
 }
 
@@ -77,10 +77,10 @@ pub struct Face {
     /// The boundary as a closed loop of edges, counter-clockwise, **with its arcs intact** —
     /// exactly what the region CSG and the overlay consume.
     pub boundary: Vec<ProfileEdge>,
-    /// The enclosed area in square voxels. Positive by construction (a clockwise cycle is an
+    /// The enclosed area in square plane units. Positive by construction (a clockwise cycle is an
     /// unbounded face and never becomes a `Face`); used to order nested faces smallest-first so
     /// a click inside a pocket picks the pocket, not the shape around it.
-    pub area_voxels: f64,
+    pub area: f64,
 }
 
 impl Face {
@@ -202,13 +202,10 @@ pub fn derive(sketch: &Sketch, context: parametric::EvaluationContext) -> Vec<Fa
 /// boundary starts. Two derivations of the same sketch must agree, because a caller holding an
 /// INDEX into this list (the viewport's hit-test polygons) is holding it across frames.
 fn order(first: &Face, second: &Face) -> std::cmp::Ordering {
-    second
-        .area_voxels
-        .total_cmp(&first.area_voxels)
-        .then_with(|| {
-            let (a, b) = (anchor(first), anchor(second));
-            a[0].total_cmp(&b[0]).then(a[1].total_cmp(&b[1]))
-        })
+    second.area.total_cmp(&first.area).then_with(|| {
+        let (a, b) = (anchor(first), anchor(second));
+        a[0].total_cmp(&b[0]).then(a[1].total_cmp(&b[1]))
+    })
 }
 
 /// Where a face's boundary starts, or the origin for an empty one.
@@ -275,8 +272,7 @@ fn pole(
         Vec<substrate::geom2d::RegionEdge>,
     )],
 ) -> Option<FaceKey> {
-    deepest_interior_point(loops, INTERIOR_POINT_PRECISION_VOXELS)
-        .map(|(point, _)| FaceKey::at(point))
+    deepest_interior_point(loops, INTERIOR_POINT_PRECISION).map(|(point, _)| FaceKey::at(point))
 }
 
 /// The real (non-construction) curves the author has drawn, each as a
@@ -406,19 +402,19 @@ fn append_higher_curves(sketch: &Sketch, curves: &mut Vec<(EntityId, PlanarCurve
     }
 }
 
-/// How far apart two piece endpoints may be and still be ONE arrangement vertex, in voxels.
+/// How far apart two piece endpoints may be and still be ONE arrangement vertex, in plane units.
 ///
 /// A crossing is solved independently on each of the two curves through it, so the two copies of
 /// that point differ by rounding; they have to weld or the graph tears at every crossing. It is
 /// well above [`substrate::curve_intersection::CROSSING_EPSILON`] and far below anything an author
 /// can draw, so it never welds two points that were meant to be distinct.
-const VERTEX_WELD_VOXELS: f64 = 1.0e-6;
+const VERTEX_WELD_TOLERANCE: f64 = 1.0e-6;
 
 /// The index of the arrangement vertex at `point`, appending one if nothing is already there.
 fn weld(vertices: &mut Vec<[f64; 2]>, point: [f64; 2]) -> usize {
     let found = vertices.iter().position(|at| {
-        (at[0] - point[0]).abs() <= VERTEX_WELD_VOXELS
-            && (at[1] - point[1]).abs() <= VERTEX_WELD_VOXELS
+        (at[0] - point[0]).abs() <= VERTEX_WELD_TOLERANCE
+            && (at[1] - point[1]).abs() <= VERTEX_WELD_TOLERANCE
     });
     match found {
         Some(index) => index,
@@ -493,33 +489,33 @@ fn face_from_cycle(half_edges: &[HalfEdge], cycle: &[usize]) -> Option<Face> {
         .map(|&index| half_edges[index].geometry)
         .collect();
     let area = signed_area(&boundary);
-    (area > AREA_EPSILON_SQUARE_VOXELS).then_some(Face {
+    (area > AREA_EPSILON).then_some(Face {
         boundary,
-        area_voxels: area,
+        area: area,
     })
 }
 
 /// Below this a traced cycle encloses nothing worth resolving — a whisker walked out and back, or
-/// a loop collapsed onto a line. Sub-voxel coordinates make an exact zero unreliable, so the
-/// threshold is a hundredth of a voxel of area rather than `0.0`.
-const AREA_EPSILON_SQUARE_VOXELS: f64 = 1.0e-2;
+/// a loop collapsed onto a line. Continuous coordinates make an exact zero unreliable, so the
+/// threshold is a hundredth of a square unit of area rather than `0.0`.
+const AREA_EPSILON: f64 = 1.0e-2;
 
-/// How close to the true deepest point the search must get, in voxels.
+/// How close to the true deepest point the search must get, in plane units.
 ///
 /// It buys nothing but cost. The point is an IDENTITY: what it has to be is strictly inside the
 /// face, deep enough to survive an edit, and identical across two derivations of the same sketch
 /// — and the last of those is exact whatever this is set to, because the search is deterministic.
-/// Half a voxel is well inside any face big enough to be worth naming, and the search is on the
-/// per-voxel resolve path, so buying decimal places here is paid for on every sample. It does NOT
+/// Half a unit is well inside any face big enough to be worth naming, and the search is on the
+/// resolve path, so buying decimal places here is paid for on every sample. It does NOT
 /// cross a layer boundary: nothing downstream is handed this number or asked to match it.
-const INTERIOR_POINT_PRECISION_VOXELS: f32 = 0.5;
+const INTERIOR_POINT_PRECISION: f32 = 0.5;
 
 /// The enclosed signed area by Green's theorem: positive counter-clockwise, negative clockwise.
 ///
 /// Each edge contributes `½∮(x dy − y dx)` over itself ([`ProfileEdge::signed_area_term`]), which
 /// is the shoelace term for a straight span and the exact circular integral for an arc. A
 /// two-edge cycle (an arc and its chord, say) genuinely encloses area, so there is no
-/// minimum-vertex floor here — [`AREA_EPSILON_SQUARE_VOXELS`] is the only filter.
+/// minimum-vertex floor here — [`AREA_EPSILON`] is the only filter.
 fn signed_area(boundary: &[ProfileEdge]) -> f64 {
     boundary.iter().map(ProfileEdge::signed_area_term).sum()
 }

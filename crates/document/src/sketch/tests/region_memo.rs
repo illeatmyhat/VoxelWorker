@@ -82,7 +82,7 @@ fn an_unpick_after_a_query_is_seen() {
     let inner = sketch
         .identified_faces(ctx(16))
         .into_iter()
-        .min_by(|first, second| first.0.area_voxels.total_cmp(&second.0.area_voxels))
+        .min_by(|first, second| first.0.area.total_cmp(&second.0.area))
         .expect("a face")
         .1;
     sketch.set_face_picked(inner, false, ctx(16));

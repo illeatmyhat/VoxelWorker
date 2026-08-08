@@ -31,7 +31,7 @@ fn nested_squares() -> Sketch {
 /// The face of `sketch` whose area is smallest — the inner one in every fixture here.
 fn innermost(sketch: &Sketch) -> FaceKey {
     let mut faces = sketch.identified_faces(ctx(16));
-    faces.sort_by(|a, b| a.0.area_voxels.total_cmp(&b.0.area_voxels));
+    faces.sort_by(|a, b| a.0.area.total_cmp(&b.0.area));
     faces.first().expect("a face").1
 }
 
@@ -42,7 +42,7 @@ fn derivation_enumerates_the_bounded_faces_and_nothing_else() {
     let sketch = nested_squares();
     let faces = sketch.faces(ctx(16));
     assert_eq!(faces.len(), 2, "one face per square, no unbounded face");
-    let mut areas: Vec<f64> = faces.iter().map(|face| face.area_voxels).collect();
+    let mut areas: Vec<f64> = faces.iter().map(|face| face.area).collect();
     areas.sort_by(f64::total_cmp);
     assert_eq!(areas, vec![16.0, 144.0]);
     assert!(
@@ -62,7 +62,7 @@ fn a_chord_splits_one_face_into_two() {
     let faces = sketch.faces(ctx(16));
     assert_eq!(faces.len(), 2, "the diagonal cuts the square in half");
     for face in &faces {
-        assert!((face.area_voxels - 8.0).abs() < 1e-9, "each half is half");
+        assert!((face.area - 8.0).abs() < 1e-9, "each half is half");
     }
 }
 
@@ -175,7 +175,7 @@ fn cutting_an_unpicked_face_in_two_migrates_the_unpick() {
     sketch.connect(low, high).expect("the chord");
 
     let mut faces = sketch.identified_faces(ctx(16));
-    faces.sort_by(|a, b| a.0.area_voxels.total_cmp(&b.0.area_voxels));
+    faces.sort_by(|a, b| a.0.area.total_cmp(&b.0.area));
     let holes: Vec<&(Face, FaceKey)> = faces
         .iter()
         .filter(|(_, key)| !sketch.face_is_picked(key, ctx(16)))
@@ -186,9 +186,9 @@ fn cutting_an_unpicked_face_in_two_migrates_the_unpick() {
         "and it is the half the stored point landed in"
     );
     assert!(
-        holes[0].0.area_voxels < 16.0,
+        holes[0].0.area < 16.0,
         "which is smaller than the pocket it was cut from: {}",
-        holes[0].0.area_voxels
+        holes[0].0.area
     );
 }
 
@@ -210,9 +210,9 @@ fn a_crossing_bounds_faces_with_no_snapped_point() {
     assert_eq!(faces.len(), 2, "one triangle either side of the crossing");
     for face in &faces {
         assert!(
-            (face.area_voxels - 9.0).abs() < 1e-6,
+            (face.area - 9.0).abs() < 1e-6,
             "each is half the 6x6 square's diagonal split: {}",
-            face.area_voxels
+            face.area
         );
     }
     assert_eq!(
@@ -336,7 +336,7 @@ fn a_picked_island_inside_a_void_survives_the_carve() {
     square(&mut sketch, 8, 4);
     let middle = {
         let mut faces = sketch.identified_faces(ctx(16));
-        faces.sort_by(|a, b| a.0.area_voxels.total_cmp(&b.0.area_voxels));
+        faces.sort_by(|a, b| a.0.area.total_cmp(&b.0.area));
         faces[1].1
     };
     sketch.set_face_picked(middle, false, ctx(16));
