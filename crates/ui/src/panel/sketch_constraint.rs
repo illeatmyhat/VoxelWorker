@@ -713,9 +713,20 @@ fn seeded_dimension(
             let form = sketch
                 .circular_form(*curve, context)
                 .ok_or("that curve has no radius to state")?;
-            Dimension::Radius {
-                curve: *curve,
-                length: SketchLength::from_continuous(form.radius),
+            // A whole circle seeds a DIAMETER and an arc seeds a radius, which is how the two are
+            // read: a closed rim is a hole and is sized across, an open one is a fillet and is
+            // sized out from its center. The rail switches either way, so this only has to be the
+            // guess that is usually right rather than the only answer available.
+            if matches!(curve, SketchCurve::Circle(_)) {
+                Dimension::Diameter {
+                    curve: *curve,
+                    length: SketchLength::from_continuous(form.radius * 2.0),
+                }
+            } else {
+                Dimension::Radius {
+                    curve: *curve,
+                    length: SketchLength::from_continuous(form.radius),
+                }
             }
         }
         (Some(SketchEntity::Point(from)), Some(SketchEntity::Point(to))) => {
@@ -853,7 +864,8 @@ mod tests {
             .circle_about(center, document::sketch::SketchLength::new(7))
             .expect("a circle about a free point");
 
-        // A rim: one pick, and the gesture is over.
+        // A rim: one pick, and the gesture is over. A whole circle is read across, so what it
+        // seeds is a DIAMETER at twice the radius it stands at.
         let mut rim = ArmedConstraint::new(ConstraintVerb::Dimension);
         assert_eq!(rim.wants(), Some(PickRequirement::PointOrCurve));
         assert_eq!(
@@ -863,9 +875,9 @@ mod tests {
         assert_eq!(rim.wants(), None);
         assert_eq!(
             rim.kind_at_context(&sketch, density_16()),
-            Ok(ConstraintKind::Dimension(Dimension::Radius {
+            Ok(ConstraintKind::Dimension(Dimension::Diameter {
                 curve: SketchCurve::Circle(circle),
-                length: SketchLength::from_continuous(7.0),
+                length: SketchLength::from_continuous(14.0),
             }))
         );
 

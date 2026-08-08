@@ -400,6 +400,90 @@ fn a_center_something_else_names_survives_the_circle() {
 
 /// A radius is a length like any other: an authored `1 block` stays one block across a density
 /// re-target, where a plain voxel radius simply rescales.
+/// **A diameter is the radius claim doubled, and the solver is told so in the one radius row.**
+///
+/// The number the author states is what the drawing ends up measuring ACROSS, which is the whole
+/// point of the member existing: an author who thinks in holes should not have to halve anything.
+#[test]
+fn a_diameter_sizes_the_circle_across() {
+    let mut sketch = lone_circle(0, 0, 10);
+    let circle = sketch.circles()[0].id;
+    sketch
+        .add_constraint(
+            ConstraintKind::Dimension(Dimension::Diameter {
+                curve: SketchCurve::Circle(circle),
+                length: SketchLength::new(12),
+            }),
+            ctx(16),
+        )
+        .expect("a lone circle can be twelve across");
+    let radius = sketch.circles()[0]
+        .free_radius_value()
+        .expect("a free radius");
+    assert!(
+        (radius - 6.0).abs() < 1e-6,
+        "twelve across is six out, got {radius}"
+    );
+}
+
+/// **Radius and diameter cannot both be asserted about one curve**, because they are one claim
+/// written two ways. The refusal falls out of the subject pair rather than being checked for, and
+/// it holds in both directions — a drawing where the two disagreed would have no answer at all.
+#[test]
+fn a_curve_states_its_size_out_or_across_but_not_both() {
+    let base = lone_circle(0, 0, 10);
+    let circle = base.circles()[0].id;
+    let out = ConstraintKind::Dimension(Dimension::Radius {
+        curve: SketchCurve::Circle(circle),
+        length: SketchLength::new(10),
+    });
+    let across = ConstraintKind::Dimension(Dimension::Diameter {
+        curve: SketchCurve::Circle(circle),
+        length: SketchLength::new(20),
+    });
+
+    for (first, second, order) in [
+        (out, across, "radius then diameter"),
+        (across, out, "the other way"),
+    ] {
+        let mut sketch = base.clone();
+        let held = sketch
+            .add_constraint(first, ctx(16))
+            .expect("the first statement about a free circle");
+        assert_eq!(
+            sketch.add_constraint(second, ctx(16)),
+            Err(ConstraintRefusal::AlreadyAsserted { existing: held }),
+            "{order}: the second said nothing the first had not"
+        );
+        assert_eq!(sketch.constraints().len(), 1, "{order}");
+    }
+}
+
+/// A diameter is a length, so an authored `1 block` stays one block across a density re-target —
+/// the same contract every other authored length in the drawing keeps.
+#[test]
+fn an_authored_diameter_survives_a_density_retarget() {
+    let mut sketch = lone_circle(0, 0, 8);
+    let circle = sketch.circles()[0].id;
+    let one_block = Measurement::new(::parametric::ExactRational::from_integer(1), 0);
+    sketch
+        .add_constraint(
+            ConstraintKind::Dimension(Dimension::Diameter {
+                curve: SketchCurve::Circle(circle),
+                length: SketchLength::retained(one_block, 16),
+            }),
+            ctx(16),
+        )
+        .expect("a circle already sixteen across");
+
+    sketch.retarget_density(16, 32);
+    let ConstraintKind::Dimension(stated) = sketch.constraints()[0].kind else {
+        panic!("the one assertion is the diameter");
+    };
+    let stated = stated.length().expect("a diameter measures a length");
+    assert_eq!(stated.value(), 32.0, "one block is 32 voxels at d32");
+}
+
 #[test]
 fn an_authored_radius_survives_a_density_retarget() {
     let mut sketch = Sketch::empty(PlaneAxis::Z);

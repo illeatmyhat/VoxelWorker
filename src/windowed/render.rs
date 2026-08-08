@@ -4215,6 +4215,25 @@ impl WindowedState {
                     let anchor = center + away * (radius_px + DIMENSION_STANDOFF_PX);
                     ui::gizmos::dimension::radius(center, radius_px, anchor, &voxels(length), rank)
                 }
+                document::sketch::Dimension::Diameter { curve, length } => {
+                    let Some(form) = producer.sketch.circular_form(curve, context) else {
+                        continue;
+                    };
+                    let rim = [form.center[0] + form.radius, form.center[1]];
+                    let (Some(center), Some(rim)) = (to_px(form.center), to_px(rim)) else {
+                        continue;
+                    };
+                    let radius_px = center.distance(rim);
+                    let away = egui::vec2(0.707, -0.707);
+                    let anchor = center + away * (radius_px + DIMENSION_STANDOFF_PX);
+                    ui::gizmos::dimension::diameter(
+                        center,
+                        radius_px,
+                        anchor,
+                        &voxels(length),
+                        rank,
+                    )
+                }
                 document::sketch::Dimension::Angle {
                     first,
                     second,

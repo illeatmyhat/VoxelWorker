@@ -843,7 +843,6 @@ fn producer_switched_to(
     }
 }
 
-/// A rail section heading: UPPERCASE micro-label over a hairline.
 /// The value of the ONE selected dimension, editable.
 ///
 /// A dimension is the only relation that carries a number, so it is the only one with anything to
@@ -896,20 +895,10 @@ fn sketch_dimension_value(ui: &mut egui::Ui, state: &mut PanelState, response: &
                 length: document::sketch::SketchLength::retained(commit.measurement, commit.voxels),
             })
         }
-        document::sketch::Dimension::Radius { curve, length } => {
-            crate::widgets::MeasurementField::new(
-                id_base,
-                "Radius",
-                length.value().round() as i64,
-                density,
-            )
-            // A curve of no size is not a smaller curve, it is a point.
-            .min_voxels(1, "a radius is at least one voxel")
-            .show(ui)
-            .map(|commit| document::sketch::Dimension::Radius {
-                curve,
-                length: document::sketch::SketchLength::retained(commit.measurement, commit.voxels),
-            })
+        document::sketch::Dimension::Radius { curve, length }
+        | document::sketch::Dimension::Diameter { curve, length } => {
+            let across = matches!(dimension, document::sketch::Dimension::Diameter { .. });
+            sketch_rim_value(ui, id_base, density, curve, length, across)
         }
         document::sketch::Dimension::Angle {
             first,
@@ -946,6 +935,62 @@ fn sketch_dimension_value(ui: &mut egui::Ui, state: &mut PanelState, response: &
     }
 }
 
+/// A rim dimension's value, and the choice of which way it is stated.
+///
+/// Radius and diameter are the same claim about the same curve, so they cannot both be asserted
+/// and the two are drawn as one switch rather than two rows. Which one is showing is the author's
+/// — a machinist reads a hole as a diameter and a fillet as a radius, and the drawing has no
+/// opinion about which of those they are drawing.
+///
+/// **Switching drops the authored expression and keeps the size.** Half of `2 blocks` is not an
+/// expression the author wrote, so the new statement arrives as the plain number it now is, the
+/// same way a fresh dimension arrives measured off the drawing.
+fn sketch_rim_value(
+    ui: &mut egui::Ui,
+    id_base: egui::Id,
+    density: u32,
+    curve: document::sketch::SketchCurve,
+    length: document::sketch::SketchLength,
+    across: bool,
+) -> Option<document::sketch::Dimension> {
+    let pressed = ui
+        .horizontal(|ui| {
+            let out = ui.selectable_label(!across, "Radius").clicked();
+            let through = ui.selectable_label(across, "Diameter").clicked();
+            through.then_some(true).or_else(|| out.then_some(false))
+        })
+        .inner;
+    // Pressing the one already showing says nothing, so only a CHANGE restates.
+    if let Some(now_across) = pressed.filter(|&want| want != across) {
+        let scaled = length.value() * if now_across { 2.0 } else { 0.5 };
+        let length = document::sketch::SketchLength::from_continuous(scaled);
+        return Some(if now_across {
+            document::sketch::Dimension::Diameter { curve, length }
+        } else {
+            document::sketch::Dimension::Radius { curve, length }
+        });
+    }
+
+    let committed = crate::widgets::MeasurementField::new(
+        id_base,
+        // The switch directly above IS the label, and naming it twice would read as
+        // two settings.
+        "",
+        length.value().round() as i64,
+        density,
+    )
+    // A curve of no size is not a smaller curve, it is a point.
+    .min_voxels(1, "a rim needs at least one voxel")
+    .show(ui)?;
+    let length = document::sketch::SketchLength::retained(committed.measurement, committed.voxels);
+    Some(if across {
+        document::sketch::Dimension::Diameter { curve, length }
+    } else {
+        document::sketch::Dimension::Radius { curve, length }
+    })
+}
+
+/// A rail section heading: UPPERCASE micro-label over a hairline.
 fn rail_heading(ui: &mut egui::Ui, title: &str) {
     ui.add_space(9.0);
     let galley = theme::letter_spaced(ui, title, theme::TEXT_HINT, 8.0, 1.2);

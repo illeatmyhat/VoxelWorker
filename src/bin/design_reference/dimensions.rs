@@ -103,6 +103,40 @@ impl Sheet {
         );
         self.specimen_row(
             ui,
+            "diameter · reads across / evicted",
+            "The same claim as the radius, struck THROUGH the center instead of out from it — a \
+             hole is read across and a fillet is read out, and which one shows is the author's. \
+             The one fit test is whether the value clears both arrow bases, which is not the same \
+             question as whether the arrows fit: the small circle here holds its arrows and still \
+             sends its number out on a leader. The prefix is D, because the drafting glyph is an \
+             icon spelled as a character and the value type is monospace.",
+            |p, s| {
+                let stroke = Stroke::new(1.5_f32, color_palette::ACCENT);
+                let wide = Pos2::new(s.left() + 56.0, s.center().y + 4.0);
+                p.circle_stroke(wide, 30.0, stroke);
+                dimension::diameter(
+                    wide,
+                    30.0,
+                    Pos2::new(s.left() + 78.0, s.center().y - 18.0),
+                    "30",
+                    Rank::Driving,
+                )
+                .paint(p);
+
+                let tight = Pos2::new(s.left() + 160.0, s.center().y + 4.0);
+                p.circle_stroke(tight, 12.0, stroke);
+                dimension::diameter(
+                    tight,
+                    12.0,
+                    Pos2::new(s.left() + 190.0, s.center().y - 22.0),
+                    "12",
+                    Rank::Driving,
+                )
+                .paint(p);
+            },
+        );
+        self.specimen_row(
+            ui,
             "angle · wide / tight",
             "The terminators are TANGENT to the arc, and both fit tests run on the ARC LENGTH \
              rather than the chord — a wide sweep measured across its chord would read as too \

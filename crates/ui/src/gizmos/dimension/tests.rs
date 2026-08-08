@@ -188,6 +188,89 @@ fn an_anchor_inside_the_curve_points_the_arrow_outward() {
     assert!(inward.dot(ray) < -0.9, "outside: it reverses to point back");
 }
 
+/// **A diameter crosses the center, and both its ends sit on the rim.** That is the entire
+/// difference from a radius, so it is the thing a rewrite must not lose: two arrowheads, one on
+/// each side, each exactly `radius` from the center and on the anchor's own ray.
+#[test]
+fn a_diameter_touches_the_rim_on_both_sides_of_the_center() {
+    let center = Pos2::new(120.0, 90.0);
+    for anchor in [
+        Pos2::new(184.0, 54.0),
+        Pos2::new(48.0, 160.0),
+        Pos2::new(120.0, 22.0),
+    ] {
+        let drawing = diameter(center, 34.0, anchor, "68", Rank::Driving);
+        let touches = heads(&drawing);
+        assert_eq!(touches.len(), 2, "one head per side for anchor {anchor:?}");
+        let ray = (anchor - center).normalized();
+        let along: Vec<f32> = touches
+            .iter()
+            .map(|head| {
+                assert!(
+                    ((head[0] - center).length() - 34.0).abs() < 1e-3,
+                    "a tip left the rim for anchor {anchor:?}"
+                );
+                (head[0] - center).dot(ray)
+            })
+            .collect();
+        assert!(
+            along[0] * along[1] < 0.0,
+            "both tips landed on the same side of the center for anchor {anchor:?}"
+        );
+    }
+}
+
+/// **A diameter's fit test is the value's, not the arrows'** — the same middle row the span
+/// documents. A 24-wide circle holds two 9-unit arrows and still cannot hold a number between
+/// them, so the value leaves and the arrows reverse to point back in.
+#[test]
+fn a_diameter_too_tight_to_read_across_evicts_its_value() {
+    let center = Pos2::new(90.0, 90.0);
+    let anchor = Pos2::new(130.0, 50.0);
+    let ray = (anchor - center).normalized();
+
+    let roomy = diameter(center, 40.0, anchor, "80", Rank::Driving);
+    let inward: Vec<f32> = heads(&roomy)
+        .iter()
+        .map(|head| aim(*head).dot(ray))
+        .collect();
+    assert!(
+        inward[0] < -0.9 && inward[1] > 0.9,
+        "roomy: the arrows point out at the rim, {inward:?}"
+    );
+    assert!(
+        (roomy.labels[0].at - center).length() < 1e-3,
+        "roomy: the value rides the line at the center"
+    );
+
+    let tight = diameter(center, 12.0, anchor, "24", Rank::Driving);
+    let outward: Vec<f32> = heads(&tight)
+        .iter()
+        .map(|head| aim(*head).dot(ray))
+        .collect();
+    assert!(
+        outward[0] > 0.9 && outward[1] < -0.9,
+        "tight: the arrows flipped to point back in, {outward:?}"
+    );
+    assert!(
+        (tight.labels[0].at - center).length() > 12.0,
+        "tight: the value left the circle"
+    );
+    assert_eq!(tight.labels[0].radians, 0.0, "an evicted value reads level");
+}
+
+/// A leader never doubles back into the circle it left, however far inside the anchor is dragged.
+#[test]
+fn a_diameter_leader_dragged_inside_still_stops_at_the_rim() {
+    let center = Pos2::new(60.0, 60.0);
+    let drawing = diameter(center, 10.0, Pos2::new(63.0, 58.0), "20", Rank::Driving);
+    let ray = (Pos2::new(63.0, 58.0) - center).normalized();
+    assert!(
+        (drawing.labels[0].at - center).dot(ray) >= 10.0 - 1e-3,
+        "the value came to rest inside the rim"
+    );
+}
+
 #[test]
 fn a_wide_angle_puts_its_value_on_the_arc() {
     let drawing = angle(
@@ -288,6 +371,7 @@ fn every_piece_is_finite_at_a_degenerate_input() {
     let drawings = [
         span(Pos2::ZERO, Pos2::ZERO, 10.0, "0", Rank::Driving),
         radius(Pos2::ZERO, 10.0, Pos2::ZERO, "10", Rank::Driving),
+        diameter(Pos2::ZERO, 0.0, Pos2::ZERO, "0", Rank::Driving),
         angle(Pos2::ZERO, 1.0, 1.0, 20.0, 30.0, "0°", Rank::Driving),
     ];
     for drawing in &drawings {

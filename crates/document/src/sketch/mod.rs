@@ -4458,8 +4458,11 @@ impl Sketch {
             }
             // A radius is a statement about a curve that TURNS. A segment has no center to
             // measure from and the higher curves have no one radius, so both are refused here
-            // rather than left to say nothing in a residual row.
-            ConstraintKind::Dimension(Dimension::Radius { curve, length }) => {
+            // rather than left to say nothing in a residual row. A diameter answers to the same
+            // three, since it is the same statement doubled.
+            ConstraintKind::Dimension(
+                Dimension::Radius { curve, length } | Dimension::Diameter { curve, length },
+            ) => {
                 let turns = match curve {
                     SketchCurve::Arc(id) => self.arcs.iter().any(|arc| arc.id == id),
                     SketchCurve::Circle(id) => self.circles.iter().any(|held| held.id == id),
@@ -6168,7 +6171,9 @@ impl Sketch {
                     *at = at.retargeted(old_density, new_density);
                 }
                 ConstraintKind::Dimension(
-                    Dimension::Span { length, .. } | Dimension::Radius { length, .. },
+                    Dimension::Span { length, .. }
+                    | Dimension::Radius { length, .. }
+                    | Dimension::Diameter { length, .. },
                 ) => {
                     *length = length.retargeted(old_density, new_density);
                 }

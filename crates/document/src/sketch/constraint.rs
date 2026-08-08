@@ -161,13 +161,30 @@ pub enum Dimension {
         curve: SketchCurve,
         length: SketchLength,
     },
+    /// A curve that turns is this wide, measured straight through its own center.
+    ///
+    /// The SAME claim as [`Radius`](Self::Radius) doubled, and the solver reads it as exactly that
+    /// — one radius row against the same column. It is a separate member and not a display flag on
+    /// the radius because the number is AUTHORED: an author who wrote "one block across" wrote a
+    /// diameter, and storing half of it would throw away the expression they typed and hand back a
+    /// halved one at the next density re-target.
+    ///
+    /// The two cannot both be asserted about one curve. They say the same thing, so the second is
+    /// refused as already asserted — which falls out of the subject pair rather than being checked
+    /// for, because both name the curve and nothing else.
+    Diameter {
+        curve: SketchCurve,
+        length: SketchLength,
+    },
 }
 
 impl Dimension {
     /// The authored value, as a length, for the members that measure one.
     pub const fn length(&self) -> Option<SketchLength> {
         match *self {
-            Self::Span { length, .. } | Self::Radius { length, .. } => Some(length),
+            Self::Span { length, .. }
+            | Self::Radius { length, .. }
+            | Self::Diameter { length, .. } => Some(length),
             // An angle is a quantity, but it is not a length, and there is no length to answer
             // with rather than one that happens to be zero.
             Self::Angle { .. } => None,
@@ -385,7 +402,9 @@ impl ConstraintKind {
             Self::Coincident { first, second } => vec![first, second],
             // Both name curves. The points those curves are drawn between are not what
             // either one is about.
-            Self::Dimension(Dimension::Radius { .. } | Dimension::Angle { .. })
+            Self::Dimension(
+                Dimension::Radius { .. } | Dimension::Diameter { .. } | Dimension::Angle { .. },
+            )
             | Self::Horizontal { .. }
             | Self::Vertical { .. }
             | Self::Parallel { .. }
@@ -433,7 +452,11 @@ impl ConstraintKind {
             Self::Fix { point, .. } | Self::Quantize { point, .. } => [point, point],
             Self::Horizontal { segment } | Self::Vertical { segment } => [segment, segment],
             Self::Dimension(Dimension::Span { from, to, .. }) => [from.min(to), from.max(to)],
-            Self::Dimension(Dimension::Radius { curve, .. }) => [curve.id(), curve.id()],
+            // Sharing the pair is what refuses a diameter on a curve that already states a
+            // radius: it is the same claim written the other way, not a second one.
+            Self::Dimension(
+                Dimension::Radius { curve, .. } | Dimension::Diameter { curve, .. },
+            ) => [curve.id(), curve.id()],
             Self::Dimension(Dimension::Angle { first, second, .. })
             | Self::Coincident { first, second }
             | Self::Parallel { first, second }
@@ -527,7 +550,9 @@ impl ConstraintKind {
             Self::Fix { point, .. } | Self::Quantize { point, .. } => vec![point],
             Self::Horizontal { segment } | Self::Vertical { segment } => vec![segment],
             Self::Dimension(Dimension::Span { from, to, .. }) => vec![from, to],
-            Self::Dimension(Dimension::Radius { curve, .. }) => vec![curve.id()],
+            Self::Dimension(
+                Dimension::Radius { curve, .. } | Dimension::Diameter { curve, .. },
+            ) => vec![curve.id()],
             Self::Dimension(Dimension::Angle { first, second, .. })
             | Self::Coincident { first, second }
             | Self::Parallel { first, second }
@@ -1104,6 +1129,16 @@ fn relation_for(
         }) => curve(subject).map(|curve| Relation::Radius {
             curve,
             length: length.value(),
+        }),
+        // Halved into the one radius relation the solver has, because a diameter is not a
+        // different measurement of the shape — it is the same one stated at twice the size, and a
+        // second row that said so would be a second way for the two to disagree.
+        ConstraintKind::Dimension(Dimension::Diameter {
+            curve: subject,
+            length,
+        }) => curve(subject).map(|curve| Relation::Radius {
+            curve,
+            length: length.value() / 2.0,
         }),
         ConstraintKind::Dimension(Dimension::Angle {
             first,
