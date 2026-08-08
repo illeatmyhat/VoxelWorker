@@ -28,12 +28,13 @@ const CENTER_ARM: f32 = 4.0;
 /// test loses — the same middle row [`axis_span`](super::axis_span()) documents.
 ///
 /// `rim` is [`radius`](super::radius())'s, asked TWICE: a through-line meets the circle at both
-/// ends, so an arc read across can fall short of its own drawing at either or both of them.
+/// ends, so an arc read across can fall short of its own drawing at either or both of them — and
+/// on a plane the camera is not square to the two ends do not even stand the same distance out.
 pub fn diameter(
     center: Pos2,
     radius: f32,
     anchor: Pos2,
-    rim: Option<Rim>,
+    rim: Rim,
     value: &str,
     rank: Rank,
 ) -> Drawing {
@@ -47,8 +48,12 @@ pub fn diameter(
     } else {
         Vec2::X
     };
-    let (near, far) = (center - ray * radius, center + ray * radius);
-    let across = 2.0 * radius;
+    let bearing = ray.y.atan2(ray.x);
+    let (near, far) = (
+        rim.touch(bearing + std::f32::consts::PI),
+        rim.touch(bearing),
+    );
+    let across = (far - near).length();
 
     // A center CROSS in dimension ink — a filled dot is what a sketch point looks like, and the
     // center a diameter passes through is not one.
@@ -63,13 +68,8 @@ pub fn diameter(
         ]),
     ];
     for reaching in [ray, -ray] {
-        if let Some((from, to)) = super::radius::carry(rim, radius, reaching) {
-            pieces.push(Piece::Arc {
-                center,
-                radius,
-                from,
-                to,
-            });
+        if let Some(carried) = super::radius::carry(rim, radius, reaching) {
+            pieces.push(carried);
         }
     }
 

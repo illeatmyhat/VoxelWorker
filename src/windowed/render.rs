@@ -4164,6 +4164,26 @@ impl WindowedState {
                 .find(|point| point.id == id)
                 .map(|point| point.at.in_plane())
         };
+        // Everything a dimension needs of a rim: where it stands on screen, how much of itself it
+        // draws, and the one nominal radius the layout reasons in. Asked once per drawing, because
+        // projecting the ring is the expensive part and all three answers come off it.
+        let dimensioned_rim = |curve| {
+            let form = producer.sketch.circular_form(curve, context)?;
+            let standing = ProjectedRim::project(form.center, form.radius, &to_px)?;
+            let (from, turn) = drawn_turn(&producer.sketch, curve, standing.center, &to_px)?;
+            // The nominal radius is the ring's own mean reach, not one sample along the plane's
+            // first axis: on an ellipse that sample is right in one direction and wrong in every
+            // other, and this is a length the fit tests weigh rather than a distance anything
+            // steps out by.
+            #[allow(clippy::cast_precision_loss)]
+            let radius_px = standing
+                .ring
+                .iter()
+                .map(|at| standing.center.distance(*at))
+                .sum::<f32>()
+                / standing.ring.len().max(1) as f32;
+            Some((standing, from, turn, radius_px))
+        };
         let ends_in_plane = |id: document::sketch::EntityId| {
             let held = producer
                 .sketch
@@ -4308,15 +4328,23 @@ impl WindowedState {
                     second,
                     length,
                 } => {
-                    let sized = |curve| {
-                        let form = producer.sketch.circular_form(curve, context)?;
-                        let edge = [form.center[0] + form.radius, form.center[1]];
-                        let (center, edge) = (to_px(form.center)?, to_px(edge)?);
-                        Some((center, center.distance(edge)))
+                    let (first_standing, first_from, first_turn, first_px) =
+                        dimensioned_rim(first)?;
+                    let (second_standing, second_from, second_turn, second_px) =
+                        dimensioned_rim(second)?;
+                    let first_rim = ui::gizmos::dimension::Rim {
+                        from: first_from,
+                        turn: first_turn,
+                        at: &|bearing| first_standing.touch(bearing),
                     };
-                    let ((center, inner), (_, outer)) = (sized(first)?, sized(second)?);
-                    let anchor =
-                        placed.unwrap_or_else(|| default_rim_anchor(center, inner.max(outer)));
+                    let second_rim = ui::gizmos::dimension::Rim {
+                        from: second_from,
+                        turn: second_turn,
+                        at: &|bearing| second_standing.touch(bearing),
+                    };
+                    let center = first_standing.center;
+                    let anchor = placed
+                        .unwrap_or_else(|| default_rim_anchor(center, first_px.max(second_px)));
                     // The bearing the annotation was dropped at is the radius the gap is measured
                     // out along, clamped to where each rim is actually drawn — asked of each in
                     // turn, so a bearing NEITHER reaches settles on the second's end and the
@@ -4325,20 +4353,16 @@ impl WindowedState {
                     if reach.length() <= f32::EPSILON {
                         return None;
                     }
-                    let bearing = [first, second].into_iter().fold(
-                        reach.y.atan2(reach.x),
-                        |bearing, curve| {
-                            drawn_rim(&producer.sketch, curve, center, &to_px)
-                                .map_or(bearing, |rim| rim.nearest_drawn(bearing))
-                        },
-                    );
+                    let bearing =
+                        second_rim.nearest_drawn(first_rim.nearest_drawn(reach.y.atan2(reach.x)));
                     let out = egui::vec2(bearing.cos(), bearing.sin());
                     // The dimension line runs ALONG that radius, so each extension line lies on
                     // the tangent at the rim it leaves — the same drawing a gap across a line
-                    // makes, read on a curve.
+                    // makes, read on a curve. Each end is asked of its OWN rim: on a plane the
+                    // camera is not square to, a screen radius is right in one direction only.
                     ui::gizmos::dimension::axis_span(
-                        center + out * inner,
-                        center + out * outer,
+                        first_rim.touch(bearing),
+                        second_rim.touch(bearing),
                         out,
                         anchor,
                         &voxels(length),
@@ -4346,35 +4370,35 @@ impl WindowedState {
                     )
                 }
                 document::sketch::Dimension::Radius { curve, length } => {
-                    let form = producer.sketch.circular_form(curve, context)?;
-                    let edge = [form.center[0] + form.radius, form.center[1]];
-                    let (Some(center), Some(edge)) = (to_px(form.center), to_px(edge)) else {
-                        return None;
-                    };
-                    let radius_px = center.distance(edge);
+                    let (standing, from, turn, radius_px) = dimensioned_rim(curve)?;
+                    let center = standing.center;
                     let anchor = placed.unwrap_or_else(|| default_rim_anchor(center, radius_px));
                     ui::gizmos::dimension::radius(
                         center,
                         radius_px,
                         anchor,
-                        drawn_rim(&producer.sketch, curve, center, &to_px),
+                        ui::gizmos::dimension::Rim {
+                            from,
+                            turn,
+                            at: &|bearing| standing.touch(bearing),
+                        },
                         &voxels(length),
                         rank,
                     )
                 }
                 document::sketch::Dimension::Diameter { curve, length } => {
-                    let form = producer.sketch.circular_form(curve, context)?;
-                    let edge = [form.center[0] + form.radius, form.center[1]];
-                    let (Some(center), Some(edge)) = (to_px(form.center), to_px(edge)) else {
-                        return None;
-                    };
-                    let radius_px = center.distance(edge);
+                    let (standing, from, turn, radius_px) = dimensioned_rim(curve)?;
+                    let center = standing.center;
                     let anchor = placed.unwrap_or_else(|| default_rim_anchor(center, radius_px));
                     ui::gizmos::dimension::diameter(
                         center,
                         radius_px,
                         anchor,
-                        drawn_rim(&producer.sketch, curve, center, &to_px),
+                        ui::gizmos::dimension::Rim {
+                            from,
+                            turn,
+                            at: &|bearing| standing.touch(bearing),
+                        },
                         &voxels(length),
                         rank,
                     )
@@ -7950,21 +7974,83 @@ fn corner_holds(first: egui::Vec2, second: egui::Vec2, at: egui::Vec2) -> bool {
     }
 }
 
-/// How much of its own circle `curve` actually draws, seen from `center` on screen — `None` for a
-/// whole circle, which draws all of it.
+/// Where a rim STANDS on screen, sampled once round its own circle.
+///
+/// A circle drawn in a sketch plane is not a circle on screen: `to_px` is a projection, so unless
+/// the plane faces the camera the drawing is an ellipse. Everything a dimension puts ON that
+/// drawing — an arrowhead, an extension carried round to a leader — asks this instead of stepping
+/// out along a screen radius, which is right only in the one direction it was measured.
+struct ProjectedRim {
+    center: egui::Pos2,
+    /// One whole turn, evenly spaced in the PLANE and projected point by point, so the ring is the
+    /// same curve the overlay draws rather than an approximation of it.
+    ring: Vec<egui::Pos2>,
+}
+
+impl ProjectedRim {
+    /// A whole rim's circle, projected. `None` when the center or any of the ring leaves the view.
+    fn project(
+        plane_center: [f64; 2],
+        radius: f64,
+        to_px: &dyn Fn([f64; 2]) -> Option<egui::Pos2>,
+    ) -> Option<Self> {
+        const STEPS: usize = 72;
+        let center = to_px(plane_center)?;
+        let ring = (0..STEPS)
+            .map(|step| {
+                #[allow(clippy::cast_precision_loss)]
+                let turn = std::f64::consts::TAU * step as f64 / STEPS as f64;
+                to_px([
+                    radius.mul_add(turn.cos(), plane_center[0]),
+                    radius.mul_add(turn.sin(), plane_center[1]),
+                ])
+            })
+            .collect::<Option<Vec<_>>>()?;
+        Some(Self { center, ring })
+    }
+
+    /// Where the rim stands at a screen bearing, by striking the ray out of the center against the
+    /// ring — no inverse of the projection needed, and exact at every point the ring was sampled.
+    fn touch(&self, bearing: f32) -> egui::Pos2 {
+        let out = egui::vec2(bearing.cos(), bearing.sin());
+        let across = egui::vec2(out.y, -out.x);
+        let steps = self.ring.len();
+        for index in 0..steps {
+            let (here, next) = (self.ring[index], self.ring[(index + 1) % steps]);
+            let (side, other) = (
+                (here - self.center).dot(across),
+                (next - self.center).dot(across),
+            );
+            if (side <= 0.0) == (other <= 0.0) {
+                continue;
+            }
+            let hit = here + (next - here) * (side / (side - other));
+            // The ray's LINE meets the ring twice; the half the bearing points along is the one.
+            if (hit - self.center).dot(out) >= 0.0 {
+                return hit;
+            }
+        }
+        // Unreachable while the center is inside its own ring, which a projected circle's is.
+        self.center + out
+    }
+}
+
+/// How much of its own circle `curve` actually draws, seen from `center` on screen — a whole turn
+/// for a closed rim, which draws all of it.
 ///
 /// The turn is read on SCREEN and its direction is found by projecting the curve's own midpoint,
 /// not by carrying the plane's counter-clockwise sense across: a sketch seen from behind its plane
 /// runs the other way round, and an extension drawn the long way round a rim it should have met in
 /// a few degrees is the failure that would say so.
-fn drawn_rim(
+fn drawn_turn(
     sketch: &document::sketch::Sketch,
     curve: document::sketch::SketchCurve,
     center: egui::Pos2,
     to_px: &dyn Fn([f64; 2]) -> Option<egui::Pos2>,
-) -> Option<ui::gizmos::dimension::Rim> {
+) -> Option<(f32, f32)> {
     let document::sketch::SketchCurve::Arc(arc) = curve else {
-        return None;
+        // A closed rim reaches every bearing, so it never falls short of a leader.
+        return Some((0.0, std::f32::consts::TAU));
     };
     let form = sketch.arc_form_of(arc)?;
     // Halfway along the curve, found by turning the start point half the sweep about the center —
@@ -7977,7 +8063,7 @@ fn drawn_rim(
     ];
     let bearing = |at: [f64; 2]| {
         let out = to_px(at)? - center;
-        (out.length() > f32::EPSILON).then(|| out)
+        (out.length() > f32::EPSILON).then_some(out)
     };
     let (from, middle, to) = (bearing(form.from)?, bearing(middle)?, bearing(form.to)?);
     let direction = if signed_turn(from, middle) >= 0.0 {
@@ -7987,10 +8073,7 @@ fn drawn_rim(
     };
     let from = from.y.atan2(from.x);
     let round = ((to.y.atan2(to.x) - from) * direction).rem_euclid(std::f32::consts::TAU);
-    Some(ui::gizmos::dimension::Rim {
-        from,
-        turn: direction * round,
-    })
+    Some((from, direction * round))
 }
 
 /// The two bearings an angular dimension is struck between, and how far each leg reaches THAT WAY.

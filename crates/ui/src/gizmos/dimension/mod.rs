@@ -207,15 +207,24 @@ const OVERRUN: f32 = 8.0;
 /// Where that happens the drawing is carried round the circle to meet it, from whichever end of the
 /// curve is nearer. That is the same rule an angle's legs already follow, on a curve instead of a
 /// line: **the extension spans whatever the geometry does not**.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Rim {
+#[derive(Clone, Copy)]
+pub struct Rim<'a> {
     /// Where the curve starts, as a bearing from the center (radians, y running down).
     pub from: f32,
-    /// How far it turns to reach its other end. Signed, and never a whole turn.
+    /// How far it turns to reach its other end. Signed; a whole turn or more is a closed rim,
+    /// which falls short of nothing.
     pub turn: f32,
+    /// Where the curve's circle stands at a bearing.
+    ///
+    /// A circle drawn in a sketch plane is NOT a circle on screen: the plane is projected, so
+    /// unless it faces the camera the drawing is an ellipse, and a screen radius is right only in
+    /// the one direction it happened to be measured. Every mark that has to LAND on the curve —
+    /// an arrowhead, an extension carried round to a leader — asks this instead of stepping out
+    /// along a radius.
+    pub at: &'a dyn Fn(f32) -> Pos2,
 }
 
-impl Rim {
+impl Rim<'_> {
     /// How far round from `self.from`, in the direction the curve turns, `bearing` lies.
     fn round_to(self, bearing: f32) -> f32 {
         ((bearing - self.from) * self.turn.signum()).rem_euclid(std::f32::consts::TAU)
@@ -245,6 +254,29 @@ impl Rim {
     fn carry_to(self, bearing: f32, overrun: f32) -> Option<(f32, f32)> {
         let (end, over) = self.shortfall(bearing)?;
         Some((end, end + over + over.signum() * overrun))
+    }
+
+    /// Where the curve stands at `bearing`, gapped `out` further from the center — the point a
+    /// mark that has to LAND on the drawing uses in place of stepping out along a screen radius.
+    #[must_use]
+    pub fn touch(self, bearing: f32) -> Pos2 {
+        (self.at)(bearing)
+    }
+
+    /// The curve sampled from one bearing round to another, as screen points.
+    fn between(self, from: f32, to: f32) -> Vec<Pos2> {
+        // One step per few degrees: fine enough that a projected rim reads as a curve, coarse
+        // enough that a whole turn is a few dozen points rather than a few hundred.
+        let steps = ((to - from).abs() / 0.12).ceil().max(1.0);
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let count = steps as usize;
+        (0..=count)
+            .map(|step| {
+                #[allow(clippy::cast_precision_loss)]
+                let fraction = step as f32 / steps;
+                self.touch((to - from).mul_add(fraction, from))
+            })
+            .collect()
     }
 
     /// The bearing on this curve nearest the one asked for: the ask itself where the curve is drawn

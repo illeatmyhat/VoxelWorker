@@ -43,14 +43,30 @@ const fn whole_arm(reach: f32) -> dimension::Leg {
     }
 }
 
+/// Where a rim stands, on a flat page. The sheet has no sketch plane and no projection, so a
+/// circle here really is a circle: it stands the same distance out at every bearing. The app hands
+/// in a projected ring instead, which is the whole reason a rim is ASKED where it stands rather
+/// than stepped out to along a screen radius.
+fn round(center: Pos2, radius: f32) -> impl Fn(f32) -> Pos2 {
+    move |bearing| center + Vec2::angled(bearing) * radius
+}
+
+/// A rim that draws the whole of its own circle, so it falls short of nothing.
+fn whole(at: &dyn Fn(f32) -> Pos2) -> dimension::Rim<'_> {
+    dimension::Rim {
+        from: 0.0,
+        turn: std::f32::consts::TAU,
+        at,
+    }
+}
+
 /// Draws the part of a circle an arc actually occupies, in geometry ink — the sheet has no sketch
 /// to point at, so the specimen has to draw its own curve for the dimension to fall short of.
-fn rim_curve(painter: &Painter, center: Pos2, radius: f32, rim: dimension::Rim) {
+fn rim_curve(painter: &Painter, rim: dimension::Rim) {
     let steps = 24;
     let at = |step: i32| {
         #[allow(clippy::cast_precision_loss)]
-        let bearing = rim.turn.mul_add(step as f32 / steps as f32, rim.from);
-        center + Vec2::new(bearing.cos(), bearing.sin()) * radius
+        rim.touch(rim.turn.mul_add(step as f32 / steps as f32, rim.from))
     };
     for step in 0..steps {
         gizmos::segment(painter, at(step), at(step + 1));
@@ -220,15 +236,8 @@ impl Sheet {
             |p, s| {
                 let center = Pos2::new(s.left() + 46.0, s.center().y);
                 for radius in [12.0_f32, 30.0] {
-                    rim_curve(
-                        p,
-                        center,
-                        radius,
-                        dimension::Rim {
-                            from: 0.0,
-                            turn: std::f32::consts::TAU * 0.999,
-                        },
-                    );
+                    let standing = round(center, radius);
+                    rim_curve(p, whole(&standing));
                 }
                 dimension::axis_span(
                     center + Vec2::X * 12.0,
@@ -242,18 +251,21 @@ impl Sheet {
 
                 let hub = Pos2::new(s.left() + 150.0, s.center().y + 14.0);
                 // The outer arc stops short of where the text was dropped; the inner one does not.
+                let (inner, outer) = (round(hub, 12.0), round(hub, 30.0));
                 let drawn = [
                     dimension::Rim {
                         from: -2.4,
                         turn: 2.4,
+                        at: &inner,
                     },
                     dimension::Rim {
                         from: -2.0,
                         turn: 1.4,
+                        at: &outer,
                     },
                 ];
-                for (radius, rim) in [12.0_f32, 30.0].into_iter().zip(drawn) {
-                    rim_curve(p, hub, radius, rim);
+                for rim in drawn {
+                    rim_curve(p, rim);
                 }
                 let dropped = -0.2;
                 let bearing = drawn
@@ -261,8 +273,8 @@ impl Sheet {
                     .fold(dropped, |bearing, rim| rim.nearest_drawn(bearing));
                 let out = Vec2::angled(bearing);
                 dimension::axis_span(
-                    hub + out * 12.0,
-                    hub + out * 30.0,
+                    drawn[0].touch(bearing),
+                    drawn[1].touch(bearing),
                     out,
                     hub + Vec2::angled(dropped) * 21.0,
                     "18",
@@ -283,11 +295,12 @@ impl Sheet {
                 let stroke = Stroke::new(1.5_f32, color_palette::ACCENT);
                 let outside = Pos2::new(s.left() + 46.0, s.center().y + 4.0);
                 p.circle_stroke(outside, 20.0, stroke);
+                let standing = round(outside, 20.0);
                 dimension::radius(
                     outside,
                     20.0,
                     Pos2::new(s.left() + 74.0, s.top() + 26.0),
-                    None,
+                    whole(&standing),
                     "20",
                     Rank::Driving,
                 )
@@ -295,11 +308,12 @@ impl Sheet {
 
                 let inside = Pos2::new(s.left() + 150.0, s.center().y + 4.0);
                 p.circle_stroke(inside, 34.0, stroke);
+                let standing = round(inside, 34.0);
                 dimension::radius(
                     inside,
                     34.0,
                     Pos2::new(s.left() + 166.0, s.center().y - 8.0),
-                    None,
+                    whole(&standing),
                     "34",
                     Rank::Driving,
                 )
@@ -319,11 +333,12 @@ impl Sheet {
                 let stroke = Stroke::new(1.5_f32, color_palette::ACCENT);
                 let wide = Pos2::new(s.left() + 56.0, s.center().y + 4.0);
                 p.circle_stroke(wide, 30.0, stroke);
+                let standing = round(wide, 30.0);
                 dimension::diameter(
                     wide,
                     30.0,
                     Pos2::new(s.left() + 78.0, s.center().y - 18.0),
-                    None,
+                    whole(&standing),
                     "30",
                     Rank::Driving,
                 )
@@ -331,11 +346,12 @@ impl Sheet {
 
                 let tight = Pos2::new(s.left() + 160.0, s.center().y + 4.0);
                 p.circle_stroke(tight, 12.0, stroke);
+                let standing = round(tight, 12.0);
                 dimension::diameter(
                     tight,
                     12.0,
                     Pos2::new(s.left() + 190.0, s.center().y - 22.0),
-                    None,
+                    whole(&standing),
                     "12",
                     Rank::Driving,
                 )
@@ -353,32 +369,36 @@ impl Sheet {
              from the center and still has to arrive at the rim.",
             |p, s| {
                 let outside = Pos2::new(s.left() + 42.0, s.center().y + 6.0);
+                let standing = round(outside, 28.0);
                 let short = dimension::Rim {
                     from: -2.5,
                     turn: 1.1,
+                    at: &standing,
                 };
-                rim_curve(p, outside, 28.0, short);
+                rim_curve(p, short);
                 dimension::radius(
                     outside,
                     28.0,
                     Pos2::new(s.left() + 92.0, s.center().y + 26.0),
-                    Some(short),
+                    short,
                     "28",
                     Rank::Driving,
                 )
                 .paint(p);
 
                 let inside = Pos2::new(s.left() + 150.0, s.center().y + 6.0);
+                let standing = round(inside, 32.0);
                 let half = dimension::Rim {
                     from: -0.5,
                     turn: -1.9,
+                    at: &standing,
                 };
-                rim_curve(p, inside, 32.0, half);
+                rim_curve(p, half);
                 dimension::radius(
                     inside,
                     32.0,
                     Pos2::new(s.left() + 164.0, s.center().y + 20.0),
-                    Some(half),
+                    half,
                     "32",
                     Rank::Driving,
                 )

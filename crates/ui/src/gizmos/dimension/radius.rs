@@ -9,6 +9,13 @@
 //!
 //! That is the same discipline the spatial frames keep: carry the value, never re-derive one
 //! that has to agree with another.
+//!
+//! **But the ray gives a DIRECTION, not a distance.** A circle drawn in a sketch plane is not a
+//! circle on screen: the plane is projected, so unless it faces the camera the drawing is an
+//! ellipse and a screen radius is right only in the one direction it happened to be measured. So
+//! the point where the leader meets the curve is asked of [`Rim`], which knows where
+//! the curve stands, and the radius handed in is a LENGTH the layout reasons about rather than a
+//! distance anything steps out by.
 
 use egui::{Pos2, Vec2};
 
@@ -20,13 +27,17 @@ use super::{
 const CENTER_ARM: f32 = 4.0;
 
 /// The extension that carries a curve round to where a leader along `ray` meets its circle, as
-/// `(from, to)` bearings — `None` when the curve already reaches there, and for a whole circle,
-/// which reaches everywhere. Shared with [`diameter`](super::diameter()), which asks it twice.
-pub(super) fn carry(rim: Option<Rim>, radius: f32, ray: Vec2) -> Option<(f32, f32)> {
+/// screen points — `None` when the curve already reaches there, and for a whole rim, which reaches
+/// everywhere. Shared with [`diameter`](super::diameter()), which asks it twice.
+///
+/// Sampled along the rim rather than struck as a screen arc, so it lies ON the drawing at a plane
+/// the camera is not square to instead of only where it was measured.
+pub(super) fn carry(rim: Rim, radius: f32, ray: Vec2) -> Option<Piece> {
     // The overrun is stated in pixels like every other one, so it has to become a turn before an
     // arc can run through it — a fixed angle would overshoot a large curve and vanish on a small.
     let overrun = OVERRUN / radius.max(f32::EPSILON);
-    rim?.carry_to(ray.y.atan2(ray.x), overrun)
+    let (from, to) = rim.carry_to(ray.y.atan2(ray.x), overrun)?;
+    Some(Piece::Polyline(rim.between(from, to)))
 }
 
 /// A radius on the circle at `center`, dimensioned toward `anchor`.
@@ -34,14 +45,14 @@ pub(super) fn carry(rim: Option<Rim>, radius: f32, ray: Vec2) -> Option<(f32, f3
 /// Whether the anchor falls inside or outside the curve chooses between the two drawings, and
 /// nothing else does: the anchor is dragged freely and the gizmo answers for wherever it lands.
 ///
-/// `rim` says how much of the circle the curve itself draws — `None` for a whole circle. An arc
-/// dimensioned toward a bearing its own curve never reaches gets the extension that carries it
-/// there, in BOTH drawings: the leader has to arrive at the geometry either way round.
+/// `rim` says how much of the circle the curve draws and where it stands. An arc dimensioned
+/// toward a bearing its own curve never reaches gets the extension that carries it there, in BOTH
+/// drawings: the leader has to arrive at the geometry either way round.
 pub fn radius(
     center: Pos2,
     radius: f32,
     anchor: Pos2,
-    rim: Option<Rim>,
+    rim: Rim,
     value: &str,
     rank: Rank,
 ) -> Drawing {
@@ -55,8 +66,12 @@ pub fn radius(
     } else {
         Vec2::X
     };
-    // The arc point, on the anchor's own ray. This is the derivation the module turns on.
-    let touch = center + ray * radius;
+    // The arc point, on the anchor's own ray. This is the derivation the module turns on — asked
+    // of the rim, because the ray says which way the curve is and only the rim says how far.
+    let touch = rim.touch(ray.y.atan2(ray.x));
+    // How far out the curve actually stands THERE, which is what decides inside from outside. The
+    // nominal radius would flip the drawing early on one side of an ellipse and late on the other.
+    let stands = (touch - center).length();
 
     // A center CROSS in dimension ink, not a filled dot in geometry ink — a filled dot is what a
     // sketch point looks like, and the center of a dimensioned circle is not one.
@@ -70,22 +85,17 @@ pub fn radius(
             center + Vec2::Y * CENTER_ARM,
         ]),
     ];
-    if let Some((from, to)) = carry(rim, radius, ray) {
-        pieces.push(Piece::Arc {
-            center,
-            radius,
-            from,
-            to,
-        });
+    if let Some(carried) = carry(rim, radius, ray) {
+        pieces.push(carried);
     }
 
-    let label = if distance < radius {
+    let label = if distance < stands {
         // Leader runs center → arc with one arrow at the arc pointing OUT, and the text rides the
         // leader at its own angle rather than sitting horizontally across it.
         pieces.push(Piece::Polyline(vec![center, touch - ray * ARROW_LENGTH]));
         pieces.push(arrowhead(touch, ray));
         Label {
-            at: center + ray * radius * 0.55,
+            at: center + (touch - center) * 0.55,
             text,
             radians: super::upright_radians(ray.y.atan2(ray.x)),
             anchor: Anchor::Middle,
