@@ -1125,7 +1125,13 @@ fn coincident_brings_two_points_together_without_merging_them() {
     let first = sketch.add_free_point(SketchPoint::new(0, 0));
     let second = sketch.add_free_point(SketchPoint::new(10, 6));
     let id = sketch
-        .add_constraint(ConstraintKind::Coincident { first, second }, ctx(16))
+        .add_constraint(
+            ConstraintKind::Coincident {
+                point: first,
+                onto: CoincidentTarget::Point(second),
+            },
+            ctx(16),
+        )
         .expect("two free points can always meet");
 
     let (here, there) = (position(&sketch, first), position(&sketch, second));
@@ -1148,8 +1154,8 @@ fn coincident_with_itself_is_refused() {
     assert_eq!(
         sketch.add_constraint(
             ConstraintKind::Coincident {
-                first: point,
-                second: point
+                point,
+                onto: CoincidentTarget::Point(point)
             },
             ctx(16)
         ),
@@ -1278,9 +1284,9 @@ fn a_point_lands_on_a_segments_line_and_keeps_sliding() {
 
     sketch
         .add_constraint(
-            ConstraintKind::PointOnCurve {
+            ConstraintKind::Coincident {
                 point,
-                curve: SketchCurve::Segment(segment),
+                onto: CoincidentTarget::Curve(SketchCurve::Segment(segment)),
             },
             ctx(16),
         )
@@ -1310,9 +1316,9 @@ fn a_point_lands_on_the_circle_an_arc_is_cut_from() {
 
     sketch
         .add_constraint(
-            ConstraintKind::PointOnCurve {
+            ConstraintKind::Coincident {
                 point,
-                curve: SketchCurve::Arc(arc),
+                onto: CoincidentTarget::Curve(SketchCurve::Arc(arc)),
             },
             ctx(16),
         )
@@ -1352,9 +1358,9 @@ fn a_vacuous_or_unmodelled_point_on_curve_is_refused() {
 
     assert_eq!(
         sketch.add_constraint(
-            ConstraintKind::PointOnCurve {
+            ConstraintKind::Coincident {
                 point: tail,
-                curve: SketchCurve::Segment(segment),
+                onto: CoincidentTarget::Curve(SketchCurve::Segment(segment)),
             },
             ctx(16)
         ),
@@ -1362,9 +1368,9 @@ fn a_vacuous_or_unmodelled_point_on_curve_is_refused() {
     );
     assert_eq!(
         sketch.add_constraint(
-            ConstraintKind::PointOnCurve {
+            ConstraintKind::Coincident {
                 point: tail,
-                curve: SketchCurve::Spline(spline),
+                onto: CoincidentTarget::Curve(SketchCurve::Spline(spline)),
             },
             ctx(16)
         ),
@@ -1428,7 +1434,13 @@ fn a_two_residual_relation_does_not_shift_the_rows_after_it() {
     let segment = sketch.connect(tail, head).expect("a segment");
 
     sketch
-        .add_constraint(ConstraintKind::Coincident { first, second }, ctx(16))
+        .add_constraint(
+            ConstraintKind::Coincident {
+                point: first,
+                onto: CoincidentTarget::Point(second),
+            },
+            ctx(16),
+        )
         .expect("two free points can meet");
     sketch
         .add_constraint(ConstraintKind::Horizontal { segment }, ctx(16))
@@ -1518,8 +1530,8 @@ fn a_constraint_on_an_arcs_center_moves_the_arc() {
     sketch
         .add_constraint(
             ConstraintKind::Coincident {
-                first: center,
-                second: loose,
+                point: center,
+                onto: CoincidentTarget::Point(loose),
             },
             ctx(16),
         )
@@ -1567,8 +1579,8 @@ fn a_fixed_arc_end_holds_while_the_center_is_brought_to_a_point() {
     sketch
         .add_constraint(
             ConstraintKind::Coincident {
-                first: center,
-                second: loose,
+                point: center,
+                onto: CoincidentTarget::Point(loose),
             },
             ctx(16),
         )
@@ -1678,8 +1690,8 @@ fn a_point_with_one_freedom_left_slides_along_it() {
     sketch
         .add_constraint(
             ConstraintKind::Coincident {
-                first: top,
-                second: center,
+                point: top,
+                onto: CoincidentTarget::Point(center),
             },
             ctx(16),
         )
@@ -1782,8 +1794,8 @@ fn a_constraint_translates_a_group_rather_than_deforming_it() {
     sketch
         .add_constraint(
             ConstraintKind::Coincident {
-                first: corners[0],
-                second: target,
+                point: corners[0],
+                onto: CoincidentTarget::Point(target),
             },
             ctx(16),
         )
@@ -1818,8 +1830,8 @@ fn the_smaller_group_travels_to_the_larger_one() {
     sketch
         .add_constraint(
             ConstraintKind::Coincident {
-                first: corners[1],
-                second: near,
+                point: corners[1],
+                onto: CoincidentTarget::Point(near),
             },
             ctx(16),
         )
@@ -4298,4 +4310,57 @@ fn every_dimension_member_round_trips_through_serde() {
             }
         }
     }
+}
+
+/// **A drawing saved before the two kinds became one still opens.**
+///
+/// `Coincident` and `PointOnCurve` were separate `ConstraintKind`s, so an older document spells a
+/// point-to-point coincidence `{first, second}` and a point-on-a-curve under its own tag. Both are
+/// one kind now, and the reader has to accept all three spellings — the two it will never write
+/// again included — or a saved sketch loses assertions on load and the author is never told.
+#[test]
+fn a_coincidence_saved_before_the_merge_still_loads() {
+    let stored = r#"{
+        "id": 7,
+        "kind": { "Coincident": { "first": 3, "second": 4 } }
+    }"#;
+    let loaded: Constraint = serde_json::from_str(stored).expect("the pre-merge point pair");
+    assert_eq!(
+        loaded.kind,
+        ConstraintKind::Coincident {
+            point: 3,
+            onto: CoincidentTarget::Point(4),
+        }
+    );
+
+    let stored = r#"{
+        "id": 8,
+        "kind": { "PointOnCurve": { "point": 5, "curve": { "Segment": 6 } } }
+    }"#;
+    let loaded: Constraint = serde_json::from_str(stored).expect("the pre-merge curve target");
+    assert_eq!(
+        loaded.kind,
+        ConstraintKind::Coincident {
+            point: 5,
+            onto: CoincidentTarget::Curve(SketchCurve::Segment(6)),
+        }
+    );
+
+    // And what it writes today reads back as itself, so the migration cannot be the only path in.
+    let current = Constraint {
+        id: 9,
+        kind: ConstraintKind::Coincident {
+            point: 1,
+            onto: CoincidentTarget::Curve(SketchCurve::Circle(2)),
+        },
+        redundant: false,
+        anchor: None,
+    };
+    let written = serde_json::to_string(&current).expect("serialize");
+    assert!(
+        !written.contains("PointOnCurve"),
+        "the old tag is read, never written: {written}"
+    );
+    let reloaded: Constraint = serde_json::from_str(&written).expect("round trip");
+    assert_eq!(reloaded.kind, current.kind);
 }

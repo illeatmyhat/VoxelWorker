@@ -4590,15 +4590,11 @@ impl WindowedState {
                 document::sketch::ConstraintKind::Quantize { point, .. } => {
                     beside_point(point).into_iter().collect()
                 }
-                // Coincident's two points end up in one place, so a badge on each would
-                // overprint. It marks the pair once, at the first-named point.
-                document::sketch::ConstraintKind::Coincident { first, .. } => {
-                    beside_point(first).into_iter().collect()
-                }
-                // Midpoint and point-on-curve mark the POINT, which is the thing being placed. The
-                // carrier is already visibly a curve through it.
+                // Both mark the POINT, which is the thing being placed — and for a coincidence
+                // between two points that also settles where the one badge goes, since the pair
+                // ends up in one place and a mark on each would overprint.
                 document::sketch::ConstraintKind::Midpoint { point, .. }
-                | document::sketch::ConstraintKind::PointOnCurve { point, .. } => {
+                | document::sketch::ConstraintKind::Coincident { point, .. } => {
                     beside_point(point).into_iter().collect()
                 }
                 // Curvature marks the JOINT and not the neighbour curve: the joint is the one

@@ -2136,14 +2136,17 @@ fn slot_spine_line(
     let centers_on_the_line = spine
         .iter()
         .take(2)
-        .map(|&center| ConstraintKind::PointOnCurve {
+        .map(|&center| ConstraintKind::Coincident {
             point: center,
-            curve: SketchCurve::Segment(line),
+            onto: CoincidentTarget::Curve(SketchCurve::Segment(line)),
         });
-    let ends_on_their_caps = ends
-        .into_iter()
-        .zip(caps)
-        .map(|(point, curve)| ConstraintKind::PointOnCurve { point, curve });
+    let ends_on_their_caps =
+        ends.into_iter()
+            .zip(caps)
+            .map(|(point, curve)| ConstraintKind::Coincident {
+                point,
+                onto: CoincidentTarget::Curve(curve),
+            });
     Ok(centers_on_the_line.chain(ends_on_their_caps).collect())
 }
 

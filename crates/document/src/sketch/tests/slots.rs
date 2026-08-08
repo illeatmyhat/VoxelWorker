@@ -1953,9 +1953,9 @@ fn a_slot_capped_with_circles_keeps_its_width_without_a_hold_of_its_own() {
         let rail = base.connect(tail, head).expect("a rail");
         for (cap, end) in [(near, tail), (far, head)] {
             base.add_constraint(
-                ConstraintKind::PointOnCurve {
+                ConstraintKind::Coincident {
                     point: end,
-                    curve: SketchCurve::Circle(cap),
+                    onto: CoincidentTarget::Curve(SketchCurve::Circle(cap)),
                 },
                 ctx(16),
             )

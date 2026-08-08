@@ -392,6 +392,124 @@ impl InPlaneAxis {
     }
 }
 
+/// What a [`Coincident`](ConstraintKind::Coincident) puts its point on.
+///
+/// The two answers pin a different number of coordinates — a point pins both, a curve pins one and
+/// leaves the freedom to slide along it — which is why the claim dispatches here rather than being
+/// two kinds. What the author states is the same either way: this goes there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub enum CoincidentTarget {
+    /// Another point. Both coordinates are pinned and the two occupy one place.
+    Point(EntityId),
+    /// A curve's SUPPORT — the infinite line a segment runs along, or the whole circle an arc is
+    /// cut from. One coordinate is pinned; where ALONG the curve the point sits is unstated.
+    ///
+    /// The support and not the drawn piece, deliberately: the residual is a distance the optimizer
+    /// walks, and a test that had to report "off the end" would be a cliff at the endpoint.
+    /// Whether the author drew the two things touching is an authoring question, answered once by
+    /// the admission gate — see [`parametric::sketch::within_drawn_extent`].
+    Curve(SketchCurve),
+}
+
+impl CoincidentTarget {
+    /// The entity named, whichever kind it is.
+    #[must_use]
+    pub const fn entity(self) -> EntityId {
+        match self {
+            Self::Point(point) => point,
+            Self::Curve(curve) => curve.id(),
+        }
+    }
+}
+
+/// Read by hand, because the field this fills used to be two different fields.
+///
+/// A document written before the merge stores a point target as a bare id under `second`, and a
+/// curve target as a bare [`SketchCurve`] under `curve`. Both alias onto `onto`, so what arrives
+/// here is one of three shapes: this enum's own `{"Point": id}` / `{"Curve": …}`, a bare integer,
+/// or a bare curve. They stay apart on their first key — no variant of this enum is named for a
+/// curve kind and no curve kind is named `Point` or `Curve` — so nothing has to be buffered and
+/// re-read to tell them apart.
+impl<'de> serde::Deserialize<'de> for CoincidentTarget {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        /// A map with one key already taken off it, handed back so another reader can have the
+        /// whole thing. Only the KEY is held — every value still streams straight through, which
+        /// is the difference between this and the `untagged` fallback it replaced.
+        struct PutBack<A> {
+            key: Option<String>,
+            rest: A,
+        }
+
+        impl<'de, A: serde::de::MapAccess<'de>> serde::de::MapAccess<'de> for PutBack<A> {
+            type Error = A::Error;
+
+            fn next_key_seed<K>(&mut self, seed: K) -> Result<Option<K::Value>, Self::Error>
+            where
+                K: serde::de::DeserializeSeed<'de>,
+            {
+                match self.key.take() {
+                    Some(key) => seed
+                        .deserialize(serde::de::IntoDeserializer::into_deserializer(key))
+                        .map(Some),
+                    None => self.rest.next_key_seed(seed),
+                }
+            }
+
+            fn next_value_seed<V>(&mut self, seed: V) -> Result<V::Value, Self::Error>
+            where
+                V: serde::de::DeserializeSeed<'de>,
+            {
+                self.rest.next_value_seed(seed)
+            }
+        }
+
+        struct EitherSpelling;
+
+        impl<'de> serde::de::Visitor<'de> for EitherSpelling {
+            type Value = CoincidentTarget;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("a point id or a curve for a coincidence to name")
+            }
+
+            /// A bare id: what `second` held before the merge.
+            fn visit_u64<E: serde::de::Error>(self, id: u64) -> Result<Self::Value, E> {
+                EntityId::try_from(id)
+                    .map(CoincidentTarget::Point)
+                    .map_err(|_| E::custom("point id out of range"))
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: serde::de::MapAccess<'de>,
+            {
+                let Some(key) = map.next_key::<String>()? else {
+                    return Err(serde::de::Error::custom("a coincidence names nothing"));
+                };
+                let target = match key.as_str() {
+                    "Point" => CoincidentTarget::Point(map.next_value()?),
+                    "Curve" => CoincidentTarget::Curve(map.next_value()?),
+                    // A pre-merge curve target: the curve's own tag, one level up from where it
+                    // sits today. Handed back to `SketchCurve` with the key it was recognised by
+                    // put back in front, so the curve kinds stay listed in exactly one place.
+                    _ => CoincidentTarget::Curve(serde::Deserialize::deserialize(
+                        serde::de::value::MapAccessDeserializer::new(PutBack {
+                            key: Some(key),
+                            rest: map,
+                        }),
+                    )?),
+                };
+                Ok(target)
+            }
+        }
+
+        deserializer.deserialize_any(EitherSpelling)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum ConstraintKind {
     /// This point does not move, and `at` is where it does not move to.
@@ -411,14 +529,36 @@ pub enum ConstraintKind {
     /// the gizmos and the panel that lay those numbers out need to ask that question without
     /// naming every member.
     Dimension(Dimension),
-    /// Two points occupy one place.
+    /// Put this point HERE — on another point, or on a curve.
+    ///
+    /// One kind for both, because it is one thing an author does and one thing they read. The two
+    /// targets pin a different number of coordinates, and that is a dispatch inside the claim
+    /// rather than a second claim: [`Symmetry`](Self::Symmetry) already varies its own row count
+    /// by operand, and a second name for one authored idea makes every consumer learn both.
     ///
     /// It is a CONSTRAINT and not a merge, although a merge is the other design available.
     /// Merging two points into one is destructive in a way the author cannot see afterwards: the
     /// second id is gone, every segment that named it now names the first, and deleting the
     /// coincidence cannot put the drawing back. As an assertion it deletes like any other and the
     /// two points spring apart, which is what “remove this constraint” should mean.
-    Coincident { first: EntityId, second: EntityId },
+    ///
+    /// **The aliases are this enum's one document migration.** It used to be two kinds, so a
+    /// drawing saved by an earlier build spells a point pair `Coincident {first, second}` and a
+    /// point on a curve under its own `PointOnCurve` tag. Both are read by name; only the merged
+    /// spelling is ever written. They are aliases rather than a legacy enum tried alongside this
+    /// one because the obvious `#[serde(untagged)]` fallback buffers what it reads, and the buffer
+    /// cannot carry the `i128` an angle's exact rational is stored as — it would have turned a
+    /// migration for coincidences into a silent load failure for dimensions.
+    #[serde(alias = "PointOnCurve")]
+    Coincident {
+        /// The point being placed. Always a point: "put this line on that point" is not the
+        /// gesture.
+        #[serde(alias = "first")]
+        point: EntityId,
+        /// What it is placed on.
+        #[serde(alias = "second", alias = "curve")]
+        onto: CoincidentTarget,
+    },
     /// Two segments run the same way. The residual is the SINE of the angle between them, so it is
     /// dimensionless and reads the same on a 3-voxel segment and a 300-voxel one.
     Parallel { first: EntityId, second: EntityId },
@@ -437,13 +577,6 @@ pub enum ConstraintKind {
     /// of `second`'s ends from `first`'s line says both at once without reconciling two
     /// differently-scaled rows.
     Collinear { first: EntityId, second: EntityId },
-    /// A point lies on a curve's SUPPORT — the infinite line a segment runs along, or the whole
-    /// circle an arc is cut from. One residual: the point keeps its freedom to slide.
-    ///
-    /// This is what Fusion spells as a Coincident between a point and a curve. It is a separate
-    /// kind here rather than a polymorphic `Coincident` because the two assert different things:
-    /// two points occupying one place pins both coordinates, and a point on a line pins one.
-    PointOnCurve { point: EntityId, curve: SketchCurve },
     /// Two finite authored curves touch at this stable solution branch. `first` and `second` are
     /// canonicalized by stable entity id; an internal branch names that persisted order.
     Tangent {
@@ -571,13 +704,21 @@ impl ConstraintKind {
         match *self {
             // Both hold a point up against geometry that is still drawn: the midpoint of a
             // diagonal, or the arc center a slot's spine runs through.
-            Self::Midpoint { point, .. } | Self::PointOnCurve { point, .. } => vec![point],
-            // The joint is a spline's own fit point: the spline holds it up, not this relation.
-            Self::Curvature { .. }
+            Self::Midpoint { point, .. }
+            | Self::Coincident {
+                point,
+                onto: CoincidentTarget::Curve(_),
+            } => vec![point],
+            // A coincidence between two POINTS anchors neither, and the joint of a curvature is a
+            // spline's own fit point: each is held up by whatever draws it, or by nothing at all.
+            Self::Coincident {
+                onto: CoincidentTarget::Point(_),
+                ..
+            }
+            | Self::Curvature { .. }
             | Self::Fix { .. }
             | Self::Quantize { .. }
             | Self::Dimension(_)
-            | Self::Coincident { .. }
             | Self::Horizontal { .. }
             | Self::Vertical { .. }
             | Self::Parallel { .. }
@@ -599,12 +740,18 @@ impl ConstraintKind {
             // A gap's line has two ends of its own, but they are not what the claim is about: it
             // holds against the whole line, so walking either of them along it asserts nothing.
             | Self::Dimension(Dimension::Gap { point, .. })
-            | Self::PointOnCurve { point, .. } => vec![point],
+            | Self::Coincident {
+                point,
+                onto: CoincidentTarget::Curve(_),
+            } => vec![point],
             Self::Curvature { joint, .. } => vec![joint],
             Self::Dimension(
                 Dimension::Span { from, to, .. } | Dimension::SpanAlong { from, to, .. },
             ) => vec![from, to],
-            Self::Coincident { first, second } => vec![first, second],
+            Self::Coincident {
+                point,
+                onto: CoincidentTarget::Point(other),
+            } => vec![point, other],
             // Both name curves. The points those curves are drawn between are not what
             // either one is about.
             Self::Dimension(
@@ -717,8 +864,12 @@ impl ConstraintKind {
                 let (first, second) = (first.entity(), second.entity());
                 [first.min(second), first.max(second)]
             }
-            Self::Coincident { first, second }
-            | Self::Parallel { first, second }
+            // Sorted, because a coincidence between two points reads the same either way round.
+            Self::Coincident {
+                point,
+                onto: CoincidentTarget::Point(other),
+            } => [point.min(other), point.max(other)],
+            Self::Parallel { first, second }
             | Self::Perpendicular { first, second }
             | Self::Equal { first, second }
             | Self::Collinear { first, second } => [first.min(second), first.max(second)],
@@ -732,7 +883,10 @@ impl ConstraintKind {
             // one written backwards.
             Self::Dimension(Dimension::Gap { point, segment, .. })
             | Self::Midpoint { point, segment } => [point, segment],
-            Self::PointOnCurve { point, curve } => [point, curve.id()],
+            Self::Coincident {
+                point,
+                onto: CoincidentTarget::Curve(curve),
+            } => [point, curve.id()],
             Self::Curvature { joint, against } => [joint, against.id()],
         }
     }
@@ -781,7 +935,10 @@ impl ConstraintKind {
                     | SketchCurve::Spline(_) => None,
                 }))
                 .collect(),
-            Self::PointOnCurve { curve, .. } => match curve {
+            Self::Coincident {
+                onto: CoincidentTarget::Curve(curve),
+                ..
+            } => match curve {
                 SketchCurve::Segment(id) => vec![id],
                 SketchCurve::Arc(_)
                 | SketchCurve::Circle(_)
@@ -802,7 +959,10 @@ impl ConstraintKind {
             Self::Fix { .. }
             | Self::Quantize { .. }
             | Self::Dimension(_)
-            | Self::Coincident { .. }
+            | Self::Coincident {
+                onto: CoincidentTarget::Point(_),
+                ..
+            }
             | Self::Concentric { .. } => Vec::new(),
         }
     }
@@ -826,14 +986,13 @@ impl ConstraintKind {
             Self::Dimension(Dimension::Angle { first, second, .. }) => {
                 vec![first.entity(), second.entity()]
             }
-            Self::Coincident { first, second }
-            | Self::Parallel { first, second }
+            Self::Coincident { point, onto } => vec![point, onto.entity()],
+            Self::Parallel { first, second }
             | Self::Perpendicular { first, second }
             | Self::Equal { first, second }
             | Self::Collinear { first, second } => vec![first, second],
             Self::Dimension(Dimension::Gap { point, segment, .. })
             | Self::Midpoint { point, segment } => vec![point, segment],
-            Self::PointOnCurve { point, curve } => vec![point, curve.id()],
             Self::Curvature { joint, against } => vec![joint, against.id()],
             Self::Tangent { first, second, .. }
             | Self::Concentric { first, second }
@@ -1508,9 +1667,21 @@ fn relation_for(
                     radians: turn.to_radians(),
                 })
         }
-        ConstraintKind::Coincident { first, second } => point(first)
-            .zip(point(second))
+        // One authored claim, two solver relations: the arithmetic really does differ, and in the
+        // solver a point-to-point coincidence is a sibling of `Concentric` rather than of the
+        // distance row a curve target spends.
+        ConstraintKind::Coincident {
+            point: id,
+            onto: CoincidentTarget::Point(other),
+        } => point(id)
+            .zip(point(other))
             .map(|(first, second)| Relation::Coincident { first, second }),
+        ConstraintKind::Coincident {
+            point: id,
+            onto: CoincidentTarget::Curve(subject),
+        } => point(id)
+            .zip(curve(subject))
+            .map(|(point, curve)| Relation::PointOnCurve { point, curve }),
         ConstraintKind::Parallel { first, second } => segment(first)
             .zip(segment(second))
             .map(|(first, second)| Relation::Parallel { first, second }),
@@ -1529,12 +1700,6 @@ fn relation_for(
         ConstraintKind::Collinear { first, second } => segment(first)
             .zip(segment(second))
             .map(|(first, second)| Relation::Collinear { first, second }),
-        ConstraintKind::PointOnCurve {
-            point: id,
-            curve: subject,
-        } => point(id)
-            .zip(curve(subject))
-            .map(|(point, curve)| Relation::PointOnCurve { point, curve }),
         ConstraintKind::Tangent {
             first,
             second,

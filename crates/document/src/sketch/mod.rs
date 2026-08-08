@@ -63,8 +63,9 @@ mod tests;
 mod transform;
 
 pub use constraint::{
-    AngleArm, AngleCorner, ArcEnd, Constraint, ConstraintKind, ConstraintRefusal, Dimension,
-    InPlaneAxis, InternalContainment, LineSide, SketchCurve, SymmetryBranch, TangentBranch,
+    AngleArm, AngleCorner, ArcEnd, CoincidentTarget, Constraint, ConstraintKind, ConstraintRefusal,
+    Dimension, InPlaneAxis, InternalContainment, LineSide, SketchCurve, SymmetryBranch,
+    TangentBranch,
 };
 pub use faces::{Face, FaceKey};
 pub use modify::{
@@ -2863,7 +2864,10 @@ impl Sketch {
         let holding = self.alloc_id();
         self.constraints.push(Constraint {
             id: holding,
-            kind: ConstraintKind::PointOnCurve { point: grip, curve },
+            kind: ConstraintKind::Coincident {
+                point: grip,
+                onto: CoincidentTarget::Curve(curve),
+            },
             redundant: false,
             anchor: None,
         });
@@ -3541,7 +3545,8 @@ impl Sketch {
     ///
     /// A spine point is only free to be pinned if the drag does not already carry it. Standing at one of
     /// the dragged curve's own ends is one way to be carried and is caught by `held`; standing
-    /// ANYWHERE on it under [`PointOnCurve`](ConstraintKind::PointOnCurve) is the other, and is why
+    /// ANYWHERE on it under a [`Coincident`](ConstraintKind::Coincident) naming that curve is the
+    /// other, and is why
     /// this needs to know which curve the hands came from. An Overall Slot is authored by its far
     /// ends, so its centerline runs out past both cap centers and holds them on it that way — the
     /// ends of the curve are not the spine points, and identity alone never sees them.
@@ -3552,8 +3557,10 @@ impl Sketch {
                 || self.constraints.iter().any(|constraint| {
                     matches!(
                         constraint.kind,
-                        ConstraintKind::PointOnCurve { point: on, curve: along }
-                            if on == point && along == curve
+                        ConstraintKind::Coincident {
+                            point: on,
+                            onto: CoincidentTarget::Curve(along),
+                        } if on == point && along == curve
                     )
                 })
         };
@@ -3754,8 +3761,14 @@ impl Sketch {
         self.constraints
             .iter()
             .filter_map(|constraint| match constraint.kind {
-                ConstraintKind::Coincident { first, second } if first == id => Some(second),
-                ConstraintKind::Coincident { first, second } if second == id => Some(first),
+                ConstraintKind::Coincident {
+                    point,
+                    onto: CoincidentTarget::Point(other),
+                } if point == id => Some(other),
+                ConstraintKind::Coincident {
+                    point,
+                    onto: CoincidentTarget::Point(other),
+                } if other == id => Some(point),
                 _ => None,
             })
             .collect()
@@ -4637,13 +4650,16 @@ impl Sketch {
                     return Err(ConstraintRefusal::Impossible);
                 }
             }
-            ConstraintKind::Coincident { first, second } => {
-                if !known_point(first) || !known_point(second) {
+            ConstraintKind::Coincident {
+                point,
+                onto: CoincidentTarget::Point(other),
+            } => {
+                if !known_point(point) || !known_point(other) {
                     return Err(ConstraintRefusal::UnknownEntity);
                 }
                 // A point already occupies its own place, so asserting it is a claim with no
                 // content rather than a claim that happens to hold.
-                if first == second {
+                if point == other {
                     return Err(ConstraintRefusal::Impossible);
                 }
             }
@@ -4720,7 +4736,10 @@ impl Sketch {
                     return Err(ConstraintRefusal::CurvatureNeedsAJoint);
                 }
             }
-            ConstraintKind::PointOnCurve { point, curve } => {
+            ConstraintKind::Coincident {
+                point,
+                onto: CoincidentTarget::Curve(curve),
+            } => {
                 if !known_point(point) {
                     return Err(ConstraintRefusal::UnknownEntity);
                 }
@@ -5787,7 +5806,13 @@ impl Sketch {
             .constraints
             .iter()
             .filter(|constraint| {
-                matches!(constraint.kind, ConstraintKind::PointOnCurve { point, .. } if point == id)
+                matches!(
+                    constraint.kind,
+                    ConstraintKind::Coincident {
+                        point,
+                        onto: CoincidentTarget::Curve(_),
+                    } if point == id
+                )
             })
             .count();
         self.curve_ends_meeting(id).saturating_add(held_on_curves) < 2
@@ -6331,7 +6356,6 @@ impl Sketch {
                 | ConstraintKind::Equal { .. }
                 | ConstraintKind::Midpoint { .. }
                 | ConstraintKind::Collinear { .. }
-                | ConstraintKind::PointOnCurve { .. }
                 | ConstraintKind::Curvature { .. }
                 | ConstraintKind::Tangent { .. }
                 | ConstraintKind::Concentric { .. }

@@ -23,7 +23,9 @@
 //! glyph is drawn but whose residual is absent stays off the rail — an armable verb that asserts
 //! nothing is worse than a cell that is not there.
 
-use document::sketch::{ConstraintKind, Dimension, EntityId, Sketch, SketchCurve, SketchLength};
+use document::sketch::{
+    CoincidentTarget, ConstraintKind, Dimension, EntityId, Sketch, SketchCurve, SketchLength,
+};
 
 use crate::icons::Icon;
 
@@ -346,12 +348,7 @@ pub fn constraint_icon(kind: ConstraintKind) -> Icon {
         ConstraintKind::Fix { .. } => Icon::ConstraintFix,
         ConstraintKind::Quantize { .. } => Icon::ConstraintQuantize,
         ConstraintKind::Dimension(_) => Icon::SketchDimension,
-        // Point-on-curve wears the coincident mark deliberately: it is the same claim the author
-        // makes when they put a point ON something, and Fusion spells both with one glyph. The
-        // kinds stay separate underneath because they pin a different number of coordinates.
-        ConstraintKind::Coincident { .. } | ConstraintKind::PointOnCurve { .. } => {
-            Icon::ConstraintCoincident
-        }
+        ConstraintKind::Coincident { .. } => Icon::ConstraintCoincident,
         ConstraintKind::Parallel { .. } => Icon::ConstraintParallel,
         ConstraintKind::Perpendicular { .. } => Icon::ConstraintPerpendicular,
         ConstraintKind::Equal { .. } => Icon::ConstraintEqual,
@@ -688,14 +685,14 @@ impl ArmedConstraint {
             ConstraintVerb::Coincident => match (self.picked.first()?, self.picked.get(1)?) {
                 (SketchEntity::Point(first), SketchEntity::Point(second)) => {
                     Some(ConstraintKind::Coincident {
-                        first: *first,
-                        second: *second,
+                        point: *first,
+                        onto: CoincidentTarget::Point(*second),
                     })
                 }
                 (SketchEntity::Point(point), SketchEntity::Curve(curve)) => {
-                    Some(ConstraintKind::PointOnCurve {
+                    Some(ConstraintKind::Coincident {
                         point: *point,
-                        curve: *curve,
+                        onto: CoincidentTarget::Curve(*curve),
                     })
                 }
                 _ => None,
@@ -1764,9 +1761,9 @@ mod tests {
         );
         assert_eq!(
             armed.kind(&sketch),
-            Some(ConstraintKind::PointOnCurve {
+            Some(ConstraintKind::Coincident {
                 point: loose,
-                curve: SketchCurve::Segment(segment),
+                onto: CoincidentTarget::Curve(SketchCurve::Segment(segment)),
             })
         );
 
@@ -1777,8 +1774,8 @@ mod tests {
         assert_eq!(
             pair.kind(&sketch),
             Some(ConstraintKind::Coincident {
-                first: loose,
-                second: from,
+                point: loose,
+                onto: CoincidentTarget::Point(from),
             })
         );
     }
@@ -1940,8 +1937,8 @@ mod tests {
         assert_eq!(
             armed.kind(&sketch),
             Some(ConstraintKind::Coincident {
-                first: center,
-                second: loose
+                point: center,
+                onto: CoincidentTarget::Point(loose)
             })
         );
     }

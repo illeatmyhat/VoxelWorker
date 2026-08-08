@@ -433,8 +433,8 @@ fn a_constraint_is_declined_on_the_mirrored_arm_and_taken_on_the_authored_one() 
     assert_eq!(
         sketch.add_constraint(
             ConstraintKind::Coincident {
-                first: lever.backward.min(elsewhere),
-                second: lever.backward.max(elsewhere),
+                point: lever.backward.min(elsewhere),
+                onto: CoincidentTarget::Point(lever.backward.max(elsewhere)),
             },
             ctx(16),
         ),
@@ -445,8 +445,8 @@ fn a_constraint_is_declined_on_the_mirrored_arm_and_taken_on_the_authored_one() 
     assert!(sketch
         .add_constraint(
             ConstraintKind::Coincident {
-                first: lever.forward.min(other),
-                second: lever.forward.max(other),
+                point: lever.forward.min(other),
+                onto: CoincidentTarget::Point(lever.forward.max(other)),
             },
             ctx(16),
         )
@@ -580,8 +580,8 @@ fn a_solve_that_moves_a_fit_point_carries_its_tangent_handle() {
     sketch
         .add_constraint(
             ConstraintKind::Coincident {
-                first: fit.min(elsewhere),
-                second: fit.max(elsewhere),
+                point: fit.min(elsewhere),
+                onto: CoincidentTarget::Point(fit.max(elsewhere)),
             },
             ctx(16),
         )
@@ -626,8 +626,8 @@ fn a_pinned_tangent_handle_stays_pinned_when_its_fit_point_moves() {
     sketch
         .add_constraint(
             ConstraintKind::Coincident {
-                first: handle.min(pin),
-                second: handle.max(pin),
+                point: handle.min(pin),
+                onto: CoincidentTarget::Point(handle.max(pin)),
             },
             ctx(16),
         )
@@ -638,8 +638,8 @@ fn a_pinned_tangent_handle_stays_pinned_when_its_fit_point_moves() {
     sketch
         .add_constraint(
             ConstraintKind::Coincident {
-                first: fit.min(elsewhere),
-                second: fit.max(elsewhere),
+                point: fit.min(elsewhere),
+                onto: CoincidentTarget::Point(fit.max(elsewhere)),
             },
             ctx(16),
         )
@@ -1077,9 +1077,9 @@ fn a_joint_that_slides_around_the_circle_does_not_drag_its_lever_off_the_answer(
 
     sketch
         .add_constraint(
-            ConstraintKind::PointOnCurve {
+            ConstraintKind::Coincident {
                 point: joint,
-                curve: SketchCurve::Circle(circle),
+                onto: CoincidentTarget::Curve(SketchCurve::Circle(circle)),
             },
             ctx(16),
         )
