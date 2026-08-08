@@ -1,4 +1,4 @@
-//! `span` — a linear dimension between two points, aligned with them or with one plane axis.
+//! `axis_span` — a linear dimension between two points, along whatever direction it is measured in.
 //!
 //! The layout turns on TWO INDEPENDENT TESTS, and treating them as one is the mistake this file
 //! exists to not make:
@@ -14,41 +14,18 @@
 //! the arrows stay. There is no fourth row: a value that fits inside a span too short for its own
 //! arrows cannot happen, because the arrow test is the weaker of the two.
 //!
-//! The two entry points differ only in where the dimension line ends up. An aligned span puts it
-//! parallel to the run, so both extension lines are the same length; an axis span puts it along one
-//! of the plane's own directions, so each end reaches the line by a different amount and one of
-//! them may already be sitting on it. Everything after that — arrows, the two tests, the label —
-//! is one piece of code, because two copies of it would drift.
+//! There is ONE entry point, because there is one drawing. An aligned span is the case where the
+//! direction handed in is the run's own, and both extension lines come out the same length; a width
+//! or a height hands in one of the plane's directions instead, and each end reaches the line by a
+//! different amount with one of them possibly already sitting on it. A second entry point for the
+//! aligned case would be the same code with a scalar offset in place of a point — which is exactly
+//! the freedom the author loses when the value cannot be carried ALONG its own line.
 
 use egui::{Pos2, Vec2};
 
 use super::{
     arrowhead, value_width, Anchor, Drawing, Label, Piece, Rank, ARROW_LENGTH, GAP, OVERRUN,
 };
-
-/// A span between two feature points, its dimension line `offset` away along the normal.
-///
-/// `offset`'s sign picks the side. The sheet draws every span horizontal because it has no sketch
-/// to point at; here `from` and `to` are wherever the two picked points projected to, and the
-/// whole layout is done in the span's own frame so nothing is bound to the screen axes.
-pub fn span(from: Pos2, to: Pos2, offset: f32, value: &str, rank: Rank) -> Drawing {
-    let length = (to - from).length();
-    let along = if length > f32::EPSILON {
-        (to - from) / length
-    } else {
-        Vec2::X
-    };
-    let normal = Vec2::new(along.y, -along.x) * offset.signum();
-    let reach = normal * offset.abs();
-
-    let (near, far) = (from + reach, to + reach);
-    let extensions = vec![
-        // Gapped off the feature, run past the dimension line.
-        Piece::Polyline(vec![from + normal * GAP, near + normal * OVERRUN]),
-        Piece::Polyline(vec![to + normal * GAP, far + normal * OVERRUN]),
-    ];
-    measured_between(near, far, extensions, value, rank)
-}
 
 /// How far apart two points stand ALONG ONE DIRECTION — a width or a height rather than a length.
 ///
@@ -89,18 +66,22 @@ pub fn axis_span(
             })
         })
         .collect();
-    measured_between(near, far, extensions, value, rank)
+    measured_between(near, far, extensions, Some(through), value, rank)
 }
 
 /// The dimension line itself, between the two points its extension lines reach — arrows, the two
 /// fit tests, and the label that leaves when it does not fit.
 ///
 /// `pieces` arrives holding the extension lines, because that is the one part the two callers
-/// disagree about.
+/// disagree about. `beside` is where the author dropped the annotation, which is what decides where
+/// ALONG the line the value rides and which end it leaves by when it does not fit. `None` keeps the
+/// value in the middle and sends it out past the far end, which is where a drawing with nothing
+/// placed has always put it.
 fn measured_between(
     near: Pos2,
     far: Pos2,
     mut pieces: Vec<Piece>,
+    beside: Option<Pos2>,
     value: &str,
     rank: Rank,
 ) -> Drawing {
@@ -139,26 +120,44 @@ fn measured_between(
     }
 
     let bearing = super::upright_radians(along.y.atan2(along.x));
-    let label = if value_fits && arrows_fit {
+    // How far along the line the author put the value, measured from `near`.
+    let put = beside.map_or(length / 2.0, |at| (at - near).dot(along));
+    // The room a value needs to ride inline: half of itself, clear of the arrowhead beside it.
+    // At the middle of a span the value fits in, this is exactly `value_fits` — which is why an
+    // unplaced drawing lands on the same layout it always did.
+    let room = width / 2.0 + ARROW_LENGTH + GAP;
+    let label = if value_fits && arrows_fit && put >= room && put <= length - room {
         Label {
-            at: near + (far - near) / 2.0,
+            at: near + along * put,
             text,
             radians: bearing,
             anchor: Anchor::Middle,
             lift: GAP,
         }
     } else {
-        // The value leaves on an extension whose length IS the text advance — never a naked line
-        // running off to a number floating somewhere past its end.
-        pieces.push(Piece::Polyline(vec![
-            far,
-            far + along * (width + 2.0 * GAP),
-        ]));
+        // It leaves by the end it was dropped past, on a leader that REACHES it — never a naked
+        // line running off to a number floating somewhere past its end, and never a number left
+        // behind at the line when the hand carried it further.
+        let by_the_near_end = put < length / 2.0;
+        let (end, direction, dropped) = if by_the_near_end {
+            (near, -along, -put)
+        } else {
+            (far, along, put - length)
+        };
+        let out = dropped.max(width + 2.0 * GAP);
+        pieces.push(Piece::Polyline(vec![end, end + direction * out]));
+        // The value reads left to right whichever end it left by, so which of its two edges lands
+        // on the leader depends on whether the reading direction agrees with the way out.
+        let reading = Vec2::new(bearing.cos(), bearing.sin());
         Label {
-            at: far + along * GAP,
+            at: end + direction * (out - width - GAP),
             text,
             radians: bearing,
-            anchor: Anchor::Start,
+            anchor: if reading.dot(direction) >= 0.0 {
+                Anchor::Start
+            } else {
+                Anchor::End
+            },
             lift: GAP,
         }
     };

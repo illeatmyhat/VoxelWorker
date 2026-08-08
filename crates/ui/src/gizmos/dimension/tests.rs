@@ -31,6 +31,23 @@ fn heads(drawing: &Drawing) -> Vec<[Pos2; 3]> {
         .collect()
 }
 
+/// A span whose dimension line runs parallel to its own run, `offset` away along the normal —
+/// the shape most of these tests are about, spelled once so each call says what it tests.
+fn span(from: Pos2, to: Pos2, offset: f32, value: &str, rank: Rank) -> Drawing {
+    let run = to - from;
+    let length = run.length();
+    let along = if length > f32::EPSILON {
+        run / length
+    } else {
+        Vec2::X
+    };
+    let normal = Vec2::new(along.y, -along.x);
+    // Offset from the MIDDLE of the run, which is where a span with nothing placed
+    // has always carried its value.
+    let middle = from + run / 2.0;
+    axis_span(from, to, along, middle + normal * offset, value, rank)
+}
+
 /// A head's direction: tip minus base midpoint, normalized.
 fn aim(head: [Pos2; 3]) -> Vec2 {
     let base = head[1] + (head[2] - head[1]) / 2.0;
@@ -747,4 +764,74 @@ fn a_rim_answers_a_bearing_it_does_not_reach_with_its_nearer_end() {
         widdershins.nearest_drawn(0.2).abs() < 1e-6,
         "just past the start it now leaves behind, so the start is the answer"
     );
+}
+/// **Where the author drops the value is where it rides**, along its own dimension line as well as
+/// across it. A dimension that could only be pushed sideways would be answering half the gesture.
+#[test]
+fn a_value_rides_where_it_was_dropped_and_leaves_by_the_end_it_was_carried_past() {
+    let (near, far) = (Pos2::new(40.0, 100.0), Pos2::new(240.0, 100.0));
+    // Dropped on the line itself, so the drawing is only deciding WHERE along it.
+    let dropped = |x: f32| {
+        axis_span(
+            near,
+            far,
+            Vec2::X,
+            Pos2::new(x, 100.0),
+            "200",
+            Rank::Driving,
+        )
+    };
+
+    let middle = dropped(140.0);
+    assert_eq!(middle.labels[0].anchor, Anchor::Middle);
+    assert!((middle.labels[0].at.x - 140.0).abs() < 1e-4);
+
+    // Pushed along, still inside: it goes with the hand rather than springing back.
+    let along = dropped(200.0);
+    assert_eq!(along.labels[0].anchor, Anchor::Middle);
+    assert!(
+        (along.labels[0].at.x - 200.0).abs() < 1e-4,
+        "the value followed: {:?}",
+        along.labels[0].at
+    );
+
+    // Carried past the far end: it leaves that way, and the leader REACHES it rather than
+    // stopping short and leaving the number floating.
+    let past = dropped(320.0);
+    assert_eq!(past.labels[0].anchor, Anchor::Start);
+    let leader = past
+        .pieces
+        .iter()
+        .filter_map(|piece| match piece {
+            Piece::Polyline(points) if points.len() == 2 => Some((points[0], points[1])),
+            _ => None,
+        })
+        .find(|(start, _)| (start.x - far.x).abs() < 1e-4 && (start.y - far.y).abs() < 1e-4)
+        .expect("a leader leaving the far end");
+    assert!(
+        (leader.1.x - 320.0).abs() < 1e-4,
+        "the leader ran out to the hand: {:?}",
+        leader.1
+    );
+    assert!(
+        past.labels[0].at.x > far.x && past.labels[0].at.x < 320.0,
+        "the value sits at the far end of that leader: {:?}",
+        past.labels[0].at
+    );
+
+    // Carried past the NEAR end: it leaves that way instead. The old drawing only ever left by
+    // the far one, which put the number on the opposite side from the hand that moved it.
+    let before = dropped(-60.0);
+    assert!(
+        before.labels[0].at.x < near.x,
+        "the value went the way it was carried: {:?}",
+        before.labels[0].at
+    );
+    assert!(before.pieces.iter().any(|piece| matches!(
+        piece,
+        Piece::Polyline(points)
+            if points.len() == 2
+                && (points[0].x - near.x).abs() < 1e-4
+                && (points[1].x + 60.0).abs() < 1e-4
+    )));
 }

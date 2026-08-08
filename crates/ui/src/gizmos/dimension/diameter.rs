@@ -25,7 +25,7 @@ const CENTER_ARM: f32 = 4.0;
 /// The one test is whether the value clears both arrow bases on the through-line. It cannot be
 /// inferred from whether the arrows themselves fit: a circle wide enough for two arrows is not
 /// wide enough for two arrows and a number between them, and that is precisely the case a single
-/// test loses — the same middle row [`span`](super::span()) documents.
+/// test loses — the same middle row [`axis_span`](super::axis_span()) documents.
 ///
 /// `rim` is [`radius`](super::radius())'s, asked TWICE: a through-line meets the circle at both
 /// ends, so an arc read across can fall short of its own drawing at either or both of them.

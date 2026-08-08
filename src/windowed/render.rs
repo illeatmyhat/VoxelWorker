@@ -4220,28 +4220,17 @@ impl WindowedState {
                         return None;
                     };
                     let run = to - from;
-                    let normal = egui::vec2(run.y, -run.x);
-                    let offset = match placed {
-                        // How far off the line the author put the text, measured along the same
-                        // normal the gizmo lays itself out on — so the label lands under the
-                        // cursor rather than near it.
-                        Some(placed) => {
-                            let length = run.length();
-                            let unit = if length > f32::EPSILON {
-                                normal / length
-                            } else {
-                                egui::Vec2::Y
-                            };
-                            (placed - from).dot(unit)
-                        }
-                        // ABOVE the span on screen, whichever way it runs: the normal is flipped
-                        // to the side that points up, so two spans on one drawing do not sit on
-                        // opposite sides of geometry that merely happens to be drawn the other
-                        // way round.
-                        None if normal.y > 0.0 => -DIMENSION_STANDOFF_PX,
-                        None => DIMENSION_STANDOFF_PX,
-                    };
-                    ui::gizmos::dimension::span(from, to, offset, &voxels(length), rank)
+                    let normal = egui::vec2(run.y, -run.x).normalized();
+                    // Where the author put the text IS the placement, in both directions at once:
+                    // how far off the run the dimension line sits, and how far along it the value
+                    // rides. Unplaced it stands off ABOVE the span on screen whichever way the run
+                    // is drawn, so two spans on one drawing do not sit on opposite sides of
+                    // geometry that merely happens to have been drawn the other way round.
+                    let anchor = placed.unwrap_or_else(|| {
+                        let side = if normal.y > 0.0 { -1.0 } else { 1.0 };
+                        from + (to - from) / 2.0 + normal * side * DIMENSION_STANDOFF_PX
+                    });
+                    ui::gizmos::dimension::axis_span(from, to, run, anchor, &voxels(length), rank)
                 }
                 document::sketch::Dimension::SpanAlong {
                     from,

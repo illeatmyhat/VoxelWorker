@@ -473,7 +473,7 @@ pub use axis_guide::axis_guide;
 pub use close_loop_ring::close_loop_ring;
 pub use crosshair::crosshair;
 pub use diamond::diamond;
-pub use dimension::{angle, radius, span};
+pub use dimension::{angle, axis_span, radius};
 pub use ghost_node::ghost_node;
 pub use label_chip::label_chip;
 pub use open_segment::open_segment;

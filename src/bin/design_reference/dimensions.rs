@@ -17,6 +17,24 @@ use ui::theme::color_palette;
 
 use crate::sheet::Sheet;
 
+/// A span whose dimension line runs parallel to its own run, `offset` away along the normal. The
+/// sheet draws this case on its own because it is the one an author reads as "the length of that",
+/// and the gizmo reaches it by being handed the run's own direction.
+fn aligned(from: Pos2, to: Pos2, offset: f32, value: &str, rank: Rank) -> dimension::Drawing {
+    let run = to - from;
+    let length = run.length();
+    let along = if length > f32::EPSILON {
+        run / length
+    } else {
+        Vec2::X
+    };
+    let normal = Vec2::new(along.y, -along.x);
+    // Offset from the MIDDLE of the run, which is where a span with nothing placed
+    // has always carried its value.
+    let middle = from + run / 2.0;
+    dimension::axis_span(from, to, along, middle + normal * offset, value, rank)
+}
+
 /// An arm running from the corner out to `reach`, which is the case where the two lines meet.
 const fn whole_arm(reach: f32) -> dimension::Leg {
     dimension::Leg {
@@ -67,14 +85,14 @@ impl Sheet {
                     Pos2::new(s.left() + 92.0, s.top() + 28.0),
                 );
                 gizmos::segment(p, left.0, left.1);
-                dimension::span(left.0, left.1, -30.0, "80", Rank::Driving).paint(p);
+                aligned(left.0, left.1, -30.0, "80", Rank::Driving).paint(p);
 
                 let right = (
                     Pos2::new(s.left() + 112.0, s.top() + 28.0),
                     Pos2::new(s.left() + 194.0, s.top() + 28.0),
                 );
                 gizmos::segment(p, right.0, right.1);
-                dimension::span(right.0, right.1, -30.0, "82", Rank::Reference).paint(p);
+                aligned(right.0, right.1, -30.0, "82", Rank::Reference).paint(p);
             },
         );
         self.specimen_row(
@@ -91,14 +109,14 @@ impl Sheet {
                     Pos2::new(s.left() + 50.0, s.top() + 30.0),
                 );
                 gizmos::segment(p, short.0, short.1);
-                dimension::span(short.0, short.1, -28.0, "30", Rank::Driving).paint(p);
+                aligned(short.0, short.1, -28.0, "30", Rank::Driving).paint(p);
 
                 let tiny = (
                     Pos2::new(s.left() + 126.0, s.top() + 30.0),
                     Pos2::new(s.left() + 140.0, s.top() + 30.0),
                 );
                 gizmos::segment(p, tiny.0, tiny.1);
-                dimension::span(tiny.0, tiny.1, -28.0, "14", Rank::Driving).paint(p);
+                aligned(tiny.0, tiny.1, -28.0, "14", Rank::Driving).paint(p);
             },
         );
         self.specimen_row(

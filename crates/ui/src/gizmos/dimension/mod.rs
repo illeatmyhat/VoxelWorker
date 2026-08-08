@@ -3,7 +3,7 @@
 //! Unlike the rest of
 //! [`gizmos`](crate::gizmos), a dimension is not one shape with a state: it is a small LAYOUT
 //! problem whose answer changes with the size of the thing being dimensioned, so this module is
-//! split in two. [`span()`], [`radius()`] and [`angle()`] each answer a [`Drawing`] — pure geometry,
+//! split in two. [`axis_span()`], [`radius()`] and [`angle()`] each answer a [`Drawing`] — pure geometry,
 //! no painter — and [`Drawing::paint`] puts it on screen. That split is what lets the fit rules
 //! be tested without a GPU, and the fit rules are where every mistake lives.
 //!
@@ -180,7 +180,7 @@ pub use angle::{angle, Leg};
 pub use diameter::diameter;
 pub use radius::radius;
 
-pub use span::{axis_span, span};
+pub use span::axis_span;
 
 /// The chrome weight: dimension line, extension line and leader all share it, per ISO 128-20.
 pub const LINE_WIDTH: f32 = 0.8;
