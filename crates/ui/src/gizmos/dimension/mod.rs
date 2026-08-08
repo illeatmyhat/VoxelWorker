@@ -192,6 +192,10 @@ pub const HALO_WIDTH: f32 = 2.4;
 pub const ARROW_LENGTH: f32 = 9.0;
 const ARROW_HALF_WIDTH: f32 = 1.5;
 
+/// How far a terminator's nose is cut back from the line it names — half the halo, so the halo's
+/// own leading edge lands exactly where the point would have. See [`arrowhead`].
+const ARROW_SETBACK: f32 = HALO_WIDTH / 2.0;
+
 /// ISO 129-1: the gap left between the feature and the start of its extension line.
 pub const GAP: f32 = 5.0;
 
@@ -399,8 +403,8 @@ pub enum Piece {
         from: f32,
         to: f32,
     },
-    /// A filled arrowhead, tip first.
-    Head([Pos2; 3]),
+    /// A filled arrowhead: the two nose corners, then the two base corners.
+    Head([Pos2; 4]),
 }
 
 /// A laid-out dimension: everything to draw, and nothing about how.
@@ -439,7 +443,7 @@ impl Drawing {
                     } => {
                         painter.add(Shape::line(sample_arc(*center, *radius, *from, *to), pass));
                     }
-                    // An arrowhead is filled, so its halo is the same triangle stroked outward.
+                    // An arrowhead is filled, so its halo is the same shape stroked outward.
                     Piece::Head(points) => {
                         if pass.color == color_palette::BG {
                             painter.add(Shape::convex_polygon(
@@ -558,14 +562,35 @@ pub(crate) fn value_width(text: &str) -> f32 {
     text.chars().count() as f32 * VALUE_ADVANCE
 }
 
-/// A filled arrowhead: tip at `tip`, body back along `-direction`.
+/// A filled arrowhead: nose at `at`, body back along `-direction`.
 ///
 /// `direction` must be a unit vector; it names where the arrow POINTS, so a terminator that flips
 /// outside is the same call with the direction negated rather than a second shape.
-pub(crate) fn arrowhead(tip: Pos2, direction: Vec2) -> Piece {
-    let base = tip - direction * ARROW_LENGTH;
+///
+/// **The point is cut off where it meets what it points at.** A terminator lands ON a line — an
+/// extension line, a rim, a sketch segment — and a sharp one cannot be painted there. The halo is
+/// a stroke, a stroke MITRES, and at this shape's 19° apex it runs `(halo / 2) / sin(9.5°)` ≈ 7
+/// past the point: a background spike the length of the arrow itself, laid straight through the
+/// line the arrow was terminating on. It grows with the halo, so there is no width at which
+/// contrast and a clean termination are both had.
+///
+/// Cutting the nose back by [`ARROW_SETBACK`] answers both at once. No corner is sharp enough to
+/// mitre into a spike, and the halo's own leading edge now lands where the point would have: the
+/// arrow's whole painted extent, ink and halo together, stops AT the line instead of crossing it.
+/// The nose is four tenths of a point wide, so the terminator still reads as one.
+pub(crate) fn arrowhead(at: Pos2, direction: Vec2) -> Piece {
     let across = Vec2::new(-direction.y, direction.x) * ARROW_HALF_WIDTH;
-    Piece::Head([tip, base + across, base - across])
+    let (nose, base) = (
+        at - direction * ARROW_SETBACK,
+        at - direction * ARROW_LENGTH,
+    );
+    let cut = ARROW_SETBACK / ARROW_LENGTH;
+    Piece::Head([
+        nose + across * cut,
+        nose - across * cut,
+        base - across,
+        base + across,
+    ])
 }
 
 #[cfg(test)]

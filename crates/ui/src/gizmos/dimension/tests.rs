@@ -20,7 +20,7 @@ use egui::{Pos2, Vec2};
 use super::*;
 
 /// Count the arrowheads, and answer whether they point toward each other or away.
-fn heads(drawing: &Drawing) -> Vec<[Pos2; 3]> {
+fn heads(drawing: &Drawing) -> Vec<[Pos2; 4]> {
     drawing
         .pieces
         .iter()
@@ -48,10 +48,21 @@ fn span(from: Pos2, to: Pos2, offset: f32, value: &str, rank: Rank) -> Drawing {
     axis_span(from, to, along, middle + normal * offset, value, rank)
 }
 
-/// A head's direction: tip minus base midpoint, normalized.
-fn aim(head: [Pos2; 3]) -> Vec2 {
-    let base = head[1] + (head[2] - head[1]) / 2.0;
-    (head[0] - base).normalized()
+/// A head's nose: the midpoint of the flat its point was cut off at.
+fn nose(head: [Pos2; 4]) -> Pos2 {
+    head[0] + (head[1] - head[0]) / 2.0
+}
+
+/// A head's direction: nose minus base midpoint, normalized.
+fn aim(head: [Pos2; 4]) -> Vec2 {
+    let base = head[3] + (head[2] - head[3]) / 2.0;
+    (nose(head) - base).normalized()
+}
+
+/// The point a head NAMES — where its own point would have been, a setback on from the nose it
+/// was cut back to so that its halo could stop at the line rather than spike through it.
+fn points_at(head: [Pos2; 4]) -> Pos2 {
+    nose(head) + aim(head) * ARROW_SETBACK
 }
 
 /// Where a rim stands, on a flat page. These tests have no projection, so a circle really is a
@@ -87,8 +98,8 @@ fn a_roomy_span_keeps_everything_inside() {
     let arrows = heads(&drawing);
     assert_eq!(arrows.len(), 2);
     // Tips at the extension lines, pointing outward at each other's origin.
-    assert_eq!(arrows[0][0], Pos2::new(44.0, 28.0));
-    assert_eq!(arrows[1][0], Pos2::new(216.0, 28.0));
+    assert_eq!(points_at(arrows[0]), Pos2::new(44.0, 28.0));
+    assert_eq!(points_at(arrows[1]), Pos2::new(216.0, 28.0));
     assert!(
         aim(arrows[0]).x < 0.0 && aim(arrows[1]).x > 0.0,
         "pointing out"
@@ -271,7 +282,7 @@ fn the_radial_leader_cannot_be_made_non_radial() {
             Rank::Driving,
         );
         let head = heads(&drawing)[0];
-        let touch = head[0];
+        let touch = points_at(head);
         // The arrow's tip is the arc point: it must be exactly `radius` from the center, and
         // exactly on the ray through the anchor.
         assert!(
@@ -414,6 +425,48 @@ fn a_radius_carries_its_arc_round_to_a_leader_the_curve_does_not_reach() {
     .is_empty());
 }
 
+/// **A terminator's point is cut off where it meets what it points at.**
+///
+/// The halo is a stroke and a stroke MITRES: at a sharp arrowhead's 19-degree apex it ran
+/// `(halo / 2) / sin(9.5°)` ≈ 7 past the point — a background spike as long as the arrow, laid
+/// through the very line the arrow was terminating on, and longer for every bit of halo added.
+/// Cutting the nose back by a setback leaves no corner sharp enough to spike, and puts the halo's
+/// own leading edge where the point would have been.
+#[test]
+fn an_arrowhead_stops_at_the_line_it_points_at() {
+    let at = Pos2::new(60.0, 40.0);
+    for bearing in [0.0_f32, 1.1, 2.7, -2.0] {
+        let direction = Vec2::angled(bearing);
+        let Piece::Head(head) = arrowhead(at, direction) else {
+            panic!("an arrowhead is a head")
+        };
+        // The ink stops a setback short, and still names the line it stopped at.
+        for corner in head {
+            assert!(
+                (corner - at).dot(direction) <= -ARROW_SETBACK + 1e-3,
+                "{corner:?} crossed the line the arrow terminates on"
+            );
+        }
+        assert!((points_at(head) - at).length() < 1e-3, "it names its line");
+        assert!(aim(head).dot(direction) > 0.999, "and still points at it");
+
+        // No corner is sharp enough for the stroked halo to mitre into a spike. The reach a mitre
+        // adds is `(halo / 2) / sin(corner / 2)`, which is the whole of what went wrong before.
+        for index in 0..4 {
+            let (here, before, after) = (head[index], head[(index + 3) % 4], head[(index + 1) % 4]);
+            let corner = (before - here)
+                .normalized()
+                .dot((after - here).normalized())
+                .acos();
+            let reach = (HALO_WIDTH / 2.0) / (corner / 2.0).sin();
+            assert!(
+                reach <= HALO_WIDTH,
+                "corner {index} mitres {reach} past itself"
+            );
+        }
+    }
+}
+
 /// **A mark that lands on the curve is AIMED by the curve.** A rim on a plane the camera is not
 /// square to draws an ellipse, and there the ray an annotation was dragged along is not the
 /// direction the curve faces — they part by as much as the tilt. An arrowhead aimed along the ray
@@ -459,7 +512,7 @@ fn an_arrowhead_meets_a_slanted_rim_square_to_it() {
         "the arrow left the direction the curve faces: {:?}",
         aim(head)
     );
-    let base = head[1] + (head[2] - head[1]) / 2.0;
+    let base = head[3] + (head[2] - head[3]) / 2.0;
     let leader = drawing
         .pieces
         .iter()
@@ -558,10 +611,10 @@ fn a_diameter_touches_the_rim_on_both_sides_of_the_center() {
             .iter()
             .map(|head| {
                 assert!(
-                    ((head[0] - center).length() - 34.0).abs() < 1e-3,
+                    ((points_at(*head) - center).length() - 34.0).abs() < 1e-3,
                     "a tip left the rim for anchor {anchor:?}"
                 );
-                (head[0] - center).dot(ray)
+                (points_at(*head) - center).dot(ray)
             })
             .collect();
         assert!(
