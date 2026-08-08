@@ -443,16 +443,19 @@ impl ArmedConstraint {
     pub fn wants(&self) -> Option<PickRequirement> {
         if self.verb == ConstraintVerb::Dimension {
             // The first pick decides both WHICH member is being authored and whether a second
-            // pick is wanted at all. A rim names its own center, so it is the whole gesture; a
-            // point wants a point to be measured to, and a line wants a line to be measured
-            // against. Narrowing to the kind already picked is Symmetry's rule for Symmetry's
-            // reason: a span between a point and a line is not a quantity this family states.
+            // pick is NEEDED. A rim names its own center and a line names its own two ends, so
+            // either is a whole gesture on its own; a point names nothing but itself and wants a
+            // second point to be measured to. Narrowing to the kind already picked is Symmetry's
+            // rule for Symmetry's reason: a span between a point and a line is not a quantity this
+            // family states.
+            //
+            // A line still WELCOMES a second curve — see [`would_also_take`](Self::would_also_take)
+            // — which is a different thing from needing one.
             return match self.picked.first() {
                 None => Some(PickRequirement::PointOrCurve),
                 Some(_) if self.picked.len() > 1 => None,
                 Some(SketchEntity::Point(_)) => Some(PickRequirement::Point),
-                Some(SketchEntity::Curve(curve)) if curve.is_circular() => None,
-                Some(SketchEntity::Curve(_)) => Some(PickRequirement::DirectedCurve),
+                Some(SketchEntity::Curve(_)) => None,
             };
         }
         if self.verb == ConstraintVerb::Symmetry && self.picked.len() == 1 {
@@ -466,6 +469,35 @@ impl ArmedConstraint {
             .get(self.picked.len())
             .copied()
             .map(Into::into)
+    }
+
+    /// A pick the gesture would accept but does not need, which is what makes a lone line
+    /// ambiguous in the way Fusion leaves it ambiguous.
+    ///
+    /// One line already states a length, so the annotation can be dropped straight away — but a
+    /// second line turns the same gesture into an angle, and demanding the author decide which they
+    /// meant before either is drawn would cost a mode switch to say something the next click says
+    /// anyway. So the gesture offers the length and keeps listening.
+    ///
+    /// `None` for every other verb and every other state: a slot that is merely welcome is a
+    /// dimension's problem, because a dimension is the only gesture that can finish without one.
+    #[must_use]
+    pub fn would_also_take(&self) -> Option<PickRequirement> {
+        if self.verb != ConstraintVerb::Dimension {
+            return None;
+        }
+        match self.picked[..] {
+            [SketchEntity::Curve(curve)] if !curve.is_circular() => {
+                Some(PickRequirement::DirectedCurve)
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether this entity is already one of the picks, so a click on it is not a new one.
+    #[must_use]
+    pub fn holds_pick(&self, candidate: SketchEntity) -> bool {
+        self.picked.contains(&candidate)
     }
 
     /// Restart a restored gesture whose held entities are dead or no longer fit its dynamic slots.
@@ -503,7 +535,7 @@ impl ArmedConstraint {
     /// Offer a pick with its continuous profile locus. Tangent reads it to choose its branch and an
     /// angle reads it to choose which end of an arc it is struck at; every other verb ignores it.
     pub fn offer_at(&mut self, candidate: SketchEntity, locus: [f64; 2], sketch: &Sketch) -> Offer {
-        let Some(slot) = self.wants() else {
+        let Some(slot) = self.wants().or_else(|| self.would_also_take()) else {
             return Offer::Refused("already complete");
         };
         if !slot.accepts(candidate) {
@@ -693,7 +725,7 @@ impl ArmedConstraint {
             return self.kind(sketch).ok_or("constraint is incomplete");
         }
         if self.verb == ConstraintVerb::Dimension {
-            return seeded_dimension(&self.picked, &self.loci, sketch, context);
+            return seeded_dimension(&self.picked, &self.loci, None, sketch, context);
         }
         if self.verb == ConstraintVerb::Symmetry {
             let (
@@ -749,10 +781,10 @@ impl ArmedConstraint {
         sketch: &Sketch,
         context: parametric::EvaluationContext,
     ) -> Result<ConstraintKind, &'static str> {
-        // The anchor does not choose a member yet — it is threaded through so the caller's preview
-        // and its commit already go through one door, and the region rule lands in one place.
-        let _ = anchor;
-        self.kind_at_context(sketch, context)
+        if self.verb != ConstraintVerb::Dimension {
+            return self.kind_at_context(sketch, context);
+        }
+        seeded_dimension(&self.picked, &self.loci, Some(anchor), sketch, context)
     }
 }
 
@@ -765,6 +797,10 @@ impl ArmedConstraint {
 /// that admits the constraint is starting from a drawing that already satisfies it, so adding a
 /// dimension can only fail when the drawing was already fighting itself.
 ///
+/// `anchor` is where the annotation currently sits, and for a run between two points it chooses
+/// WHICH length is being asked for — see [`parametric::sketch::span_reading`]. `None` means the
+/// question is being asked without a place yet, which reads as the plain length.
+///
 /// # Errors
 ///
 /// A user-facing refusal when the picks are incomplete, or when the geometry they name has gone
@@ -772,10 +808,21 @@ impl ArmedConstraint {
 fn seeded_dimension(
     picked: &[SketchEntity],
     loci: &[[f64; 2]],
+    anchor: Option<[f64; 2]>,
     sketch: &Sketch,
     context: parametric::EvaluationContext,
 ) -> Result<ConstraintKind, &'static str> {
     let dimension = match (picked.first(), picked.get(1)) {
+        // A segment IS its two ends, for this question. Picking the run rather than clicking each
+        // end in turn is the ordinary way to dimension a line, and it asks exactly the same thing.
+        (Some(SketchEntity::Curve(SketchCurve::Segment(segment))), None) => {
+            let held = sketch
+                .segments()
+                .iter()
+                .find(|held| held.id == *segment)
+                .ok_or(GONE)?;
+            span_between(sketch, held.from, held.to, anchor)?
+        }
         (Some(SketchEntity::Curve(curve)), None) => {
             let form = sketch
                 .circular_form(*curve, context)
@@ -797,13 +844,7 @@ fn seeded_dimension(
             }
         }
         (Some(SketchEntity::Point(from)), Some(SketchEntity::Point(to))) => {
-            let (a, b) = (point_at(sketch, *from), point_at(sketch, *to));
-            let (a, b) = (a.ok_or(GONE)?, b.ok_or(GONE)?);
-            Dimension::Span {
-                from: *from,
-                to: *to,
-                length: SketchLength::from_continuous((b[0] - a[0]).hypot(b[1] - a[1])),
-            }
+            span_between(sketch, *from, *to, anchor)?
         }
         (
             Some(SketchEntity::Curve(SketchCurve::Segment(first))),
@@ -825,6 +866,52 @@ fn seeded_dimension(
         _ => return Err("pick two points, a line and a line or arc, or one arc or circle"),
     };
     Ok(ConstraintKind::Dimension(dimension))
+}
+
+/// Which of the three lengths between two points the annotation at `anchor` is asking for, seeded
+/// at the size the drawing already is.
+///
+/// The reading is taken in the sketch plane's own coordinates and never on screen, so the dimension
+/// an author gets does not depend on where they were standing when they asked for it.
+///
+/// # Errors
+///
+/// [`GONE`] when either point has left the drawing.
+fn span_between(
+    sketch: &Sketch,
+    from: EntityId,
+    to: EntityId,
+    anchor: Option<[f64; 2]>,
+) -> Result<Dimension, &'static str> {
+    let (tail, head) = (point_at(sketch, from), point_at(sketch, to));
+    let (tail, head) = (tail.ok_or(GONE)?, head.ok_or(GONE)?);
+    let reading = anchor.map(|anchor| parametric::sketch::span_reading(tail, head, anchor));
+    let along = |axis: document::sketch::InPlaneAxis| {
+        let coordinate = axis.coordinate();
+        Dimension::SpanAlong {
+            from,
+            to,
+            axis,
+            // The extent, not the run: the number the author sees is the one the dimension line
+            // they are dragging actually measures.
+            length: SketchLength::from_continuous((head[coordinate] - tail[coordinate]).abs()),
+        }
+    };
+    Ok(match reading {
+        Some(parametric::sketch::SpanReading::AcrossThePlane) => {
+            along(document::sketch::InPlaneAxis::Across)
+        }
+        Some(parametric::sketch::SpanReading::UpThePlane) => {
+            along(document::sketch::InPlaneAxis::Up)
+        }
+        // Without a place, the plain length. It is what the gesture opens as and what it stays
+        // until the author moves somewhere that asks for something narrower.
+        None | Some(parametric::sketch::SpanReading::Aligned) => Dimension::Span {
+            from,
+            to,
+            length: SketchLength::from_continuous((head[0] - tail[0]).hypot(head[1] - tail[1])),
+        },
+    })
 }
 
 /// The one refusal both measured members share, spelled once because it is one `&'static str`.
@@ -1046,13 +1133,19 @@ mod tests {
             length.value()
         );
 
-        // Two lines: an angle, seeded at the turn they already make.
+        // Two lines: an angle, seeded at the turn they already make. One line is already an
+        // askable question — its own length — so the gesture goes placing and keeps listening
+        // rather than demanding the second line it would still take.
         let mut angle = ArmedConstraint::new(ConstraintVerb::Dimension);
         assert_eq!(
             angle.offer(SketchEntity::Curve(SketchCurve::Segment(first)), &sketch),
-            Offer::Taken
+            Offer::Placing
         );
-        assert_eq!(angle.wants(), Some(PickRequirement::DirectedCurve));
+        assert_eq!(angle.wants(), None);
+        assert_eq!(
+            angle.would_also_take(),
+            Some(PickRequirement::DirectedCurve)
+        );
         assert_eq!(
             angle.offer(SketchEntity::Point(to), &sketch),
             Offer::Refused("pick a line or an arc — a circle has no end to read an angle at")
@@ -1073,6 +1166,69 @@ mod tests {
             (degrees.to_degrees_f64() - expected).abs() < 0.01,
             "{}",
             degrees.to_degrees_f64()
+        );
+    }
+
+    /// **Where the author drops the text is which length they are asking for.**
+    ///
+    /// The segment runs (0,0) to (8,3), so its rectangle is 8 across and 3 up. This is the same
+    /// nine-region rule [`parametric::sketch::span_reading`] tests on its own; what is tested here
+    /// is that the gesture actually consults it and seeds the EXTENT rather than the run.
+    #[test]
+    fn where_the_annotation_lands_chooses_which_length_a_run_states() {
+        let (sketch, from, to, segment) = one_segment();
+        let mut armed = ArmedConstraint::new(ConstraintVerb::Dimension);
+        assert_eq!(
+            armed.offer(SketchEntity::Point(from), &sketch),
+            Offer::Taken
+        );
+        assert_eq!(
+            armed.offer(SketchEntity::Point(to), &sketch),
+            Offer::Placing
+        );
+
+        let dropped = |at: [f64; 2]| armed.dimension_dropped_at(at, &sketch, density_16());
+        assert_eq!(
+            dropped([4.0, 20.0]),
+            Ok(ConstraintKind::Dimension(Dimension::SpanAlong {
+                from,
+                to,
+                axis: document::sketch::InPlaneAxis::Across,
+                length: SketchLength::from_continuous(8.0),
+            })),
+            "above the run, the dimension line is horizontal and states the width"
+        );
+        assert_eq!(
+            dropped([-20.0, 1.5]),
+            Ok(ConstraintKind::Dimension(Dimension::SpanAlong {
+                from,
+                to,
+                axis: document::sketch::InPlaneAxis::Up,
+                length: SketchLength::from_continuous(3.0),
+            })),
+            "beside it, the height"
+        );
+        let ConstraintKind::Dimension(Dimension::Span { length, .. }) = dropped([-20.0, 20.0])
+            .expect("out past a corner is where perpendicular-to-a-diagonal takes you")
+        else {
+            panic!("a corner states the run itself");
+        };
+        assert!(
+            (length.value() - 73.0_f64.sqrt()).abs() < 1e-6,
+            "{}",
+            length.value()
+        );
+
+        // And the same three answers off the SEGMENT, picked as one thing. A run is its two ends
+        // for this question, so dimensioning the line asks exactly what dimensioning its ends did.
+        let mut whole = ArmedConstraint::new(ConstraintVerb::Dimension);
+        assert_eq!(
+            whole.offer(SketchEntity::Curve(SketchCurve::Segment(segment)), &sketch),
+            Offer::Placing
+        );
+        assert_eq!(
+            whole.dimension_dropped_at([4.0, 20.0], &sketch, density_16()),
+            dropped([4.0, 20.0])
         );
     }
 

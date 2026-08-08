@@ -18,7 +18,8 @@ use ui::theme::color_palette;
 use crate::sheet::Sheet;
 
 impl Sheet {
-    /// The four rows: both ranks, the three span states, the two radius cases, the two angles.
+    /// Both ranks, the three span states, one extent of a diagonal, the two rim cases, the two
+    /// angles.
     pub(crate) fn dimension_gizmos(&mut self, ui: &mut Ui) {
         self.specimen_row(
             ui,
@@ -66,6 +67,46 @@ impl Sheet {
                 );
                 gizmos::segment(p, tiny.0, tiny.1);
                 dimension::span(tiny.0, tiny.1, -28.0, "14", Rank::Driving).paint(p);
+            },
+        );
+        self.specimen_row(
+            ui,
+            "span · one extent of a diagonal run",
+            "The width and the height of the SAME run, which is the drawing the nine-region drop \
+             rule exists to reach. Neither is the aligned span above: the dimension line lies \
+             along one plane axis, so the two extension lines have DIFFERENT lengths and each end \
+             reaches the line by its own perpendicular. Left states the width, dropped above; \
+             right states the height of the same diagonal, dropped beside it.",
+            |p, s| {
+                let run = (
+                    Pos2::new(s.left() + 20.0, s.bottom() - 20.0),
+                    Pos2::new(s.left() + 84.0, s.top() + 34.0),
+                );
+                gizmos::segment(p, run.0, run.1);
+                dimension::axis_span(
+                    run.0,
+                    run.1,
+                    Vec2::X,
+                    Pos2::new(s.left() + 52.0, s.top() + 16.0),
+                    "64",
+                    Rank::Driving,
+                )
+                .paint(p);
+
+                let same = (
+                    Pos2::new(s.left() + 130.0, s.bottom() - 20.0),
+                    Pos2::new(s.left() + 194.0, s.top() + 34.0),
+                );
+                gizmos::segment(p, same.0, same.1);
+                dimension::axis_span(
+                    same.0,
+                    same.1,
+                    Vec2::Y,
+                    Pos2::new(s.left() + 116.0, s.center().y),
+                    "42",
+                    Rank::Driving,
+                )
+                .paint(p);
             },
         );
         self.specimen_row(

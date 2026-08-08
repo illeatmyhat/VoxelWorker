@@ -142,6 +142,81 @@ fn a_span_lays_out_in_its_own_frame_not_the_screens() {
     assert!((label.at.y - 120.0).abs() < 1e-4, "{:?}", label.at);
 }
 
+/// **An extent's two extension lines are different lengths**, which is the whole reason it cannot
+/// borrow the aligned span's drawing.
+///
+/// The run goes (20,100) to (100,60) and the dimension line is horizontal at y = 30, so the near
+/// end reaches it by 70 and the far end by 30. An aligned span would have drawn both the same.
+#[test]
+fn an_extent_reaches_its_dimension_line_by_a_different_amount_at_each_end() {
+    let drawing = axis_span(
+        Pos2::new(20.0, 100.0),
+        Pos2::new(100.0, 60.0),
+        Vec2::X,
+        Pos2::new(60.0, 30.0),
+        "80",
+        Rank::Driving,
+    );
+    let extensions: Vec<f32> = drawing
+        .pieces
+        .iter()
+        .filter_map(|piece| match piece {
+            Piece::Polyline(points) if points.len() == 2 => ((points[0].x - points[1].x).abs()
+                < 1e-4)
+                .then(|| (points[0].y - points[1].y).abs()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        extensions.len(),
+        2,
+        "one extension line per end: {extensions:?}"
+    );
+    // 70 and 30, each shortened by the GAP off the feature and lengthened by the OVERRUN past the
+    // line — so the two differ by the 40 the run rises, whatever those constants are.
+    let (long, short) = (
+        extensions[0].max(extensions[1]),
+        extensions[0].min(extensions[1]),
+    );
+    assert!(
+        (long - short - 40.0).abs() < 1e-4,
+        "the ends reach by {long} and {short}, which should differ by the rise"
+    );
+    // And the dimension line itself lies along the axis it measures, not along the run.
+    let label = &drawing.labels[0];
+    assert!((label.at.y - 30.0).abs() < 1e-4, "{:?}", label.at);
+    assert!(
+        label.radians.abs() < 1e-4,
+        "a width reads level: {}",
+        label.radians
+    );
+}
+
+/// An end already standing on the dimension line grows no extension to it — a stub of pure GAP and
+/// OVERRUN would read as a tick mark the drawing does not mean.
+#[test]
+fn an_end_on_the_dimension_line_grows_no_extension() {
+    let drawing = axis_span(
+        Pos2::new(20.0, 30.0),
+        Pos2::new(100.0, 60.0),
+        Vec2::X,
+        Pos2::new(60.0, 30.0),
+        "80",
+        Rank::Driving,
+    );
+    let verticals = drawing
+        .pieces
+        .iter()
+        .filter(|piece| match piece {
+            Piece::Polyline(points) if points.len() == 2 => {
+                (points[0].x - points[1].x).abs() < 1e-4
+            }
+            _ => false,
+        })
+        .count();
+    assert_eq!(verticals, 1, "only the end that is off the line reaches it");
+}
+
 /// The module's central claim: the arc point is on the anchor's ray, whatever the anchor.
 #[test]
 fn the_radial_leader_cannot_be_made_non_radial() {
@@ -370,6 +445,14 @@ fn every_piece_is_finite_at_a_degenerate_input() {
     // would reach the painter as an invisible gizmo rather than a crash.
     let drawings = [
         span(Pos2::ZERO, Pos2::ZERO, 10.0, "0", Rank::Driving),
+        axis_span(
+            Pos2::ZERO,
+            Pos2::ZERO,
+            Vec2::ZERO,
+            Pos2::ZERO,
+            "0",
+            Rank::Driving,
+        ),
         radius(Pos2::ZERO, 10.0, Pos2::ZERO, "10", Rank::Driving),
         diameter(Pos2::ZERO, 0.0, Pos2::ZERO, "0", Rank::Driving),
         angle(Pos2::ZERO, 1.0, 1.0, 20.0, 30.0, "0°", Rank::Driving),

@@ -176,6 +176,29 @@ pub enum Relation {
         to: PointId,
         length: f64,
     },
+    /// Two points stand a given distance apart ALONG ONE AXIS of the sketch plane — how far apart
+    /// they are across it, or up it, rather than how far apart they are.
+    ///
+    /// `axis` indexes the plane's own coordinates, so `0` states a width and `1` states a height.
+    /// The same convention [`Relation::Horizontal`] resolves to, and for the same reason: a plane
+    /// has its own axes and a dimension read against the camera's would answer differently from a
+    /// different camera.
+    ///
+    /// A separate relation and not a [`Distance`](Self::Distance) with a direction, because it is
+    /// a different claim with a different Jacobian: this row touches ONE coordinate of each point
+    /// and is linear in it, where a distance touches both and is not. Two points can carry both
+    /// axes at once and be fully placed by them, which is the ordinary way a drawing gets pinned.
+    ///
+    /// The residual is `|Δ| − length`, whose slope is defined everywhere the claim can hold —
+    /// `Δ = 0` is not on the solution manifold for a positive length. It does not FORBID a solve
+    /// from dragging one point clean through the other and settling at `−length`; a stored sign
+    /// would, at the cost of a branch the author never chose. Not seen, and cheap to add if it is.
+    AxisDistance {
+        from: PointId,
+        to: PointId,
+        axis: usize,
+        length: f64,
+    },
     /// A curve that turns stands a given distance from its own center, everywhere.
     ///
     /// One row, and the same row whether the curve is an arc or a circle: both answer
@@ -303,6 +326,7 @@ impl Relation {
             Self::Horizontal { .. }
             | Self::Vertical { .. }
             | Self::Distance { .. }
+            | Self::AxisDistance { .. }
             | Self::Radius { .. }
             | Self::Parallel { .. }
             | Self::Perpendicular { .. }
@@ -648,7 +672,9 @@ impl ProblemBuilder {
                 Relation::Fix { point, .. }
                 | Relation::Midpoint { point, .. }
                 | Relation::PointOnCurve { point, .. } => vec![point],
-                Relation::Distance { from, to, .. } => vec![from, to],
+                Relation::Distance { from, to, .. } | Relation::AxisDistance { from, to, .. } => {
+                    vec![from, to]
+                }
                 Relation::Coincident { first, second } => vec![first, second],
                 Relation::TangentDirection {
                     joint, joint_arm, ..
@@ -1004,6 +1030,19 @@ impl Problem {
             Relation::Distance { from, to, length } => Ok(Resolved::Distance {
                 from: point(from)?,
                 to: point(to)?,
+                length,
+            }),
+            Relation::AxisDistance {
+                from,
+                to,
+                axis,
+                length,
+            } => Ok(Resolved::AxisDistance {
+                from: point(from)?,
+                to: point(to)?,
+                // A plane has two coordinates and nothing names a third, so anything else is a
+                // caller bug rather than a drawing the solver should try to honour.
+                axis: axis.min(1),
                 length,
             }),
             Relation::Coincident { first, second } => Ok(Resolved::Coincident {
@@ -2862,6 +2901,12 @@ enum Resolved {
         to: usize,
         length: f64,
     },
+    AxisDistance {
+        from: usize,
+        to: usize,
+        axis: usize,
+        length: f64,
+    },
     Coincident {
         first: usize,
         second: usize,
@@ -3442,6 +3487,19 @@ impl ResidualSystem for Residuals<'_> {
                     let (tail, head) = (at(from), at(to));
                     into[row] =
                         ((head[0] - tail[0]).powi(2) + (head[1] - tail[1]).powi(2)).sqrt() - length;
+                    row += 1;
+                }
+                Resolved::AxisDistance {
+                    from,
+                    to,
+                    axis,
+                    length,
+                } => {
+                    // The absolute value is what makes this the one-axis analogue of the distance
+                    // row above: both state a span, and neither carries a direction the author
+                    // did not give. Its slope is a sign, so the row is as well conditioned as a
+                    // row gets, and it reads the same on a long segment and a short one.
+                    into[row] = (at(to)[axis] - at(from)[axis]).abs() - length;
                     row += 1;
                 }
                 // One pair of rows for both: now that a center is a placed point (ADR 0038),
@@ -4981,7 +5039,9 @@ impl Problem {
             Relation::PointOnCurve { point, curve } => std::iter::once(point)
                 .chain(self.points_of_curve(curve))
                 .collect(),
-            Relation::Distance { from, to, .. } => vec![from, to],
+            Relation::Distance { from, to, .. } | Relation::AxisDistance { from, to, .. } => {
+                vec![from, to]
+            }
             Relation::Coincident { first, second } => vec![first, second],
             Relation::TangentDirection {
                 joint,
@@ -5079,6 +5139,7 @@ impl Problem {
             Relation::Fix { .. }
             | Relation::Quantize { .. }
             | Relation::Distance { .. }
+            | Relation::AxisDistance { .. }
             | Relation::Radius { .. }
             | Relation::Coincident { .. }
             | Relation::Concentric { .. } => Vec::new(),

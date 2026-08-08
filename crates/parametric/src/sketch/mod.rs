@@ -7,6 +7,7 @@ mod center_arc;
 mod circle;
 mod curvature;
 mod curve;
+mod dimension;
 mod higher_curve;
 mod midpoint_line;
 mod model;
@@ -29,6 +30,7 @@ pub use curvature::{
     curvature_arrow_at, curvature_residual, direction_at, direction_residual, JointSpan, SpanEnd,
 };
 pub use curve::{foot_on_span, within_drawn_extent, ArcDomain, CircularCurve, CurveGeometry};
+pub use dimension::{span_reading, SpanReading};
 pub use higher_curve::{
     conic_candidate, conic_rho_from_shoulder, conic_shoulder_track, conic_vertex_from_rho,
     ellipse_candidate, ConicCandidate, ConicCandidateError, EllipseCandidate,

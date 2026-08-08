@@ -3805,3 +3805,129 @@ fn dragging_a_rectangles_corner_resizes_it_rather_than_moving_it() {
         );
     }
 }
+
+/// **A run's length, its width and its height are three different claims**, so asserting two of
+/// them is a drawing getting pinned down rather than an author repeating themselves.
+///
+/// All three answer the same subject pair, which is what makes this worth a test: the ordinary
+/// already-asserted check compares the subject and would have refused the second.
+#[test]
+fn a_span_and_its_two_extents_are_three_separate_claims() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let tail = sketch.add_free_point(SketchPoint::new(0, 0));
+    let head = sketch.add_free_point(SketchPoint::new(8, 6));
+    let across = ConstraintKind::Dimension(Dimension::SpanAlong {
+        from: tail,
+        to: head,
+        axis: InPlaneAxis::Across,
+        length: SketchLength::new(8),
+    });
+    let up = ConstraintKind::Dimension(Dimension::SpanAlong {
+        from: tail,
+        to: head,
+        axis: InPlaneAxis::Up,
+        length: SketchLength::new(6),
+    });
+    sketch
+        .add_constraint(across, ctx(16))
+        .expect("the drawing already stands eight across");
+    sketch
+        .add_constraint(up, ctx(16))
+        .expect("its height is a different question from its width");
+    assert!(
+        matches!(
+            sketch.add_constraint(across, ctx(16)),
+            Err(ConstraintRefusal::AlreadyAsserted { .. })
+        ),
+        "the SAME extent twice is still one claim"
+    );
+
+    // The length is a third claim, and with both extents already stated it is redundant rather
+    // than refused — which is the flag the family has for exactly this.
+    let diagonal = sketch
+        .add_constraint(
+            ConstraintKind::Dimension(Dimension::Span {
+                from: tail,
+                to: head,
+                length: SketchLength::new(10),
+            }),
+            ctx(16),
+        )
+        .expect("a diagonal is not either extent");
+    assert_eq!(sketch.constraints().len(), 3);
+    assert!(sketch
+        .constraints()
+        .iter()
+        .any(|held| held.id == diagonal && held.redundant));
+}
+
+/// **An extent moves the drawing along one axis and leaves the other alone.** The row is what the
+/// member is for, so the test is a solve rather than a shape check.
+#[test]
+fn an_extent_states_one_axis_and_says_nothing_about_the_other() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let tail = sketch.add_free_point(SketchPoint::new(0, 0));
+    let head = sketch.add_free_point(SketchPoint::new(8, 6));
+    sketch
+        .add_constraint(
+            ConstraintKind::Fix {
+                point: tail,
+                at: SketchPoint::new(0, 0),
+            },
+            ctx(16),
+        )
+        .expect("somewhere to measure from");
+    sketch
+        .add_constraint(
+            ConstraintKind::Dimension(Dimension::SpanAlong {
+                from: tail,
+                to: head,
+                axis: InPlaneAxis::Across,
+                length: SketchLength::new(20),
+            }),
+            ctx(16),
+        )
+        .expect("a width the drawing does not yet have");
+    sketch.solve(ctx(16)).expect("one row and two free points");
+
+    let arrived = position(&sketch, head);
+    assert!(
+        (arrived[0].abs() - 20.0).abs() < 1.0e-6,
+        "the width was asserted and the drawing took it: {arrived:?}"
+    );
+    assert!(
+        (arrived[1] - 6.0).abs() < 1.0e-6,
+        "the height was not asserted and nothing pulled on it: {arrived:?}"
+    );
+}
+
+/// An extent is an authored length like any other, so a density re-target rescales it — otherwise
+/// a width of one block would silently become a width of half a block.
+#[test]
+fn an_extent_is_re_targeted_like_every_other_authored_length() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let tail = sketch.add_free_point(SketchPoint::new(0, 0));
+    let head = sketch.add_free_point(SketchPoint::new(8, 6));
+    sketch
+        .add_constraint(
+            ConstraintKind::Dimension(Dimension::SpanAlong {
+                from: tail,
+                to: head,
+                axis: InPlaneAxis::Across,
+                length: SketchLength::new(8),
+            }),
+            ctx(16),
+        )
+        .expect("the width the drawing has");
+    sketch.retarget_density(16, 32);
+    let ConstraintKind::Dimension(Dimension::SpanAlong { length, .. }) =
+        sketch.constraints()[0].kind
+    else {
+        panic!("the extent is still an extent");
+    };
+    assert!(
+        (length.value() - 16.0).abs() < 1.0e-6,
+        "half a block stayed half a block: {}",
+        length.value()
+    );
+}

@@ -180,6 +180,29 @@ pub enum Dimension {
         to: EntityId,
         length: SketchLength,
     },
+    /// Two points stand a given distance apart ALONG ONE OF THE PLANE'S AXES — how far apart they
+    /// are across the plane, or up it, rather than how far apart they are.
+    ///
+    /// A separate member from [`Span`](Self::Span) and not a display flag on it, for the reason
+    /// [`Diameter`](Self::Diameter) is separate from [`Radius`](Self::Radius): the number is
+    /// AUTHORED. An author who wrote "two blocks across" wrote a width, and storing the diagonal it
+    /// implies would throw away the expression they typed.
+    ///
+    /// Unlike that pair, these two do NOT exclude each other. A segment's length, its width and its
+    /// height are three different claims, any two of which place it completely, and dimensioning
+    /// both extents of one run is ordinary practice rather than a mistake. They share the same
+    /// subject pair, so [`ConstraintKind::is_about_the_same_as`] compares the axis to keep them
+    /// apart.
+    ///
+    /// [`Horizontal`](ConstraintKind::Horizontal) and [`Vertical`](ConstraintKind::Vertical) are
+    /// the two of these that need no number, and stay their own kinds for the reason `Parallel`
+    /// does: an author asking a segment to lie flat is not authoring the number zero.
+    SpanAlong {
+        from: EntityId,
+        to: EntityId,
+        axis: InPlaneAxis,
+        length: SketchLength,
+    },
     /// Two segments meet at this angle, measured turning from `first` to `second`.
     ///
     /// The one member whose value is an [`parametric::units::AngleMeasurement`] rather than a
@@ -232,11 +255,63 @@ impl Dimension {
     pub const fn length(&self) -> Option<SketchLength> {
         match *self {
             Self::Span { length, .. }
+            | Self::SpanAlong { length, .. }
             | Self::Radius { length, .. }
             | Self::Diameter { length, .. } => Some(length),
             // An angle is a quantity, but it is not a length, and there is no length to answer
             // with rather than one that happens to be zero.
             Self::Angle { .. } => None,
+        }
+    }
+
+    /// Whether this member states how far apart two points stand — the family whose members share
+    /// a subject pair and so have to be told apart by what they measure along.
+    const fn measures_a_distance(self) -> bool {
+        match self {
+            Self::Span { .. } | Self::SpanAlong { .. } => true,
+            Self::Radius { .. } | Self::Diameter { .. } | Self::Angle { .. } => false,
+        }
+    }
+
+    /// Which of the plane's axes this member measures along.
+    ///
+    /// `None` for a [`Span`](Self::Span) because its true length lies along no axis in particular,
+    /// which is exactly what makes it a different claim from either extent. `None` for the members
+    /// that measure no distance at all, which never reach the comparison this answers.
+    const fn along(self) -> Option<InPlaneAxis> {
+        match self {
+            Self::SpanAlong { axis, .. } => Some(axis),
+            Self::Span { .. }
+            | Self::Radius { .. }
+            | Self::Diameter { .. }
+            | Self::Angle { .. } => None,
+        }
+    }
+}
+
+/// One of the sketch plane's own two directions.
+///
+/// Named rather than indexed, because an index in a stored document is a positional value whose
+/// meaning lives somewhere else. `PlaneAxis` is already taken by the world axis a sketch plane
+/// faces along, which is a different question — that one says which plane, this one says which way
+/// on it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum InPlaneAxis {
+    /// The plane's first coordinate — the direction a
+    /// [`Horizontal`](ConstraintKind::Horizontal) segment runs.
+    Across,
+    /// The plane's second coordinate — the direction a [`Vertical`](ConstraintKind::Vertical)
+    /// segment runs.
+    Up,
+}
+
+impl InPlaneAxis {
+    /// Which coordinate of an in-plane point this is, for the solver's benefit.
+    #[must_use]
+    pub const fn coordinate(self) -> usize {
+        match self {
+            Self::Across => 0,
+            Self::Up => 1,
         }
     }
 }
@@ -447,7 +522,9 @@ impl ConstraintKind {
             | Self::Midpoint { point, .. }
             | Self::PointOnCurve { point, .. } => vec![point],
             Self::Curvature { joint, .. } => vec![joint],
-            Self::Dimension(Dimension::Span { from, to, .. }) => vec![from, to],
+            Self::Dimension(
+                Dimension::Span { from, to, .. } | Dimension::SpanAlong { from, to, .. },
+            ) => vec![from, to],
             Self::Coincident { first, second } => vec![first, second],
             // Both name curves. The points those curves are drawn between are not what
             // either one is about.
@@ -521,6 +598,15 @@ impl ConstraintKind {
             };
             return pair(first, second) == pair(other_first, other_second);
         }
+        // The third and last pair whose stored values participate. A segment's length, its width
+        // and its height are three different claims about the same two points, and asserting two
+        // of them is how a drawing normally gets pinned down — but all three answer the same
+        // subject pair, which holds no room for an axis to tell them apart.
+        if let (Self::Dimension(mine), Self::Dimension(theirs)) = (*self, other) {
+            if mine.measures_a_distance() && theirs.measures_a_distance() {
+                return mine.along() == theirs.along() && self.subject() == other.subject();
+            }
+        }
         std::mem::discriminant(self) == std::mem::discriminant(&other)
             && self.subject() == other.subject()
     }
@@ -532,7 +618,9 @@ impl ConstraintKind {
         match *self {
             Self::Fix { point, .. } | Self::Quantize { point, .. } => [point, point],
             Self::Horizontal { segment } | Self::Vertical { segment } => [segment, segment],
-            Self::Dimension(Dimension::Span { from, to, .. }) => [from.min(to), from.max(to)],
+            Self::Dimension(
+                Dimension::Span { from, to, .. } | Dimension::SpanAlong { from, to, .. },
+            ) => [from.min(to), from.max(to)],
             // Sharing the pair is what refuses a diameter on a curve that already states a
             // radius: it is the same claim written the other way, not a second one.
             Self::Dimension(
@@ -640,7 +728,9 @@ impl ConstraintKind {
         match *self {
             Self::Fix { point, .. } | Self::Quantize { point, .. } => vec![point],
             Self::Horizontal { segment } | Self::Vertical { segment } => vec![segment],
-            Self::Dimension(Dimension::Span { from, to, .. }) => vec![from, to],
+            Self::Dimension(
+                Dimension::Span { from, to, .. } | Dimension::SpanAlong { from, to, .. },
+            ) => vec![from, to],
             Self::Dimension(
                 Dimension::Radius { curve, .. } | Dimension::Diameter { curve, .. },
             ) => vec![curve.id()],
@@ -1234,6 +1324,19 @@ fn relation_for(
             .map(|(from, to)| Relation::Distance {
                 from,
                 to,
+                length: length.value(),
+            }),
+        ConstraintKind::Dimension(Dimension::SpanAlong {
+            from,
+            to,
+            axis,
+            length,
+        }) => point(from)
+            .zip(point(to))
+            .map(|(from, to)| Relation::AxisDistance {
+                from,
+                to,
+                axis: axis.coordinate(),
                 length: length.value(),
             }),
         ConstraintKind::Dimension(Dimension::Radius {

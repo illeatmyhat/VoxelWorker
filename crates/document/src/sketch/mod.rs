@@ -63,7 +63,7 @@ mod tests;
 mod transform;
 
 pub use constraint::{
-    AngleArm, ArcEnd, Constraint, ConstraintKind, ConstraintRefusal, Dimension,
+    AngleArm, ArcEnd, Constraint, ConstraintKind, ConstraintRefusal, Dimension, InPlaneAxis,
     InternalContainment, LineSide, SketchCurve, SymmetryBranch, TangentBranch,
 };
 pub use faces::{Face, FaceKey};
@@ -4540,7 +4540,15 @@ impl Sketch {
                     return Err(ConstraintRefusal::Impossible);
                 }
             }
-            ConstraintKind::Dimension(Dimension::Span { from, to, length }) => {
+            // One extent is refused for the same three reasons the whole length is. A zero extent
+            // is the exception that is NOT refused here but elsewhere: two points level with each
+            // other are Horizontal or Vertical, which the author reaches by a different verb.
+            ConstraintKind::Dimension(
+                Dimension::Span { from, to, length }
+                | Dimension::SpanAlong {
+                    from, to, length, ..
+                },
+            ) => {
                 if !known_point(from) || !known_point(to) {
                     return Err(ConstraintRefusal::UnknownEntity);
                 }
@@ -6221,6 +6229,7 @@ impl Sketch {
                 }
                 ConstraintKind::Dimension(
                     Dimension::Span { length, .. }
+                    | Dimension::SpanAlong { length, .. }
                     | Dimension::Radius { length, .. }
                     | Dimension::Diameter { length, .. },
                 ) => {

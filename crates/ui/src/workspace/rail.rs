@@ -895,6 +895,34 @@ fn sketch_dimension_value(ui: &mut egui::Ui, state: &mut PanelState, response: &
                 length: document::sketch::SketchLength::retained(commit.measurement, commit.voxels),
             })
         }
+        document::sketch::Dimension::SpanAlong {
+            from,
+            to,
+            axis,
+            length,
+        } => {
+            // The label names the extent rather than saying "Length", because a segment carries up
+            // to three of these at once and a rail that called them all the same thing would leave
+            // the author guessing which row moves which number.
+            let named = match axis {
+                document::sketch::InPlaneAxis::Across => "Width",
+                document::sketch::InPlaneAxis::Up => "Height",
+            };
+            crate::widgets::MeasurementField::new(
+                id_base,
+                named,
+                length.value().round() as i64,
+                density,
+            )
+            .min_voxels(1, "a span is at least one voxel")
+            .show(ui)
+            .map(|commit| document::sketch::Dimension::SpanAlong {
+                from,
+                to,
+                axis,
+                length: document::sketch::SketchLength::retained(commit.measurement, commit.voxels),
+            })
+        }
         document::sketch::Dimension::Radius { curve, length }
         | document::sketch::Dimension::Diameter { curve, length } => {
             let across = matches!(dimension, document::sketch::Dimension::Diameter { .. });

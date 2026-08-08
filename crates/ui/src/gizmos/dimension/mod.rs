@@ -179,7 +179,7 @@ mod span;
 pub use angle::angle;
 pub use diameter::diameter;
 pub use radius::radius;
-pub use span::span;
+pub use span::{axis_span, span};
 
 /// The chrome weight: dimension line, extension line and leader all share it, per ISO 128-20.
 pub const LINE_WIDTH: f32 = 0.8;

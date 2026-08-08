@@ -4238,6 +4238,36 @@ impl WindowedState {
                     };
                     ui::gizmos::dimension::span(from, to, offset, &voxels(length), rank)
                 }
+                document::sketch::Dimension::SpanAlong {
+                    from,
+                    to,
+                    axis,
+                    length,
+                } => {
+                    let (Some(tail), Some(head)) = (in_plane(from), in_plane(to)) else {
+                        return None;
+                    };
+                    // The dimension line's direction is the PLANE's axis seen on screen, found by
+                    // projecting a step along it rather than assumed to be the screen's own — a
+                    // sketch drawn on a plane the camera is not square to still measures its width
+                    // across the plane, and a screen-axis line would be measuring the camera.
+                    let mut step = tail;
+                    step[axis.coordinate()] += 1.0;
+                    let (Some(from), Some(to), Some(step)) =
+                        (to_px(tail), to_px(head), to_px(step))
+                    else {
+                        return None;
+                    };
+                    let anchor = placed.unwrap_or_else(|| from + (to - from) / 2.0);
+                    ui::gizmos::dimension::axis_span(
+                        from,
+                        to,
+                        step - from,
+                        anchor,
+                        &voxels(length),
+                        rank,
+                    )
+                }
                 document::sketch::Dimension::Radius { curve, length } => {
                     let form = producer.sketch.circular_form(curve, context)?;
                     let rim = [form.center[0] + form.radius, form.center[1]];
@@ -4622,20 +4652,32 @@ impl WindowedState {
             self.panel_state.selection.clear_sketch_entities();
             self.panel_state.armed_constraint = Some(armed.clone());
         }
-        // A dimension with all its picks in is asking WHERE, not WHAT: the click is a place, and
-        // resolving it against geometry would answer a question nobody asked.
-        if armed.is_placing() {
-            self.place_armed_dimension(target, cursor_x, cursor_y);
-            return;
-        }
+        // A dimension with all its picks in is asking WHERE, not WHAT — but a lone line finishes
+        // that way while still welcoming a second one, so the click has to be read against the
+        // drawing before it can be read as a place. Geometry the gesture would still take wins:
+        // clicking another line turns a length into an angle, and there is nowhere else to say so.
+        let placing = armed.is_placing();
         // The gesture's own question decides what the click can resolve to — see
         // `sketch_entity_for_requirement`. Anything else with every slot filled cannot reach here
-        // (a completed offer disarms), so `wants` answering `None` means nothing is being asked.
-        let Some(slot) = armed.wants() else {
+        // (a completed offer disarms), so both slots answering `None` means nothing is being asked.
+        let Some(slot) = armed.wants().or_else(|| armed.would_also_take()) else {
+            if placing {
+                self.place_armed_dimension(target, cursor_x, cursor_y);
+            }
             return;
         };
         let candidate = match self.sketch_entity_for_requirement(slot, cursor_x, cursor_y) {
+            // Dropping the annotation ON the line being measured is the ordinary thing to do, and
+            // the gesture already holds that pick — so it is a place rather than a second one.
+            Some(candidate) if placing && armed.holds_pick(candidate) => {
+                self.place_armed_dimension(target, cursor_x, cursor_y);
+                return;
+            }
             Some(candidate) => candidate,
+            None if placing => {
+                self.place_armed_dimension(target, cursor_x, cursor_y);
+                return;
+            }
             // A miss reports the active requirement so the gesture remains observable.
             None => {
                 self.panel_state.sketch_constraint_refusal = Some(slot.nothing_under_the_cursor());
