@@ -923,6 +923,28 @@ fn sketch_dimension_value(ui: &mut egui::Ui, state: &mut PanelState, response: &
                 length: document::sketch::SketchLength::retained(commit.measurement, commit.voxels),
             })
         }
+        document::sketch::Dimension::Gap {
+            point,
+            segment,
+            length,
+        } => {
+            crate::widgets::MeasurementField::new(
+                id_base,
+                // Not "Length": a gap is measured across a line rather than between two places,
+                // and a segment can carry both at once.
+                "Offset",
+                length.value().round() as i64,
+                density,
+            )
+            // A gap of nothing puts the point on the line, which PointOnCurve already says.
+            .min_voxels(1, "a gap is at least one voxel")
+            .show(ui)
+            .map(|commit| document::sketch::Dimension::Gap {
+                point,
+                segment,
+                length: document::sketch::SketchLength::retained(commit.measurement, commit.voxels),
+            })
+        }
         document::sketch::Dimension::Radius { curve, length }
         | document::sketch::Dimension::Diameter { curve, length } => {
             let across = matches!(dimension, document::sketch::Dimension::Diameter { .. });

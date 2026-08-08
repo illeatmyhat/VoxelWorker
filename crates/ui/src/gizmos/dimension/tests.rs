@@ -228,7 +228,7 @@ fn the_radial_leader_cannot_be_made_non_radial() {
         Pos2::new(92.0, 12.0),
         Pos2::new(95.0, 82.0),
     ] {
-        let drawing = radius(center, radius_length, anchor, "21", Rank::Driving);
+        let drawing = radius(center, radius_length, anchor, None, "21", Rank::Driving);
         let head = heads(&drawing)[0];
         let touch = head[0];
         // The arrow's tip is the arc point: it must be exactly `radius` from the center, and
@@ -249,7 +249,14 @@ fn the_radial_leader_cannot_be_made_non_radial() {
 #[test]
 fn an_anchor_inside_the_curve_points_the_arrow_outward() {
     let center = Pos2::new(130.0, 74.0);
-    let inside = radius(center, 46.0, Pos2::new(152.0, 56.0), "46", Rank::Driving);
+    let inside = radius(
+        center,
+        46.0,
+        Pos2::new(152.0, 56.0),
+        None,
+        "46",
+        Rank::Driving,
+    );
     let outward = aim(heads(&inside)[0]);
     let ray = (Pos2::new(152.0, 56.0) - center).normalized();
     assert!(
@@ -257,10 +264,141 @@ fn an_anchor_inside_the_curve_points_the_arrow_outward() {
         "inside: the arrow points out at the curve"
     );
 
-    let outside = radius(center, 21.0, Pos2::new(196.0, 24.0), "21", Rank::Driving);
+    let outside = radius(
+        center,
+        21.0,
+        Pos2::new(196.0, 24.0),
+        None,
+        "21",
+        Rank::Driving,
+    );
     let inward = aim(heads(&outside)[0]);
     let ray = (Pos2::new(196.0, 24.0) - center).normalized();
     assert!(inward.dot(ray) < -0.9, "outside: it reverses to point back");
+}
+
+/// **A leader has to arrive at the drawing, not at the circle the drawing lies on.**
+///
+/// An arc occupies part of its circle, and the ray the author drags the annotation along can meet
+/// that circle anywhere. Where it meets a bearing the curve itself never reaches, the curve is
+/// carried round to it — from the nearer of its two ends, whichever side that is on, and in both
+/// the inside and the outside drawing, because the leader touches the rim either way.
+#[test]
+fn a_radius_carries_its_arc_round_to_a_leader_the_curve_does_not_reach() {
+    let center = Pos2::new(100.0, 100.0);
+    let quarter = std::f32::consts::FRAC_PI_2;
+    // A quarter of the circle, from due east round to due south (screen y runs down).
+    let rim = Rim {
+        from: 0.0,
+        turn: quarter,
+    };
+    let extensions = |drawing: &Drawing| -> Vec<(f32, f32)> {
+        drawing
+            .pieces
+            .iter()
+            .filter_map(|piece| match piece {
+                Piece::Arc { from, to, .. } => Some((*from, *to)),
+                _ => None,
+            })
+            .collect()
+    };
+    let struck = |at: Pos2| radius(center, 40.0, at, Some(rim), "40", Rank::Driving);
+
+    // Dropped over the curve's own quarter: nothing to carry.
+    assert!(
+        extensions(&struck(Pos2::new(150.0, 150.0))).is_empty(),
+        "the curve already reaches there"
+    );
+
+    // Dropped just past the far end: the extension leaves that end and runs on.
+    let past = extensions(&struck(Pos2::new(90.0, 160.0)));
+    assert_eq!(past.len(), 1, "one extension, from one end");
+    assert!(
+        (past[0].0 - quarter).abs() < 1e-4,
+        "it starts at the end the curve stops at: {:?}",
+        past[0]
+    );
+    assert!(past[0].1 > past[0].0, "and carries on the same way round");
+
+    // Dropped short of the near end: the same rule the other way — the extension runs BACKWARD
+    // out of the start, because that is the end nearer what the leader is asking for.
+    let short = extensions(&struck(Pos2::new(160.0, 90.0)));
+    assert_eq!(short.len(), 1);
+    assert!(
+        (short[0].0).abs() < 1e-4,
+        "out of the start: {:?}",
+        short[0]
+    );
+    assert!(short[0].1 < short[0].0, "and the other way round");
+
+    // The inside drawing is not exempt: the leader still ends on the rim.
+    let inside = extensions(&radius(
+        center,
+        40.0,
+        Pos2::new(94.0, 118.0),
+        Some(rim),
+        "40",
+        Rank::Driving,
+    ));
+    assert_eq!(
+        inside.len(),
+        1,
+        "an anchor inside still needs the rim {inside:?}"
+    );
+
+    // A whole circle has no end to fall short of.
+    assert!(extensions(&radius(
+        center,
+        40.0,
+        Pos2::new(40.0, 40.0),
+        None,
+        "40",
+        Rank::Driving,
+    ))
+    .is_empty());
+}
+
+/// A diameter meets the rim TWICE, so an arc read across can fall short at either end or both.
+#[test]
+fn a_diameter_carries_both_of_the_ends_it_lands_on() {
+    let center = Pos2::new(100.0, 100.0);
+    // Half the circle, the eastern side.
+    let rim = Rim {
+        from: -std::f32::consts::FRAC_PI_2,
+        turn: std::f32::consts::PI,
+    };
+    let arcs = |drawing: &Drawing| {
+        drawing
+            .pieces
+            .iter()
+            .filter(|piece| matches!(piece, Piece::Arc { .. }))
+            .count()
+    };
+    // Struck due east: one end is on the curve, the other is on the half it does not draw.
+    assert_eq!(
+        arcs(&diameter(
+            center,
+            30.0,
+            Pos2::new(160.0, 100.0),
+            Some(rim),
+            "60",
+            Rank::Driving
+        )),
+        1,
+        "only the end that misses is carried",
+    );
+    // Struck due north-south: both ends sit on the curve's own two tips, so neither is carried.
+    assert_eq!(
+        arcs(&diameter(
+            center,
+            30.0,
+            Pos2::new(100.0, 40.0),
+            Some(rim),
+            "60",
+            Rank::Driving
+        )),
+        0,
+    );
 }
 
 /// **A diameter crosses the center, and both its ends sit on the rim.** That is the entire
@@ -274,7 +412,7 @@ fn a_diameter_touches_the_rim_on_both_sides_of_the_center() {
         Pos2::new(48.0, 160.0),
         Pos2::new(120.0, 22.0),
     ] {
-        let drawing = diameter(center, 34.0, anchor, "68", Rank::Driving);
+        let drawing = diameter(center, 34.0, anchor, None, "68", Rank::Driving);
         let touches = heads(&drawing);
         assert_eq!(touches.len(), 2, "one head per side for anchor {anchor:?}");
         let ray = (anchor - center).normalized();
@@ -304,7 +442,7 @@ fn a_diameter_too_tight_to_read_across_evicts_its_value() {
     let anchor = Pos2::new(130.0, 50.0);
     let ray = (anchor - center).normalized();
 
-    let roomy = diameter(center, 40.0, anchor, "80", Rank::Driving);
+    let roomy = diameter(center, 40.0, anchor, None, "80", Rank::Driving);
     let inward: Vec<f32> = heads(&roomy)
         .iter()
         .map(|head| aim(*head).dot(ray))
@@ -318,7 +456,7 @@ fn a_diameter_too_tight_to_read_across_evicts_its_value() {
         "roomy: the value rides the line at the center"
     );
 
-    let tight = diameter(center, 12.0, anchor, "24", Rank::Driving);
+    let tight = diameter(center, 12.0, anchor, None, "24", Rank::Driving);
     let outward: Vec<f32> = heads(&tight)
         .iter()
         .map(|head| aim(*head).dot(ray))
@@ -338,7 +476,14 @@ fn a_diameter_too_tight_to_read_across_evicts_its_value() {
 #[test]
 fn a_diameter_leader_dragged_inside_still_stops_at_the_rim() {
     let center = Pos2::new(60.0, 60.0);
-    let drawing = diameter(center, 10.0, Pos2::new(63.0, 58.0), "20", Rank::Driving);
+    let drawing = diameter(
+        center,
+        10.0,
+        Pos2::new(63.0, 58.0),
+        None,
+        "20",
+        Rank::Driving,
+    );
     let ray = (Pos2::new(63.0, 58.0) - center).normalized();
     assert!(
         (drawing.labels[0].at - center).dot(ray) >= 10.0 - 1e-3,
@@ -523,8 +668,8 @@ fn every_piece_is_finite_at_a_degenerate_input() {
             "0",
             Rank::Driving,
         ),
-        radius(Pos2::ZERO, 10.0, Pos2::ZERO, "10", Rank::Driving),
-        diameter(Pos2::ZERO, 0.0, Pos2::ZERO, "0", Rank::Driving),
+        radius(Pos2::ZERO, 10.0, Pos2::ZERO, None, "10", Rank::Driving),
+        diameter(Pos2::ZERO, 0.0, Pos2::ZERO, None, "0", Rank::Driving),
         angle(
             Pos2::ZERO,
             1.0,

@@ -4012,3 +4012,169 @@ fn an_extent_is_re_targeted_like_every_other_authored_length() {
         length.value()
     );
 }
+/// **A gap holds a point off a line and lets it slide along that line freely.** That is the whole
+/// difference between this member and a span: a span names two PLACES, so walking one of them
+/// changes the answer, and a gap names a DIRECTION, so it does not.
+#[test]
+fn a_gap_holds_a_point_off_a_line_and_says_nothing_about_where_along_it() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let tail = sketch.add_free_point(SketchPoint::new(0, 0));
+    let head = sketch.add_free_point(SketchPoint::new(10, 0));
+    let line = sketch
+        .connect(tail, head)
+        .expect("a line to measure across");
+    let stood = sketch.add_free_point(SketchPoint::new(4, 3));
+    for (point, at) in [
+        (tail, SketchPoint::new(0, 0)),
+        (head, SketchPoint::new(10, 0)),
+    ] {
+        sketch
+            .add_constraint(ConstraintKind::Fix { point, at }, ctx(16))
+            .expect("the line stays where it is so the gap is the only thing that can move");
+    }
+    sketch
+        .add_constraint(
+            ConstraintKind::Dimension(Dimension::Gap {
+                point: stood,
+                segment: line,
+                length: SketchLength::new(7),
+            }),
+            ctx(16),
+        )
+        .expect("a point three off a line can be asked to stand seven off it");
+    sketch.solve(ctx(16)).expect("one row and one free point");
+
+    let arrived = position(&sketch, stood);
+    assert!(
+        (arrived[1].abs() - 7.0).abs() < 1.0e-6,
+        "the point took the gap it was asked for: {arrived:?}"
+    );
+    assert!(
+        (arrived[0] - 4.0).abs() < 1.0e-6,
+        "nothing pulled it along the line it is measured against: {arrived:?}"
+    );
+}
+
+/// **A gap is measured against the whole line, not the run that is drawn.** Two rails cut to
+/// different lengths and set past each other still state one offset, which is the ordinary case
+/// this member exists for.
+#[test]
+fn a_gap_is_measured_against_the_line_and_not_the_run_that_is_drawn() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let tail = sketch.add_free_point(SketchPoint::new(0, 0));
+    let head = sketch.add_free_point(SketchPoint::new(4, 0));
+    let line = sketch.connect(tail, head).expect("a short rail");
+    // Stood well past the drawn end, where no perpendicular foot lands on the run at all.
+    let stood = sketch.add_free_point(SketchPoint::new(30, 2));
+    for (point, at) in [
+        (tail, SketchPoint::new(0, 0)),
+        (head, SketchPoint::new(4, 0)),
+    ] {
+        sketch
+            .add_constraint(ConstraintKind::Fix { point, at }, ctx(16))
+            .expect("the rail stays put");
+    }
+    sketch
+        .add_constraint(
+            ConstraintKind::Dimension(Dimension::Gap {
+                point: stood,
+                segment: line,
+                length: SketchLength::new(9),
+            }),
+            ctx(16),
+        )
+        .expect("the line runs on past its drawn end");
+    sketch.solve(ctx(16)).expect("one row and one free point");
+
+    let arrived = position(&sketch, stood);
+    assert!(
+        (arrived[1].abs() - 9.0).abs() < 1.0e-6,
+        "measured across the line the run only samples: {arrived:?}"
+    );
+}
+
+/// **A gap and the same pair's other claims are separate questions.** The subject is a point and a
+/// segment, which no other member of the family can name, so the ordinary already-asserted rule
+/// separates it without the distance family's special case having to.
+#[test]
+fn a_gap_is_one_claim_and_the_same_pair_twice_is_still_one() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let tail = sketch.add_free_point(SketchPoint::new(0, 0));
+    let head = sketch.add_free_point(SketchPoint::new(10, 0));
+    let line = sketch.connect(tail, head).expect("a line");
+    let stood = sketch.add_free_point(SketchPoint::new(4, 3));
+    let gap = |length| {
+        ConstraintKind::Dimension(Dimension::Gap {
+            point: stood,
+            segment: line,
+            length: SketchLength::new(length),
+        })
+    };
+    sketch.add_constraint(gap(3), ctx(16)).expect("an offset");
+    assert!(
+        matches!(
+            sketch.add_constraint(gap(5), ctx(16)),
+            Err(ConstraintRefusal::AlreadyAsserted { .. })
+        ),
+        "a different NUMBER is the same question asked twice"
+    );
+    // The span to one of the line's own ends is a different question, and takes.
+    sketch
+        .add_constraint(
+            ConstraintKind::Dimension(Dimension::Span {
+                from: stood,
+                to: tail,
+                length: SketchLength::new(5),
+            }),
+            ctx(16),
+        )
+        .expect("how far the point stands from an END is not how far it stands off the LINE");
+
+    // And it re-targets like every other authored length.
+    sketch.retarget_density(16, 32);
+    let ConstraintKind::Dimension(Dimension::Gap { length, .. }) = sketch.constraints()[0].kind
+    else {
+        panic!("the gap is still a gap");
+    };
+    assert!((length.value() - 6.0).abs() < 1.0e-6, "{}", length.value());
+}
+
+/// A gap needs a line with a direction to be measured across, and a distance that is really one.
+#[test]
+fn a_gap_refuses_a_line_of_no_length_and_a_length_of_none() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let tail = sketch.add_free_point(SketchPoint::new(0, 0));
+    let head = sketch.add_free_point(SketchPoint::new(0, 0));
+    let nowhere = sketch.connect(tail, head).expect("a line drawn on itself");
+    let stood = sketch.add_free_point(SketchPoint::new(4, 3));
+    assert!(matches!(
+        sketch.add_constraint(
+            ConstraintKind::Dimension(Dimension::Gap {
+                point: stood,
+                segment: nowhere,
+                length: SketchLength::new(3),
+            }),
+            ctx(16),
+        ),
+        Err(ConstraintRefusal::Impossible)
+    ));
+
+    let far = sketch.add_free_point(SketchPoint::new(10, 0));
+    let line = sketch
+        .connect(tail, far)
+        .expect("a line that goes somewhere");
+    assert!(
+        matches!(
+            sketch.add_constraint(
+                ConstraintKind::Dimension(Dimension::Gap {
+                    point: stood,
+                    segment: line,
+                    length: SketchLength::new(0),
+                }),
+                ctx(16),
+            ),
+            Err(ConstraintRefusal::Impossible)
+        ),
+        "a point standing ON a line is `PointOnCurve`, which asserts a place and not a distance"
+    );
+}

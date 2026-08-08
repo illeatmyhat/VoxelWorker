@@ -4273,28 +4273,77 @@ impl WindowedState {
                         rank,
                     )
                 }
-                document::sketch::Dimension::Radius { curve, length } => {
-                    let form = producer.sketch.circular_form(curve, context)?;
-                    let rim = [form.center[0] + form.radius, form.center[1]];
-                    let (Some(center), Some(rim)) = (to_px(form.center), to_px(rim)) else {
+                document::sketch::Dimension::Gap {
+                    point,
+                    segment,
+                    length,
+                } => {
+                    let (Some(stood), Some((tail, head))) =
+                        (in_plane(point), ends_in_plane(segment))
+                    else {
                         return None;
                     };
-                    let radius_px = center.distance(rim);
+                    let (Some(stood), Some(tail), Some(head)) =
+                        (to_px(stood), to_px(tail), to_px(head))
+                    else {
+                        return None;
+                    };
+                    let run = head - tail;
+                    let reach = run.length();
+                    if reach <= f32::EPSILON {
+                        return None;
+                    }
+                    // The dimension line lies ACROSS the line, which is the one direction the
+                    // distance is measured in. Each end then reaches it by running parallel to the
+                    // line — which for the line's own end is the line carried on, and for the point
+                    // is the same rule read the other way.
+                    let along = run / reach;
+                    let across = egui::vec2(along.y, -along.x);
+                    // The point's own place on the line, so the drawing hangs off the nearest part
+                    // of the run rather than off whichever end the author happened to draw first.
+                    let foot = tail + along * (stood - tail).dot(along);
+                    let anchor = placed.unwrap_or_else(|| {
+                        stood + (foot - stood) / 2.0 + along * DIMENSION_STANDOFF_PX
+                    });
+                    ui::gizmos::dimension::axis_span(
+                        stood,
+                        foot,
+                        across,
+                        anchor,
+                        &voxels(length),
+                        rank,
+                    )
+                }
+                document::sketch::Dimension::Radius { curve, length } => {
+                    let form = producer.sketch.circular_form(curve, context)?;
+                    let edge = [form.center[0] + form.radius, form.center[1]];
+                    let (Some(center), Some(edge)) = (to_px(form.center), to_px(edge)) else {
+                        return None;
+                    };
+                    let radius_px = center.distance(edge);
                     let anchor = placed.unwrap_or_else(|| default_rim_anchor(center, radius_px));
-                    ui::gizmos::dimension::radius(center, radius_px, anchor, &voxels(length), rank)
+                    ui::gizmos::dimension::radius(
+                        center,
+                        radius_px,
+                        anchor,
+                        drawn_rim(&producer.sketch, curve, center, &to_px),
+                        &voxels(length),
+                        rank,
+                    )
                 }
                 document::sketch::Dimension::Diameter { curve, length } => {
                     let form = producer.sketch.circular_form(curve, context)?;
-                    let rim = [form.center[0] + form.radius, form.center[1]];
-                    let (Some(center), Some(rim)) = (to_px(form.center), to_px(rim)) else {
+                    let edge = [form.center[0] + form.radius, form.center[1]];
+                    let (Some(center), Some(edge)) = (to_px(form.center), to_px(edge)) else {
                         return None;
                     };
-                    let radius_px = center.distance(rim);
+                    let radius_px = center.distance(edge);
                     let anchor = placed.unwrap_or_else(|| default_rim_anchor(center, radius_px));
                     ui::gizmos::dimension::diameter(
                         center,
                         radius_px,
                         anchor,
+                        drawn_rim(&producer.sketch, curve, center, &to_px),
                         &voxels(length),
                         rank,
                     )
@@ -7502,7 +7551,9 @@ fn nearest_sketch_edge_for_requirement(
     circle: Option<(SketchEdgeHit, f32)>,
 ) -> Option<SketchEdgeHit> {
     match requirement {
-        ui::panel::PickRequirement::Segment => segment.map(|(hit, _)| hit),
+        ui::panel::PickRequirement::Segment | ui::panel::PickRequirement::PointOrLine => {
+            segment.map(|(hit, _)| hit)
+        }
         // The narrowed second slot filters by KIND rather than by an arm per curve kind, so a
         // curve kind added to the document needs nothing here and cannot silently fall through to
         // the general comparison.
@@ -7866,6 +7917,49 @@ fn corner_holds(first: egui::Vec2, second: egui::Vec2, at: egui::Vec2) -> bool {
     } else {
         (sweep..=0.0).contains(&toward)
     }
+}
+
+/// How much of its own circle `curve` actually draws, seen from `center` on screen — `None` for a
+/// whole circle, which draws all of it.
+///
+/// The turn is read on SCREEN and its direction is found by projecting the curve's own midpoint,
+/// not by carrying the plane's counter-clockwise sense across: a sketch seen from behind its plane
+/// runs the other way round, and an extension drawn the long way round a rim it should have met in
+/// a few degrees is the failure that would say so.
+fn drawn_rim(
+    sketch: &document::sketch::Sketch,
+    curve: document::sketch::SketchCurve,
+    center: egui::Pos2,
+    to_px: &dyn Fn([f64; 2]) -> Option<egui::Pos2>,
+) -> Option<ui::gizmos::dimension::Rim> {
+    let document::sketch::SketchCurve::Arc(arc) = curve else {
+        return None;
+    };
+    let form = sketch.arc_form_of(arc)?;
+    // Halfway along the curve, found by turning the start point half the sweep about the center —
+    // a point ON the drawing, so whichever way round the screen shows it is the way it is drawn.
+    let (sine, cosine) = (form.sweep_degrees / 2.0).to_radians().sin_cos();
+    let reach = [form.from[0] - form.center[0], form.from[1] - form.center[1]];
+    let middle = [
+        form.center[0] + reach[0] * cosine - reach[1] * sine,
+        form.center[1] + reach[0] * sine + reach[1] * cosine,
+    ];
+    let bearing = |at: [f64; 2]| {
+        let out = to_px(at)? - center;
+        (out.length() > f32::EPSILON).then(|| out)
+    };
+    let (from, middle, to) = (bearing(form.from)?, bearing(middle)?, bearing(form.to)?);
+    let direction = if signed_turn(from, middle) >= 0.0 {
+        1.0
+    } else {
+        -1.0
+    };
+    let from = from.y.atan2(from.x);
+    let round = ((to.y.atan2(to.x) - from) * direction).rem_euclid(std::f32::consts::TAU);
+    Some(ui::gizmos::dimension::Rim {
+        from,
+        turn: direction * round,
+    })
 }
 
 /// The two bearings an angular dimension is struck between, and how far each leg reaches THAT WAY.

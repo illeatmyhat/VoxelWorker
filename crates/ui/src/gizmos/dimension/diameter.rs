@@ -15,7 +15,7 @@
 
 use egui::{Pos2, Vec2};
 
-use super::{arrowhead, value_width, Anchor, Drawing, Label, Piece, Rank, ARROW_LENGTH, GAP};
+use super::{arrowhead, value_width, Anchor, Drawing, Label, Piece, Rank, Rim, ARROW_LENGTH, GAP};
 
 /// Half the center mark's arm length, matching [`radius`](super::radius())'s cross.
 const CENTER_ARM: f32 = 4.0;
@@ -26,7 +26,17 @@ const CENTER_ARM: f32 = 4.0;
 /// inferred from whether the arrows themselves fit: a circle wide enough for two arrows is not
 /// wide enough for two arrows and a number between them, and that is precisely the case a single
 /// test loses — the same middle row [`span`](super::span()) documents.
-pub fn diameter(center: Pos2, radius: f32, anchor: Pos2, value: &str, rank: Rank) -> Drawing {
+///
+/// `rim` is [`radius`](super::radius())'s, asked TWICE: a through-line meets the circle at both
+/// ends, so an arc read across can fall short of its own drawing at either or both of them.
+pub fn diameter(
+    center: Pos2,
+    radius: f32,
+    anchor: Pos2,
+    rim: Option<Rim>,
+    value: &str,
+    rank: Rank,
+) -> Drawing {
     let text = rank.indication("D", value);
     let width = value_width(&text);
 
@@ -52,6 +62,16 @@ pub fn diameter(center: Pos2, radius: f32, anchor: Pos2, value: &str, rank: Rank
             center + Vec2::Y * CENTER_ARM,
         ]),
     ];
+    for reaching in [ray, -ray] {
+        if let Some((from, to)) = super::radius::carry(rim, radius, reaching) {
+            pieces.push(Piece::Arc {
+                center,
+                radius,
+                from,
+                to,
+            });
+        }
+    }
 
     let label = if across >= 2.0 * ARROW_LENGTH + width + 2.0 * GAP {
         // Everything inside: the line stops at the arrow bases so nothing pokes past a tip, and

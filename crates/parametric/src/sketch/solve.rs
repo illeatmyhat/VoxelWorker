@@ -199,6 +199,27 @@ pub enum Relation {
         axis: usize,
         length: f64,
     },
+    /// A point stands a given distance from the LINE a segment draws.
+    ///
+    /// Measured across that line — the shortest way — and against the whole line rather than the
+    /// run the segment happens to occupy: a standoff is a fact about a direction and a point, and
+    /// it does not stop being true past where the drawn part ends.
+    ///
+    /// **Two parallel lines a distance apart is this claim**, taken at one of the second line's
+    /// ends, and so is a point standing off a line. They are one relation because they are one
+    /// piece of arithmetic; what distinguishes them is which point the author picked, which the
+    /// document records rather than the solver inferring.
+    ///
+    /// The residual is `|cross(unit(to − from), point − from)| − distance`, absolute for the same
+    /// reason [`AxisDistance`](Self::AxisDistance) is: the slope is a sign, defined everywhere the
+    /// claim can hold, and it does not forbid a solve from carrying the point clean across the
+    /// line and settling on the other side of it. A stored side would, at the cost of a branch the
+    /// author never chose. Not seen, and cheap to add if it is.
+    PointLineDistance {
+        point: PointId,
+        line: SegmentId,
+        distance: f64,
+    },
     /// A curve that turns stands a given distance from its own center, everywhere.
     ///
     /// One row, and the same row whether the curve is an arc or a circle: both answer
@@ -334,6 +355,7 @@ impl Relation {
             | Self::Equal { .. }
             | Self::Tangent { .. }
             | Self::TangentDirection { .. }
+            | Self::PointLineDistance { .. }
             | Self::PointOnCurve { .. } => 1,
             Self::Symmetry { first, .. } => match first {
                 SketchCurve::Segment(_) => 4,
@@ -671,6 +693,7 @@ impl ProblemBuilder {
             let points = match *relation {
                 Relation::Fix { point, .. }
                 | Relation::Midpoint { point, .. }
+                | Relation::PointLineDistance { point, .. }
                 | Relation::PointOnCurve { point, .. } => vec![point],
                 Relation::Distance { from, to, .. } | Relation::AxisDistance { from, to, .. } => {
                     vec![from, to]
@@ -694,6 +717,7 @@ impl ProblemBuilder {
             let segments = match *relation {
                 Relation::Horizontal { segment }
                 | Relation::Vertical { segment }
+                | Relation::PointLineDistance { line: segment, .. }
                 | Relation::Midpoint { segment, .. } => vec![segment],
                 Relation::Parallel { first, second }
                 | Relation::Perpendicular { first, second }
@@ -1048,6 +1072,15 @@ impl Problem {
             Relation::Coincident { first, second } => Ok(Resolved::Coincident {
                 first: point(first)?,
                 second: point(second)?,
+            }),
+            Relation::PointLineDistance {
+                point: stood,
+                line,
+                distance,
+            } => Ok(Resolved::PointLineDistance {
+                point: point(stood)?,
+                line: segment(line)?,
+                distance,
             }),
             Relation::Parallel { first, second } => Ok(Resolved::Parallel {
                 first: segment(first)?,
@@ -2907,6 +2940,11 @@ enum Resolved {
         axis: usize,
         length: f64,
     },
+    PointLineDistance {
+        point: usize,
+        line: SegmentSlots,
+        distance: f64,
+    },
     Coincident {
         first: usize,
         second: usize,
@@ -3511,6 +3549,21 @@ impl ResidualSystem for Residuals<'_> {
                     into[row] = a[0] - b[0];
                     into[row + 1] = a[1] - b[1];
                     row += 2;
+                }
+                Resolved::PointLineDistance {
+                    point,
+                    line,
+                    distance,
+                } => {
+                    // How far ACROSS the line the point stands: the component of its offset from
+                    // the line's tail along the line's own normal, which is the cross product with
+                    // the unit direction. Measured against the infinite line, so it is unchanged by
+                    // where along the line the tail happens to sit.
+                    let unit = unit_along(&at, line);
+                    let (stood, tail) = (at(point), at(line.from));
+                    let across = unit[0] * (stood[1] - tail[1]) - unit[1] * (stood[0] - tail[0]);
+                    into[row] = across.abs() - distance;
+                    row += 1;
                 }
                 Resolved::Parallel { first, second } => {
                     // Cross(unit directions) is sine(angle): this remains scale independent.
@@ -5039,6 +5092,9 @@ impl Problem {
             Relation::PointOnCurve { point, curve } => std::iter::once(point)
                 .chain(self.points_of_curve(curve))
                 .collect(),
+            Relation::PointLineDistance { point, line, .. } => std::iter::once(point)
+                .chain(self.points_of_curve(SketchCurve::Segment(line)))
+                .collect(),
             Relation::Distance { from, to, .. } | Relation::AxisDistance { from, to, .. } => {
                 vec![from, to]
             }
@@ -5098,6 +5154,7 @@ impl Problem {
         match relation {
             Relation::Horizontal { segment }
             | Relation::Vertical { segment }
+            | Relation::PointLineDistance { line: segment, .. }
             | Relation::Midpoint { segment, .. } => vec![segment],
             Relation::Parallel { first, second }
             | Relation::Perpendicular { first, second }

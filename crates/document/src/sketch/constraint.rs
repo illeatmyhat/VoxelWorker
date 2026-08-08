@@ -230,6 +230,26 @@ pub enum Dimension {
         axis: InPlaneAxis,
         length: SketchLength,
     },
+    /// A point stands this far off the LINE a segment draws, measured straight across it.
+    ///
+    /// **Two parallel lines a distance apart is this member**, taken at one of the second line's
+    /// ends, and so is a point standing off a line. They are one claim because they are one
+    /// measurement; what differs is only which point the gesture picked, and that is recorded here
+    /// rather than left for a reader to guess. Where the two lines are held parallel the point's
+    /// place along its own line does not matter, which is what makes the reading stable.
+    ///
+    /// Measured against the whole line and not the drawn run, so an author can state the gap
+    /// between two lines that do not overlap at all — the ordinary case for a slot's two rails cut
+    /// to different lengths.
+    ///
+    /// [`Span`](Self::Span) is the other distance a pair of picks can mean and stays separate:
+    /// that one is between two PLACES and this one is to a DIRECTION, and dragging either end of
+    /// the line along itself changes the first and leaves the second alone.
+    Gap {
+        point: EntityId,
+        segment: EntityId,
+        length: SketchLength,
+    },
     /// Two segments meet at this angle, measured turning from `first` to `second`.
     ///
     /// The one member whose value is an [`parametric::units::AngleMeasurement`] rather than a
@@ -286,6 +306,7 @@ impl Dimension {
         match *self {
             Self::Span { length, .. }
             | Self::SpanAlong { length, .. }
+            | Self::Gap { length, .. }
             | Self::Radius { length, .. }
             | Self::Diameter { length, .. } => Some(length),
             // An angle is a quantity, but it is not a length, and there is no length to answer
@@ -299,7 +320,11 @@ impl Dimension {
     const fn measures_a_distance(self) -> bool {
         match self {
             Self::Span { .. } | Self::SpanAlong { .. } => true,
-            Self::Radius { .. } | Self::Diameter { .. } | Self::Angle { .. } => false,
+            // A gap measures one, but it names a point and a SEGMENT — a pair no other member can
+            // hold — so the general rule already keeps it apart and this one never has to.
+            Self::Gap { .. } | Self::Radius { .. } | Self::Diameter { .. } | Self::Angle { .. } => {
+                false
+            }
         }
     }
 
@@ -312,6 +337,7 @@ impl Dimension {
         match self {
             Self::SpanAlong { axis, .. } => Some(axis),
             Self::Span { .. }
+            | Self::Gap { .. }
             | Self::Radius { .. }
             | Self::Diameter { .. }
             | Self::Angle { .. } => None,
@@ -550,6 +576,9 @@ impl ConstraintKind {
             Self::Fix { point, .. }
             | Self::Quantize { point, .. }
             | Self::Midpoint { point, .. }
+            // A gap's line has two ends of its own, but they are not what the claim is about: it
+            // holds against the whole line, so walking either of them along it asserts nothing.
+            | Self::Dimension(Dimension::Gap { point, .. })
             | Self::PointOnCurve { point, .. } => vec![point],
             Self::Curvature { joint, .. } => vec![joint],
             Self::Dimension(
@@ -672,7 +701,11 @@ impl ConstraintKind {
                 [first.min(second), first.max(second)]
             }
             Self::Symmetry { first, second, .. } => [first.id(), second.id()],
-            Self::Midpoint { point, segment } => [point, segment],
+            // Ordered rather than sorted: the two ids come from different stores and play
+            // different parts, so swapping them would name a different claim rather than the same
+            // one written backwards.
+            Self::Dimension(Dimension::Gap { point, segment, .. })
+            | Self::Midpoint { point, segment } => [point, segment],
             Self::PointOnCurve { point, curve } => [point, curve.id()],
             Self::Curvature { joint, against } => [joint, against.id()],
         }
@@ -772,7 +805,8 @@ impl ConstraintKind {
             | Self::Perpendicular { first, second }
             | Self::Equal { first, second }
             | Self::Collinear { first, second } => vec![first, second],
-            Self::Midpoint { point, segment } => vec![point, segment],
+            Self::Dimension(Dimension::Gap { point, segment, .. })
+            | Self::Midpoint { point, segment } => vec![point, segment],
             Self::PointOnCurve { point, curve } => vec![point, curve.id()],
             Self::Curvature { joint, against } => vec![joint, against.id()],
             Self::Tangent { first, second, .. } | Self::Concentric { first, second } => {
@@ -1368,6 +1402,17 @@ fn relation_for(
                 to,
                 axis: axis.coordinate(),
                 length: length.value(),
+            }),
+        ConstraintKind::Dimension(Dimension::Gap {
+            point: stood,
+            segment: line,
+            length,
+        }) => point(stood)
+            .zip(segment(line))
+            .map(|(point, line)| Relation::PointLineDistance {
+                point,
+                line,
+                distance: length.value(),
             }),
         ConstraintKind::Dimension(Dimension::Radius {
             curve: subject,

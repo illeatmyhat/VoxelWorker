@@ -25,6 +25,20 @@ const fn whole_arm(reach: f32) -> dimension::Leg {
     }
 }
 
+/// Draws the part of a circle an arc actually occupies, in geometry ink — the sheet has no sketch
+/// to point at, so the specimen has to draw its own curve for the dimension to fall short of.
+fn rim_curve(painter: &Painter, center: Pos2, radius: f32, rim: dimension::Rim) {
+    let steps = 24;
+    let at = |step: i32| {
+        #[allow(clippy::cast_precision_loss)]
+        let bearing = rim.turn.mul_add(step as f32 / steps as f32, rim.from);
+        center + Vec2::new(bearing.cos(), bearing.sin()) * radius
+    };
+    for step in 0..steps {
+        gizmos::segment(painter, at(step), at(step + 1));
+    }
+}
+
 /// Draws the sketch line an angle's leg is read off, over the interval that line actually occupies.
 fn arm(painter: &Painter, vertex: Pos2, bearing: f32, leg: dimension::Leg) {
     let along = Vec2::new(bearing.cos(), bearing.sin());
@@ -129,6 +143,54 @@ impl Sheet {
         );
         self.specimen_row(
             ui,
+            "gap · a point off a line · two rails that never meet",
+            "One measurement reached by two gestures. The dimension line runs ACROSS the line it \
+             is measured against, so the two extension lines run parallel to that line and each \
+             end reaches by its own perpendicular. Left: a point standing off a rail. Right: two \
+             parallel rails, set past each other so neither perpendicular foot lands on the \
+             other's drawn run — the extension carries on past the end, because the claim is \
+             against the whole line and not the piece of it that is drawn.",
+            |p, s| {
+                let rail = (
+                    Pos2::new(s.left() + 16.0, s.bottom() - 26.0),
+                    Pos2::new(s.left() + 96.0, s.bottom() - 26.0),
+                );
+                gizmos::segment(p, rail.0, rail.1);
+                let stood = Pos2::new(s.left() + 62.0, s.bottom() - 70.0);
+                gizmos::vertex_handle(p, stood, 3.0, gizmos::HandleState::Idle, false);
+                dimension::axis_span(
+                    stood,
+                    Pos2::new(stood.x, rail.0.y),
+                    Vec2::Y,
+                    Pos2::new(s.left() + 30.0, s.bottom() - 48.0),
+                    "44",
+                    Rank::Driving,
+                )
+                .paint(p);
+
+                let along = Vec2::new(0.6, -0.8);
+                let across = Vec2::new(along.y, -along.x);
+                let lower = Pos2::new(s.left() + 118.0, s.bottom() - 26.0);
+                gizmos::segment(p, lower, lower + along * 44.0);
+                // Parallel, twenty-six across, and slid along so the two runs barely
+                // overlap.
+                let upper = lower - across * 26.0 + along * 34.0;
+                gizmos::segment(p, upper, upper + along * 44.0);
+                gizmos::vertex_handle(p, upper, 3.0, gizmos::HandleState::Idle, false);
+                let foot = lower + along * (upper - lower).dot(along);
+                dimension::axis_span(
+                    upper,
+                    foot,
+                    across,
+                    upper - across * 13.0 - along * 22.0,
+                    "26",
+                    Rank::Driving,
+                )
+                .paint(p);
+            },
+        );
+        self.specimen_row(
+            ui,
             "radius · anchor outside / inside the curve",
             "The arc point is DERIVED from the anchor, never stored beside it: the leader meets \
              the curve on the anchor's own ray, so no drag can make a radius stop pointing at its \
@@ -143,6 +205,7 @@ impl Sheet {
                     outside,
                     20.0,
                     Pos2::new(s.left() + 74.0, s.top() + 26.0),
+                    None,
                     "20",
                     Rank::Driving,
                 )
@@ -154,6 +217,7 @@ impl Sheet {
                     inside,
                     34.0,
                     Pos2::new(s.left() + 166.0, s.center().y - 8.0),
+                    None,
                     "34",
                     Rank::Driving,
                 )
@@ -177,6 +241,7 @@ impl Sheet {
                     wide,
                     30.0,
                     Pos2::new(s.left() + 78.0, s.center().y - 18.0),
+                    None,
                     "30",
                     Rank::Driving,
                 )
@@ -188,7 +253,51 @@ impl Sheet {
                     tight,
                     12.0,
                     Pos2::new(s.left() + 190.0, s.center().y - 22.0),
+                    None,
                     "12",
+                    Rank::Driving,
+                )
+                .paint(p);
+            },
+        );
+        self.specimen_row(
+            ui,
+            "radius · a leader the arc does not reach",
+            "An arc draws part of its circle and the annotation can be dragged anywhere round it, \
+             so the leader can land on a bearing the curve never gets to. The curve is carried \
+             round to meet it, out of whichever of its two ends is nearer — the same rule the \
+             angle's doglegs follow, on a curve instead of a line. It applies to BOTH drawings: \
+             left, the anchor outside; right, the anchor pulled inside, where the leader runs out \
+             from the center and still has to arrive at the rim.",
+            |p, s| {
+                let outside = Pos2::new(s.left() + 42.0, s.center().y + 6.0);
+                let short = dimension::Rim {
+                    from: -2.5,
+                    turn: 1.1,
+                };
+                rim_curve(p, outside, 28.0, short);
+                dimension::radius(
+                    outside,
+                    28.0,
+                    Pos2::new(s.left() + 92.0, s.center().y + 26.0),
+                    Some(short),
+                    "28",
+                    Rank::Driving,
+                )
+                .paint(p);
+
+                let inside = Pos2::new(s.left() + 150.0, s.center().y + 6.0);
+                let half = dimension::Rim {
+                    from: -0.5,
+                    turn: -1.9,
+                };
+                rim_curve(p, inside, 32.0, half);
+                dimension::radius(
+                    inside,
+                    32.0,
+                    Pos2::new(s.left() + 164.0, s.center().y + 20.0),
+                    Some(half),
+                    "32",
                     Rank::Driving,
                 )
                 .paint(p);

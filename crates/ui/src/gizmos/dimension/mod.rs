@@ -179,6 +179,7 @@ mod span;
 pub use angle::{angle, Leg};
 pub use diameter::diameter;
 pub use radius::radius;
+
 pub use span::{axis_span, span};
 
 /// The chrome weight: dimension line, extension line and leader all share it, per ISO 128-20.
@@ -196,6 +197,50 @@ pub const GAP: f32 = 5.0;
 
 /// ISO 129-1: how far an extension line runs past the dimension line it crosses.
 const OVERRUN: f32 = 8.0;
+
+/// How much of its own circle a curve actually draws, as screen bearings.
+///
+/// A whole circle draws all of it and has nothing to fall short of, so it passes `None`. An arc
+/// draws part of it, and a radius or a diameter struck along the anchor's ray can land on the
+/// circle at a bearing the curve itself never reaches — the leader would then point at nothing.
+///
+/// Where that happens the drawing is carried round the circle to meet it, from whichever end of the
+/// curve is nearer. That is the same rule an angle's legs already follow, on a curve instead of a
+/// line: **the extension spans whatever the geometry does not**.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Rim {
+    /// Where the curve starts, as a bearing from the center (radians, y running down).
+    pub from: f32,
+    /// How far it turns to reach its other end. Signed, and never a whole turn.
+    pub turn: f32,
+}
+
+impl Rim {
+    /// How far round from `self.from`, in the direction the curve turns, `bearing` lies.
+    fn round_to(self, bearing: f32) -> f32 {
+        ((bearing - self.from) * self.turn.signum()).rem_euclid(std::f32::consts::TAU)
+    }
+
+    /// The arc that carries this curve round to `bearing`, as `(from, to)` bearings — `None` when
+    /// the curve already reaches it. `overrun` is the extra turn past the meeting point, so the
+    /// extension crosses what it is reaching for rather than stopping dead on it.
+    fn carry_to(self, bearing: f32, overrun: f32) -> Option<(f32, f32)> {
+        let direction = self.turn.signum();
+        let round = self.round_to(bearing);
+        if round <= self.turn.abs() {
+            return None;
+        }
+        // Past the far end, or short of the near one — whichever is the shorter way to reach it.
+        let past = round - self.turn.abs();
+        let short = std::f32::consts::TAU - round;
+        Some(if past <= short {
+            let end = self.from + self.turn;
+            (end, end + direction * (past + overrun))
+        } else {
+            (self.from, self.from - direction * (short + overrun))
+        })
+    }
+}
 
 /// The value's type size, and the monospace advance that follows from it.
 ///

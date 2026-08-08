@@ -69,6 +69,12 @@ pub enum PickRequirement {
     /// document needs nothing here.
     MatchingCurve(SketchCurve),
     PointOrCurve,
+    /// A point, or a line — the two things a lone point can be measured to.
+    ///
+    /// Narrower than [`PointOrCurve`](Self::PointOrCurve) because a rim is not one of them: how far
+    /// a point stands from a circle is a question about the circle's own size as well as its place,
+    /// and no member of the family states it.
+    PointOrLine,
 }
 
 impl PickRequirement {
@@ -80,12 +86,14 @@ impl PickRequirement {
     /// cannot be applied. The refusal belongs at the click, where the tool is still waiting.
     fn accepts(self, entity: SketchEntity) -> bool {
         let curve = match entity {
-            SketchEntity::Point(_) => return matches!(self, Self::Point | Self::PointOrCurve),
+            SketchEntity::Point(_) => {
+                return matches!(self, Self::Point | Self::PointOrCurve | Self::PointOrLine)
+            }
             SketchEntity::Curve(curve) => curve,
         };
         match self {
             Self::Point => false,
-            Self::Segment => matches!(curve, SketchCurve::Segment(_)),
+            Self::Segment | Self::PointOrLine => matches!(curve, SketchCurve::Segment(_)),
             Self::Curve | Self::PointOrCurve => curve.carries_relation_geometry(),
             Self::CircularCurve => curve.is_circular(),
             Self::DirectedCurve => {
@@ -106,6 +114,7 @@ impl PickRequirement {
             Self::DirectedCurve => "a line or an arc",
             Self::MatchingCurve(like) => another_of_the_same_kind(like),
             Self::PointOrCurve => "a point or a curve",
+            Self::PointOrLine => "a point or a line",
         }
     }
 
@@ -132,6 +141,7 @@ impl PickRequirement {
             }
             Self::MatchingCurve(_) => "nothing under the cursor — pick a curve of the same kind",
             Self::PointOrCurve => "nothing under the cursor — pick a point or a curve",
+            Self::PointOrLine => "nothing under the cursor — pick a point or a line",
         }
     }
 }
@@ -454,7 +464,7 @@ impl ArmedConstraint {
             return match self.picked.first() {
                 None => Some(PickRequirement::PointOrCurve),
                 Some(_) if self.picked.len() > 1 => None,
-                Some(SketchEntity::Point(_)) => Some(PickRequirement::Point),
+                Some(SketchEntity::Point(_)) => Some(PickRequirement::PointOrLine),
                 Some(SketchEntity::Curve(_)) => None,
             };
         }
@@ -567,6 +577,9 @@ impl ArmedConstraint {
             return Offer::Refused(match slot {
                 PickRequirement::Point => "that is not a point",
                 PickRequirement::Segment => "that is not a line",
+                PickRequirement::PointOrLine => {
+                    "pick a point or a line — a rim states its own size, not a distance to one"
+                }
                 // An aggregate reaches this arm too, and the message is right for it: no relation
                 // reads a spline or an ellipse as a whole shape, so to this slot it is not one.
                 PickRequirement::Curve => "that is not a curve a constraint can hold",
@@ -871,10 +884,23 @@ fn seeded_dimension(
         (Some(SketchEntity::Point(from)), Some(SketchEntity::Point(to))) => {
             span_between(sketch, *from, *to, anchor)?
         }
+        // A point measured to a line is measured ACROSS it, which is the one distance the pair
+        // names — a point has no place along a line to be measured to.
+        (
+            Some(SketchEntity::Point(point)),
+            Some(SketchEntity::Curve(SketchCurve::Segment(segment))),
+        ) => gap_between(sketch, *point, *segment)?,
         (
             Some(SketchEntity::Curve(SketchCurve::Segment(first))),
             Some(SketchEntity::Curve(second)),
         ) => {
+            // Two lines that never meet have no corner for an angular dimension to be struck in,
+            // so what the pair states is the distance across them instead. Asked of the SAME
+            // intersection the gizmo asks, so the seed and the drawing can never disagree about
+            // which of the two claims this is.
+            if let Some(across) = lines_that_never_meet(sketch, *first, *second, anchor) {
+                return Ok(ConstraintKind::Dimension(across?));
+            }
             let arms = (
                 document::sketch::AngleArm::Segment { segment: *first },
                 angle_arm(sketch, *second, loci.get(1).copied()).ok_or(GONE)?,
@@ -942,6 +968,78 @@ fn span_between(
             length: SketchLength::from_continuous((head[0] - tail[0]).hypot(head[1] - tail[1])),
         },
     })
+}
+
+/// How far `point` stands off the line `segment` draws, seeded at the distance the drawing shows.
+///
+/// # Errors
+///
+/// [`GONE`] when either has left the drawing, and a named refusal for a line of no length, which
+/// draws no line and so gives nothing to measure across.
+fn gap_between(
+    sketch: &Sketch,
+    point: EntityId,
+    segment: EntityId,
+) -> Result<Dimension, &'static str> {
+    let stood = point_at(sketch, point).ok_or(GONE)?;
+    let (tail, head) = segment_ends(sketch, segment).ok_or(GONE)?;
+    let run = [head[0] - tail[0], head[1] - tail[1]];
+    let length = run[0].hypot(run[1]);
+    if length <= f64::EPSILON {
+        return Err("that line has no direction to measure across");
+    }
+    let across = run[0].mul_add(stood[1] - tail[1], -(run[1] * (stood[0] - tail[0]))) / length;
+    Ok(Dimension::Gap {
+        point,
+        segment,
+        length: SketchLength::from_continuous(across.abs()),
+    })
+}
+
+/// The gap two lines with no corner between them state, or `None` when they do have one and the
+/// pair is an angle after all.
+///
+/// The point is an END of the SECOND line — the one nearer where the annotation was dropped, which
+/// is the end the author is pointing at. Where the two are held parallel it does not matter which,
+/// and where they are not the drawing says so by which end it hangs off.
+fn lines_that_never_meet(
+    sketch: &Sketch,
+    first: EntityId,
+    second: SketchCurve,
+    anchor: Option<[f64; 2]>,
+) -> Option<Result<Dimension, &'static str>> {
+    let SketchCurve::Segment(second) = second else {
+        return None;
+    };
+    let (Some(here), Some(there)) = (segment_ends(sketch, first), segment_ends(sketch, second))
+    else {
+        return None;
+    };
+    if substrate::geom2d::line_intersection(here.0, here.1, there.0, there.1).is_some() {
+        return None;
+    }
+    let held = sketch.segments().iter().find(|held| held.id == second)?;
+    let nearer = match anchor {
+        None => held.from,
+        Some(at) => {
+            let reach = |id| {
+                point_at(sketch, id)
+                    .map_or(f64::INFINITY, |end| (end[0] - at[0]).hypot(end[1] - at[1]))
+            };
+            if reach(held.to) < reach(held.from) {
+                held.to
+            } else {
+                held.from
+            }
+        }
+    };
+    Some(gap_between(sketch, nearer, first))
+}
+
+/// A segment's two placed ends.
+fn segment_ends(sketch: &Sketch, segment: EntityId) -> Option<([f64; 2], [f64; 2])> {
+    let held = sketch.segments().iter().find(|held| held.id == segment)?;
+    Some((point_at(sketch, held.from)?, point_at(sketch, held.to)?))
 }
 
 /// The one refusal both measured members share, spelled once because it is one `&'static str`.
@@ -1202,12 +1300,15 @@ mod tests {
         // Two points: a span, seeded at the distance they already stand apart.
         let mut span = ArmedConstraint::new(ConstraintVerb::Dimension);
         assert_eq!(span.offer(SketchEntity::Point(from), &sketch), Offer::Taken);
-        // Narrowed by the first pick — a span from a point to a line is not a quantity this
-        // family states.
-        assert_eq!(span.wants(), Some(PickRequirement::Point));
+        // Narrowed by the first pick — a second point states a span and a line states the gap
+        // across it, but a rim states neither, because how far a point stands from a circle is a
+        // question about the circle's own size as much as its place.
+        assert_eq!(span.wants(), Some(PickRequirement::PointOrLine));
         assert_eq!(
-            span.offer(SketchEntity::Curve(SketchCurve::Segment(first)), &sketch),
-            Offer::Refused("that is not a point")
+            span.offer(SketchEntity::Curve(SketchCurve::Circle(circle)), &sketch),
+            Offer::Refused(
+                "pick a point or a line — a rim states its own size, not a distance to one"
+            )
         );
         assert_eq!(span.offer(SketchEntity::Point(to), &sketch), Offer::Placing);
         let ConstraintKind::Dimension(Dimension::Span { length, .. }) = span
@@ -1257,6 +1358,99 @@ mod tests {
             (degrees.to_degrees_f64() - expected).abs() < 0.01,
             "{}",
             degrees.to_degrees_f64()
+        );
+    }
+
+    /// **Two lines with no corner between them state the distance across them, not an angle.**
+    ///
+    /// The seed asks the very same `substrate::geom2d::line_intersection` the gizmo asks, so
+    /// there is no threshold that can drift between what the gesture recorded and what the drawing
+    /// finds. Both gestures that mean this distance — a point to a line, and two parallel lines —
+    /// land on one member, because they are one measurement.
+    #[test]
+    fn two_lines_that_never_meet_state_the_distance_across_them() {
+        let mut sketch = Sketch::empty(PlaneAxis::Z);
+        // Two rails at 3-4-5, four apart across, and set past each other along so neither one's
+        // perpendicular foot lands on the other's drawn run.
+        let lower = [
+            sketch.add_free_point(SketchPoint::from_continuous(0.0, 0.0)),
+            sketch.add_free_point(SketchPoint::from_continuous(30.0, 40.0)),
+        ];
+        let upper = [
+            sketch.add_free_point(SketchPoint::from_continuous(44.0, 47.0)),
+            sketch.add_free_point(SketchPoint::from_continuous(74.0, 87.0)),
+        ];
+        let first = sketch.connect(lower[0], lower[1]).expect("the lower rail");
+        let second = sketch.connect(upper[0], upper[1]).expect("the upper rail");
+
+        let mut across = ArmedConstraint::new(ConstraintVerb::Dimension);
+        assert_eq!(
+            across.offer(SketchEntity::Curve(SketchCurve::Segment(first)), &sketch),
+            Offer::Placing
+        );
+        assert_eq!(
+            across.offer(SketchEntity::Curve(SketchCurve::Segment(second)), &sketch),
+            Offer::Placing
+        );
+        // Dropped nearer the upper rail's tail, so that is the end the gap hangs off.
+        let ConstraintKind::Dimension(Dimension::Gap {
+            point,
+            segment,
+            length,
+        }) = across
+            .dimension_dropped_at([40.0, 46.0], &sketch, density_16())
+            .expect("two rails with no corner have a distance")
+        else {
+            panic!("lines that never meet state a gap and not an angle");
+        };
+        assert_eq!((point, segment), (upper[0], first));
+        // (44,47) stands off the line through (0,0) bearing (3,4)/5 by |3*47 - 4*44| / 5 = 7.
+        assert!((length.value() - 7.0).abs() < 1.0e-6, "{}", length.value());
+
+        // The other end of the same rail is the same distance away, and dropping there says so.
+        let ConstraintKind::Dimension(Dimension::Gap { point, .. }) = across
+            .dimension_dropped_at([80.0, 88.0], &sketch, density_16())
+            .expect("the far end is as good a place to hang it")
+        else {
+            panic!("still a gap");
+        };
+        assert_eq!(point, upper[1]);
+
+        // And a point picked against a line is the same member, reached the other way round.
+        let mut off = ArmedConstraint::new(ConstraintVerb::Dimension);
+        assert_eq!(
+            off.offer(SketchEntity::Point(upper[0]), &sketch),
+            Offer::Taken
+        );
+        assert_eq!(off.wants(), Some(PickRequirement::PointOrLine));
+        assert_eq!(
+            off.offer(SketchEntity::Curve(SketchCurve::Segment(first)), &sketch),
+            Offer::Placing
+        );
+        assert_eq!(
+            off.kind_at_context(&sketch, density_16()),
+            Ok(ConstraintKind::Dimension(Dimension::Gap {
+                point: upper[0],
+                segment: first,
+                length: SketchLength::from_continuous(7.0),
+            }))
+        );
+
+        // A rim has no such distance to state, and the gesture says why rather than seeding one.
+        let center = sketch.add_free_point(SketchPoint::from_continuous(-20.0, -20.0));
+        let circle = sketch
+            .circle_about(center, document::sketch::SketchLength::new(5))
+            .expect("a rim");
+        let mut refused = ArmedConstraint::new(ConstraintVerb::Dimension);
+        assert_eq!(
+            refused.offer(SketchEntity::Point(upper[0]), &sketch),
+            Offer::Taken
+        );
+        assert_eq!(
+            refused.offer(SketchEntity::Curve(SketchCurve::Circle(circle)), &sketch),
+            Offer::Refused(
+                "pick a point or a line — a rim states its own size, not a distance to one"
+            )
         );
     }
 

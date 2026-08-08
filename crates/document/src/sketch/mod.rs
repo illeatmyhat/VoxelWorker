@@ -4587,6 +4587,35 @@ impl Sketch {
                     return Err(ConstraintRefusal::Impossible);
                 }
             }
+            ConstraintKind::Dimension(Dimension::Gap {
+                point,
+                segment,
+                length,
+            }) => {
+                let (true, Some(line)) = (known_point(point), live_segment(segment)) else {
+                    return Err(ConstraintRefusal::UnknownEntity);
+                };
+                // A run of no length draws no line, so there is no direction to measure across.
+                // Read off where the ends STAND rather than which ids they are: two distinct
+                // points dropped on one place draw just as little.
+                let ends = [line.from, line.to].map(|end| {
+                    self.points
+                        .iter()
+                        .find(|point| point.id == end)
+                        .map(|point| point.at.in_plane())
+                });
+                let [Some(tail), Some(head)] = ends else {
+                    return Err(ConstraintRefusal::UnknownEntity);
+                };
+                if (head[0] - tail[0]).hypot(head[1] - tail[1]) <= f64::EPSILON {
+                    return Err(ConstraintRefusal::Impossible);
+                }
+                // Zero is refused for the reason a zero span is: a point ON the line is
+                // `PointOnCurve`, which asserts a place rather than a distance from one.
+                if !length.value().is_finite() || length.value() <= 0.0 {
+                    return Err(ConstraintRefusal::Impossible);
+                }
+            }
             ConstraintKind::Coincident { first, second } => {
                 if !known_point(first) || !known_point(second) {
                     return Err(ConstraintRefusal::UnknownEntity);
@@ -6259,6 +6288,7 @@ impl Sketch {
                 ConstraintKind::Dimension(
                     Dimension::Span { length, .. }
                     | Dimension::SpanAlong { length, .. }
+                    | Dimension::Gap { length, .. }
                     | Dimension::Radius { length, .. }
                     | Dimension::Diameter { length, .. },
                 ) => {
