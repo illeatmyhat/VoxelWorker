@@ -69,7 +69,7 @@ can be skipped entirely; one superseded *in part* cannot.
 | [0035](0035-the-sketch-tool-suite.md) | The sketch tool suite: a constraint solver, a geometric arrangement, a parametric library | Accepted; being built. Decision 3's badge pick **amended** by 0046 |
 | [0036](0036-parametric-sketch-solver-ownership.md) | Parametric owns continuous sketch solving | Accepted |
 | [0037](0037-curve-intrinsic-authority-and-evaluation-context.md) | Curve-intrinsic authority and density-aware evaluation | Accepted; the `ArcSweep` half **amended** by 0038 |
-| [0038](0038-a-point-is-placed-never-computed.md) | A point is placed, never computed | Accepted; being built. Amends 0037 for arcs |
+| [0038](0038-a-point-is-placed-never-computed.md) | A point is placed, never computed | Accepted; being built. Amends 0037 for arcs. §1's solver arrangement **amended** by 0039 (one column and two rows, not one row); amended 2026-08-07 with that pointer and two type names §1 got wrong |
 | [0039](0039-a-preference-is-measured-before-the-hand.md) | A preference is measured before the hand | Accepted. Amends 0038's solver consequence: an arc names its radius |
 | [0040](0040-a-drag-snaps-to-the-quantity-it-moves-along.md) | A drag snaps to the quantity it moves along | Accepted. Closes 0039's open consequence: an arc endpoint sweeps |
 | [0041](0041-a-gesture-is-read-from-where-it-started.md) | A gesture is read from where it started | Accepted. Slot spine handles deleted; count the hand that MOVED; a walk and its preference both measure from the opening |

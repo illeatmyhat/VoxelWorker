@@ -13,7 +13,7 @@
   sketch-plus-operation, and snap-as-constraint-stand-in are all retained; only "the profile *is* an
   ordered vertex list" is replaced.
 - **Relates to:** the authored-quantity rule (every coordinate is a
-  `Measurement`), [ADR 0017](0017-csg-composition.md) (the field algebra the flattened profile now
+  `Measurement`), [ADR 0017](0017-composition-beyond-union.md) (the field algebra the flattened profile now
   reuses in 2D; the no-cross-node-operand-targeting law region-picking is checked against),
   [ADR 0022](0022-document-dump-and-state-classification.md) (faces are `Derived`; picks are
   document intent), the field layer (the profile is the field's

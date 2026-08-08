@@ -1,6 +1,9 @@
 # ADR 0038 — A point is placed, never computed
 
-- **Status:** Accepted
+- **Status:** Accepted. §1's solver arrangement **amended** by
+  [ADR 0039](0039-a-preference-is-measured-before-the-hand.md) — an arc names its radius as a
+  column, so the sixth coordinate buys one column and two rows, not one row. See the amendment
+  below for the two names §1 gets wrong.
 - **Date:** 2026-08-05
 
 ## Context
@@ -45,7 +48,7 @@ naming the same id.
 
 **A point entity's coordinates are always authored. The drawing derives quantities, never points.**
 
-A quantity the drawing derives is a `Measurement` (ADR 0029) — an `Angle`, a `Length`, a ratio —
+A quantity the drawing derives is an authored-quantity measurement — an `Angle`, a `Length`, a ratio —
 computed on demand from the points that determine it and never persisted beside them. What the
 author placed is in the document; what follows from it is computed where it is needed.
 
@@ -122,3 +125,39 @@ residual removes — the two agree, and in a solved drawing the projection is th
 structure that keeps a point and a derived twin — `sync_tangent_arms` and `carry_authored_handles`
 maintain the mirrored arm. The same law would collapse them to one arm and a derived `Length`, and
 that is a separate decision made when it is taken.
+
+## Amendment, 2026-08-07 — §1 prices the arc wrongly, and names two types that do not exist
+
+Three corrections, none of which touch the law. The law is that a point is placed; what follows is
+housekeeping on how §1 said it.
+
+**The sixth coordinate is one column and two rows, not one row.**
+[ADR 0039](0039-a-preference-is-measured-before-the-hand.md) already decided this and says so in
+its own closing paragraph; §1 was never pointed back at, so a reader landing there reads a retired
+arrangement as current. What `ProblemBuilder::add_arc` actually does is mint an optional free
+positive-radius column per arc, seeded by `arc_radius_seed` — the MEAN of what the two ends
+currently say, so neither end is privileged mid-drag, which is exactly when the seed is read — and
+spend it on two rows, `‖center − from‖ = r` and `‖center − to‖ = r`. Subtract them and §1's
+equal-radius condition comes back exactly, so the freedom count is unchanged: six coordinates and
+one row is five, and so is six coordinates, one column and two rows. An arc whose ends both sit on
+its center gets no column and keeps §1's single row, because there is no positive radius to name.
+
+The column is **solver-internal**. Nothing writes it back; the document still derives an arc's
+radius from its three points on demand and never stores it beside them, which is what this record
+means by a derived quantity. Naming a quantity for the duration of one solve does not persist one.
+
+**`LengthMeasurement` names nothing.** §1 says an arc's radius "is derived as a `LengthMeasurement`".
+The type is `parametric::units::Measurement`, which is always a length; a sketch wraps it as
+`document::sketch::SketchLength`. §1's `AngleMeasurement` is right.
+
+**The authored-quantity family is separate static types, not one type with a kind.** The Decision
+paragraph above cited a since-consolidated record for "a `Measurement` — an `Angle`, a `Length`, a
+ratio", which reads as one kinded value. It is not: `Measurement` is a length (an exact-rational
+block term plus a whole-voxel term, evaluated at a density supplied per solve) and
+`AngleMeasurement` is an angle (exact degrees, density-free), and they are distinct types on
+purpose — they share retention semantics and none of the arithmetic, so a shared representation
+would put a kind check at every length call site that could never fail. The one place a kind is not
+known when the code is written is inside an expression, where `wall / gap` has no dimension until it
+is evaluated; that single case is served by `parametric::quantity::Quantity`, an exact value
+carrying a runtime `Dimension`. The dead link is rewritten to prose above, matching how the
+2026-07-31 consolidation handled every other reference to that record.

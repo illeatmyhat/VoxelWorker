@@ -12,7 +12,7 @@
   (Decision 3 below — an edge now takes the ends nothing else draws).
 - **Relates to:** the authored-quantity rule (`Measurement` grows a
   dimension and moves to a crate), the curve-native region
-  this builds on), [ADR 0017](0017-csg-composition.md) (the no-operand-targeting law that cuts
+  this builds on), [ADR 0017](0017-composition-beyond-union.md) (the no-operand-targeting law that cuts
   three tools), the substrate layer (where the continuous solver lives),
   [ADR 0022](0022-document-dump-and-state-classification.md) (what a solve writes).
 

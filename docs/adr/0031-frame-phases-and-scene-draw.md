@@ -3,7 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-07-23
 - **Relates to:** [ADR 0011](0011-gpu-brick-field-display-sink.md) (the model draw — brick raymarch
-  or cuboid mesh — is the one phase this refactor keeps special), [ADR 0018](0018-viewer-modes.md)
+  or cuboid mesh — is the one phase this refactor keeps special), [ADR 0018](0018-viewer-modes-and-the-root-part.md)
   (the over-model ghosts are the operand x-ray; the onion ghost rides the model phase),
   [ADR 0022](0022-document-dump-and-state-classification.md) (display toggles like the point-axes
   on-top flag are viewer state, not document).

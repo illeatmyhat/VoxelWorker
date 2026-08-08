@@ -7,10 +7,10 @@
   timeline entry is atomic, and undo history is transient. The mode shell, the sealed scope, the
   fused sketch-plus-operation, and live-real-edits-not-previews are all unchanged.
 - **Date:** 2026-07-22
-- **Relates to:** [ADR 0003 §3i](0003-shape-authoring.md) (the sketch→volume authoring atom this makes
-  interactive), [ADR 0017](0017-csg-composition.md) (the ordered fold + sealed composition scope +
-  the **no-operand-targeting** owner law this decision upholds), [ADR 0022](0022-document-dump-and-classified-state.md)
-  (mode + undo state are non-document, classified as view/derived), [ADR 0018](0018-viewer-modes.md)
+- **Relates to:** [ADR 0003 §3i](0003-foundation-rework.md) (the sketch→volume authoring atom this makes
+  interactive), [ADR 0017](0017-composition-beyond-union.md) (the ordered fold + sealed composition scope +
+  the **no-operand-targeting** owner law this decision upholds), [ADR 0022](0022-document-dump-and-state-classification.md)
+  (mode + undo state are non-document, classified as view/derived), [ADR 0018](0018-viewer-modes-and-the-root-part.md)
   (sketch mode is an *editing* mode, a different axis from the exclusive *viewer* render modes),
   the field layer (the profile is the field's meaning), and
   the continuous-placement rule (its position-snap `{None | Voxel | Block}` is reused for
