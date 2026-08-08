@@ -306,7 +306,7 @@ fn a_full_turn_profile_edge_is_the_relaxed_closed_case() {
     );
 
     // The tessellation walks the whole circle, not a chord's worth of it.
-    let interior = edge.interior_points(ARC_SAGITTA_TOLERANCE_VOXELS);
+    let interior = edge.interior_points(ARC_SAGITTA_TOLERANCE);
     assert!(
         interior.len() > 8,
         "a full turn needs a fan: {}",
@@ -857,7 +857,7 @@ fn flattening_a_circle_closes_the_ring_within_tolerance() {
         let mid = [(start[0] + end[0]) / 2.0, (start[1] + end[1]) / 2.0];
         let sagitta = 8.0 - mid[0].hypot(mid[1]);
         assert!(
-            sagitta <= ARC_SAGITTA_TOLERANCE_VOXELS + 1e-9,
+            sagitta <= ARC_SAGITTA_TOLERANCE + 1e-9,
             "chord {index} deviates {sagitta}"
         );
     }

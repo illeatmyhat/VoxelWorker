@@ -5526,14 +5526,9 @@ impl WindowedState {
         self.sketch_point_derived = handles.derived.clone();
         self.sketch_segments = handles.segments.clone();
 
-        // Arc chord polylines in PHYSICAL px (#102), tessellated for the SCREEN. The resolve's
-        // sagitta tolerance is measured in VOXELS, so an arc earns the same handful of chords at
-        // every zoom and draws as a visible polygon once a voxel is worth more than a few pixels.
-        // The projected radius says what a voxel is currently worth — one number that already
-        // carries the zoom, the foreshortening and the plane's tilt — and the tolerance follows
-        // from it. Only the pinned resolve tolerance is the profile's meaning; this is
-        // the same curve, drawn smoothly. A behind-camera chord vertex culls the whole arc,
-        // matching the segment rule: a partially-projected curve would fold across the viewport.
+        // Arc chord polylines in PHYSICAL px (#102), tessellated for the SCREEN. A behind-camera
+        // chord vertex culls the whole arc, matching the segment rule: a partially-projected curve
+        // would fold across the viewport.
         let to_viewport_px = |coord: [f64; 2]| {
             let vertex = handles.profile_to_render(coord);
             let clip = view_projection * glam::Vec4::new(vertex[0], vertex[1], vertex[2], 1.0);
@@ -5544,15 +5539,29 @@ impl WindowedState {
                 )
             })
         };
+        // The one rule every turn on this page is flattened by. A tolerance in the plane's own
+        // units earns a chord count from the arc's size in the PLANE, so the same handful of
+        // chords is drawn at every zoom and a magnified curve reads as a visible polygon. The
+        // projected radius says what a plane unit is currently worth in pixels — one number
+        // already carrying the zoom, the foreshortening and the plane's tilt — and the tolerance
+        // follows from it. Never coarser than the resolve tolerance, which is the profile's own
+        // meaning; this is the same curve, drawn smoothly.
+        let screen_chord_tolerance = |center: [f64; 2], on_rim: [f64; 2], radius: f64| {
+            to_viewport_px(center)
+                .zip(to_viewport_px(on_rim))
+                .map(|(center_px, rim_px)| f64::from(center_px.distance(rim_px)))
+                .filter(|radius_px| *radius_px > 1.0)
+                .map_or(document::sketch::ARC_SAGITTA_TOLERANCE, |radius_px| {
+                    radius * ARC_SCREEN_SAGITTA_PX / radius_px
+                })
+                .min(document::sketch::ARC_SAGITTA_TOLERANCE)
+        };
         for arc in &handles.arcs {
             let (arc_id, from, to, sweep) = (arc.entity, arc.from, arc.to, arc.sweep_degrees);
-            let tolerance = document::sketch::arc_center_radius(from, to, sweep)
-                .and_then(|(center, radius)| {
-                    let radius_px = to_viewport_px(center)?.distance(to_viewport_px(from)?);
-                    (radius_px > 1.0).then(|| radius * ARC_SCREEN_SAGITTA_PX / f64::from(radius_px))
-                })
-                .unwrap_or(document::sketch::ARC_SAGITTA_TOLERANCE_VOXELS)
-                .min(document::sketch::ARC_SAGITTA_TOLERANCE_VOXELS);
+            let tolerance = document::sketch::arc_center_radius(from, to, sweep).map_or(
+                document::sketch::ARC_SAGITTA_TOLERANCE,
+                |(center, radius)| screen_chord_tolerance(center, from, radius),
+            );
             let mut profile = vec![from];
             profile.extend(
                 document::sketch::arc_interior_points_within(from, to, sweep, tolerance)
@@ -5570,18 +5579,7 @@ impl WindowedState {
             let circle_id = circle.entity;
             let center = circle.center;
             let radius = circle.radius;
-            let Some(radius_px) = to_viewport_px(center)
-                .zip(to_viewport_px([center[0] + radius, center[1]]))
-                .map(|(center_px, edge_px)| center_px.distance(edge_px))
-            else {
-                continue;
-            };
-            let tolerance = if radius_px > 1.0 {
-                radius * ARC_SCREEN_SAGITTA_PX / f64::from(radius_px)
-            } else {
-                document::sketch::ARC_SAGITTA_TOLERANCE_VOXELS
-            }
-            .min(document::sketch::ARC_SAGITTA_TOLERANCE_VOXELS);
+            let tolerance = screen_chord_tolerance(center, [center[0] + radius, center[1]], radius);
             let profile = circle_ring(center, radius, tolerance);
             let projected: Option<Vec<egui::Pos2>> =
                 profile.into_iter().map(&to_viewport_px).collect();
@@ -6065,24 +6063,31 @@ impl WindowedState {
                         from_radians,
                         sweep_radians,
                     } => {
-                        // Its own tessellation rather than `arc_interior_points`, which walks
-                        // between two stored ENDS; a reach is named by a turn, and both of its
-                        // ends are wanted.
-                        let steps = document::sketch::arc_chord_count(
-                            radius,
-                            sweep_radians.to_degrees(),
-                            document::sketch::ARC_SAGITTA_TOLERANCE_VOXELS,
+                        // A reach is named by a turn and `arc_interior_points_within` walks between
+                        // two stored ends, so the turn's ends are struck on the rim first. From
+                        // there it is the same flattening every other curve on the page gets,
+                        // against the same screen tolerance — a reach is a piece of its curve, and
+                        // drawing it to a coarser standard would show its host as a polygon.
+                        let rim = |bearing: f64| {
+                            [
+                                radius.mul_add(bearing.cos(), center[0]),
+                                radius.mul_add(bearing.sin(), center[1]),
+                            ]
+                        };
+                        let (from, to) = (rim(from_radians), rim(from_radians + sweep_radians));
+                        let mut points = vec![from];
+                        points.extend(
+                            document::sketch::arc_interior_points_within(
+                                from,
+                                to,
+                                sweep_radians.to_degrees(),
+                                screen_chord_tolerance(center, from, radius),
+                            )
+                            .iter()
+                            .map(document::sketch::SketchPoint::in_plane),
                         );
-                        (0..=steps)
-                            .map(|step| {
-                                let turn = sweep_radians * f64::from(step) / f64::from(steps);
-                                let bearing = from_radians + turn;
-                                [
-                                    radius.mul_add(bearing.cos(), center[0]),
-                                    radius.mul_add(bearing.sin(), center[1]),
-                                ]
-                            })
-                            .collect()
+                        points.push(to);
+                        points
                     }
                 };
                 let projected: Option<Vec<egui::Pos2>> = points
@@ -6151,7 +6156,7 @@ impl WindowedState {
                             // flattens here rather than asking the region for a coarser boundary.
                             let boundary = document::sketch::flatten_edges(
                                 &face.boundary,
-                                document::sketch::ARC_SAGITTA_TOLERANCE_VOXELS,
+                                document::sketch::ARC_SAGITTA_TOLERANCE,
                             );
                             project(&boundary).map(|projected| (index, projected))
                         })
@@ -6195,7 +6200,7 @@ impl WindowedState {
             let ring = circle_ring(
                 kept.about,
                 kept.radius,
-                document::sketch::ARC_SAGITTA_TOLERANCE_VOXELS,
+                document::sketch::ARC_SAGITTA_TOLERANCE,
             );
             let projected: Vec<egui::Pos2> =
                 ring.iter().copied().filter_map(snapped_screen).collect();
@@ -6522,11 +6527,8 @@ impl WindowedState {
                         let center = center.in_plane();
                         let perimeter = perimeter.in_plane();
                         let radius = (perimeter[0] - center[0]).hypot(perimeter[1] - center[1]);
-                        let ring = circle_ring(
-                            center,
-                            radius,
-                            document::sketch::ARC_SAGITTA_TOLERANCE_VOXELS,
-                        );
+                        let ring =
+                            circle_ring(center, radius, document::sketch::ARC_SAGITTA_TOLERANCE);
                         let projected: Vec<egui::Pos2> =
                             ring.iter().copied().filter_map(snapped_screen).collect();
                         if projected.len() == ring.len() {
@@ -6551,7 +6553,7 @@ impl WindowedState {
                         let ring = circle_ring(
                             placement.candidate.center,
                             placement.candidate.radius,
-                            document::sketch::ARC_SAGITTA_TOLERANCE_VOXELS,
+                            document::sketch::ARC_SAGITTA_TOLERANCE,
                         );
                         let projected: Vec<egui::Pos2> =
                             ring.iter().copied().filter_map(snapped_screen).collect();
@@ -6577,7 +6579,7 @@ impl WindowedState {
                         let ring = circle_ring(
                             placement.center.in_plane(),
                             placement.radius.value(),
-                            document::sketch::ARC_SAGITTA_TOLERANCE_VOXELS,
+                            document::sketch::ARC_SAGITTA_TOLERANCE,
                         );
                         let projected: Vec<egui::Pos2> =
                             ring.iter().copied().filter_map(snapped_screen).collect();
@@ -7222,7 +7224,7 @@ fn break_piece_points(piece: &substrate::curve_intersection::PlanarCurve) -> Vec
                     from,
                     to,
                     sweep_radians.to_degrees(),
-                    document::sketch::ARC_SAGITTA_TOLERANCE_VOXELS,
+                    document::sketch::ARC_SAGITTA_TOLERANCE,
                 )
                 .iter()
                 .map(document::sketch::SketchPoint::in_plane),
@@ -7231,7 +7233,7 @@ fn break_piece_points(piece: &substrate::curve_intersection::PlanarCurve) -> Vec
             points
         }
         substrate::curve_intersection::PlanarCurve::RationalBezier(curve) => {
-            curve.flatten(document::sketch::ARC_SAGITTA_TOLERANCE_VOXELS)
+            curve.flatten(document::sketch::ARC_SAGITTA_TOLERANCE)
         }
     }
 }
@@ -7273,11 +7275,7 @@ fn polygon_base_circle(
         polygon::PolygonKind::Edge => return None,
     };
     let radius = (touch[0] - center[0]).hypot(touch[1] - center[1]);
-    let ring = circle_ring(
-        center,
-        radius,
-        document::sketch::ARC_SAGITTA_TOLERANCE_VOXELS,
-    );
+    let ring = circle_ring(center, radius, document::sketch::ARC_SAGITTA_TOLERANCE);
     (!ring.is_empty()).then_some(ring)
 }
 

@@ -369,7 +369,7 @@ fn conic_from_picks(
 fn flatten_joined(curves: Vec<RationalBezier>) -> Vec<[f64; 2]> {
     let mut flattened = Vec::new();
     for (index, curve) in curves.into_iter().enumerate() {
-        let mut piece = curve.flatten(document::sketch::ARC_SAGITTA_TOLERANCE_VOXELS);
+        let mut piece = curve.flatten(document::sketch::ARC_SAGITTA_TOLERANCE);
         if index > 0 && !piece.is_empty() {
             piece.remove(0);
         }

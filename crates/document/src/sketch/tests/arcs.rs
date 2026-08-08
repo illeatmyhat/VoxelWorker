@@ -5,7 +5,7 @@
 use super::ctx;
 use crate::sketch::{
     arc_center_radius, arc_interior_points, included_angle_through_degrees, EntityId, PlaneAxis,
-    Point, PointLifetime, Sketch, SketchPoint, SketchSolid, ARC_SAGITTA_TOLERANCE_VOXELS,
+    Point, PointLifetime, Sketch, SketchPoint, SketchSolid, ARC_SAGITTA_TOLERANCE,
 };
 use crate::sketch::{ConstraintKind, ConstraintRefusal, Dimension, SketchCurve, SketchLength};
 use crate::voxel::VoxelProducer;
@@ -223,7 +223,7 @@ fn tessellation_stays_on_the_circle_within_the_sagitta_tolerance() {
         ];
         let distance = ((mid[0] - 2.0).powi(2) + mid[1].powi(2)).sqrt();
         assert!(
-            2.0 - distance <= ARC_SAGITTA_TOLERANCE_VOXELS + 1e-6,
+            2.0 - distance <= ARC_SAGITTA_TOLERANCE + 1e-6,
             "sagitta over tolerance at {mid:?}"
         );
     }

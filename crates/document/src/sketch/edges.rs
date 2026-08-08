@@ -72,7 +72,7 @@ impl SketchSolid {
         // tolerance rather than passing one back up to the region.
         for profile_loop in self.sketch.region(context) {
             self.ring_edge_polylines(
-                &profile_loop.flatten(super::ARC_SAGITTA_TOLERANCE_VOXELS),
+                &profile_loop.flatten(super::ARC_SAGITTA_TOLERANCE),
                 profile_min,
                 circle_segments,
                 context,

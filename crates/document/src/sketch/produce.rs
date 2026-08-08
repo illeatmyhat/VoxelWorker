@@ -62,7 +62,7 @@ pub(super) fn to_region_points(
         .map(|profile_loop| {
             (
                 profile_loop.role,
-                to_profile_points(&profile_loop.flatten(ARC_SAGITTA_TOLERANCE_VOXELS)),
+                to_profile_points(&profile_loop.flatten(ARC_SAGITTA_TOLERANCE)),
             )
         })
         .collect()

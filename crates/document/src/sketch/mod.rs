@@ -1119,13 +1119,13 @@ pub struct ProfileLoop {
 }
 
 impl ProfileLoop {
-    /// The loop as a closed polygon, each chord's sagitta within `sagitta_tolerance_voxels`.
+    /// The loop as a closed polygon, each chord's sagitta within `sagitta_tolerance`.
     ///
     /// **A terminal adapter, not a stage.** Every caller of this is producing something discrete
     /// and has nowhere to put a curve; anything that merely wants to know where the boundary is
     /// asks the field instead.
-    pub fn flatten(&self, sagitta_tolerance_voxels: f64) -> Vec<SketchPoint> {
-        flatten_edges(&self.edges, sagitta_tolerance_voxels)
+    pub fn flatten(&self, sagitta_tolerance: f64) -> Vec<SketchPoint> {
+        flatten_edges(&self.edges, sagitta_tolerance)
     }
 
     /// The loop's corners — every edge's tail, and nothing an arc passes through in between.
@@ -1139,17 +1139,17 @@ impl ProfileLoop {
     }
 }
 
-/// A closed edge loop as a closed polygon, each chord's sagitta within `sagitta_tolerance_voxels`.
+/// A closed edge loop as a closed polygon, each chord's sagitta within `sagitta_tolerance`.
 ///
 /// **A terminal adapter, not a stage.** Reach for it only where something discrete is being
 /// produced and there is nowhere to put a curve — a crease polyline, a screen-space hit-test
 /// polygon, the exact-`f64` cell classifier. Anything that merely wants to know where the boundary
 /// is asks the field ([`substrate::geom2d::signed_distance_to_region`]) instead.
-pub fn flatten_edges(edges: &[ProfileEdge], sagitta_tolerance_voxels: f64) -> Vec<SketchPoint> {
+pub fn flatten_edges(edges: &[ProfileEdge], sagitta_tolerance: f64) -> Vec<SketchPoint> {
     let mut points = Vec::with_capacity(edges.len());
     for edge in edges {
         points.push(edge.from);
-        points.extend(edge.interior_points(sagitta_tolerance_voxels));
+        points.extend(edge.interior_points(sagitta_tolerance));
     }
     points
 }
@@ -1350,9 +1350,9 @@ impl ProfileEdge {
     /// It walks the SOLVED circle rather than re-deriving one from the endpoints, which is what
     /// lets a closed curve through at all: a full turn has a zero-length chord, and there is no
     /// circle to be recovered from that.
-    pub fn interior_points(&self, sagitta_tolerance_voxels: f64) -> Vec<SketchPoint> {
+    pub fn interior_points(&self, sagitta_tolerance: f64) -> Vec<SketchPoint> {
         if let Some(curve) = self.bezier {
-            let points = curve.flatten(sagitta_tolerance_voxels);
+            let points = curve.flatten(sagitta_tolerance);
             return points
                 .iter()
                 .skip(1)
@@ -1361,7 +1361,7 @@ impl ProfileEdge {
                 .collect();
         }
         match self.arc {
-            Some(arc) => arc_interior_on_circle(arc, sagitta_tolerance_voxels),
+            Some(arc) => arc_interior_on_circle(arc, sagitta_tolerance),
             None => Vec::new(),
         }
     }
@@ -2697,7 +2697,7 @@ impl Sketch {
     pub fn flattened_loop(&self, context: parametric::EvaluationContext) -> Vec<SketchPoint> {
         let loops = self.region(context);
         match (loops.len(), loops.first().map(|first| first.role)) {
-            (1, Some(LoopRole::Fill)) => loops[0].flatten(ARC_SAGITTA_TOLERANCE_VOXELS),
+            (1, Some(LoopRole::Fill)) => loops[0].flatten(ARC_SAGITTA_TOLERANCE),
             _ => Vec::new(),
         }
     }
@@ -6501,15 +6501,20 @@ impl Sketch {
     }
 }
 
-/// Default arc flattening tolerance: the maximum sagitta (chord-to-arc deviation), in voxels,
-/// of one chord.
+/// Default arc flattening tolerance: the maximum sagitta (chord-to-arc deviation) of one chord, in
+/// the sketch plane's own continuous units.
+///
+/// **Not a screen tolerance.** A chord count derived from this follows the arc's size in the plane
+/// and not its size on screen, so the same handful of chords is drawn at every zoom and a
+/// magnified curve reads as a visible polygon. A painter derives its own tolerance from the
+/// PROJECTED radius instead, and uses this only as the cap.
 ///
 /// This is NOT the resolved meaning of a curve — the region carries its arcs, and the field
 /// measures them ([`ProfileEdge`]). It is the default a **terminal adapter** flattens at when it
 /// has to produce something discrete and has nowhere to put a curve: a crease polyline, the
 /// exact-`f64` cell classifier's polygon, a test's outline. Nothing downstream of one of those
 /// inherits it, so it is a tuning knob rather than a document-format constant.
-pub const ARC_SAGITTA_TOLERANCE_VOXELS: f64 = 1.0 / 16.0;
+pub const ARC_SAGITTA_TOLERANCE: f64 = 1.0 / 16.0;
 
 /// Hard cap on chords per arc, so a huge-radius near-collinear arc cannot degenerate
 /// into an unbounded fan.
@@ -6662,7 +6667,7 @@ fn point_stands_on(at: [f64; 2], geometry: parametric::sketch::CurveGeometry) ->
 }
 
 pub fn arc_interior_points(from: [f64; 2], to: [f64; 2], sweep_degrees: f64) -> Vec<SketchPoint> {
-    arc_interior_points_within(from, to, sweep_degrees, ARC_SAGITTA_TOLERANCE_VOXELS)
+    arc_interior_points_within(from, to, sweep_degrees, ARC_SAGITTA_TOLERANCE)
 }
 
 /// [`arc_interior_points`] at a caller-chosen sagitta tolerance.
@@ -6677,7 +6682,7 @@ pub fn arc_interior_points_within(
     from: [f64; 2],
     to: [f64; 2],
     sweep_degrees: f64,
-    sagitta_tolerance_voxels: f64,
+    sagitta_tolerance: f64,
 ) -> Vec<SketchPoint> {
     let Some((center, radius)) = arc_center_radius(from, to, sweep_degrees) else {
         return Vec::new();
@@ -6689,7 +6694,7 @@ pub fn arc_interior_points_within(
             start_radians: (from[1] - center[1]).atan2(from[0] - center[0]),
             sweep_radians: sweep_degrees.to_radians(),
         },
-        sagitta_tolerance_voxels,
+        sagitta_tolerance,
     )
 }
 
@@ -6699,11 +6704,11 @@ pub fn arc_interior_points_within(
 /// This is the form the closed case needs. Recovering a circle from endpoints plus a bulge is a
 /// chord solve, and a whole turn has no chord; carrying the solved center and radius instead means
 /// a circle tessellates by the same rule as every other arc rather than by a special case.
-fn arc_interior_on_circle(arc: ProfileArc, sagitta_tolerance_voxels: f64) -> Vec<SketchPoint> {
+fn arc_interior_on_circle(arc: ProfileArc, sagitta_tolerance: f64) -> Vec<SketchPoint> {
     let chords = arc_chord_count(
         arc.radius,
         arc.sweep_radians.to_degrees(),
-        sagitta_tolerance_voxels,
+        sagitta_tolerance,
     );
     let step = arc.sweep_radians / chords as f64;
     (1..chords)
@@ -6718,12 +6723,7 @@ fn arc_interior_on_circle(arc: ProfileArc, sagitta_tolerance_voxels: f64) -> Vec
 }
 
 /// How many chords keep each sagitta within tolerance, capped at [`ARC_MAX_CHORDS`].
-///
-/// Public because a shell that tessellates a turn of its own — one named by an angle rather than
-/// by two stored ends, so [`arc_interior_points`] cannot answer it — still has to flatten it to
-/// the same standard as every other curve on the page.
-#[must_use]
-pub fn arc_chord_count(radius: f64, sweep_degrees: f64, tolerance: f64) -> u32 {
+fn arc_chord_count(radius: f64, sweep_degrees: f64, tolerance: f64) -> u32 {
     // A non-positive or non-finite tolerance would ask for infinite refinement; the chord cap
     // answers it instead of the arithmetic below producing a NaN step.
     if !tolerance.is_finite() || tolerance <= 0.0 {

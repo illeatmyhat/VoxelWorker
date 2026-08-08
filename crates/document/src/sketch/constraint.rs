@@ -560,7 +560,7 @@ pub enum ConstraintKind {
         onto: CoincidentTarget,
     },
     /// Two segments run the same way. The residual is the SINE of the angle between them, so it is
-    /// dimensionless and reads the same on a 3-voxel segment and a 300-voxel one.
+    /// dimensionless and reads the same on a three-unit segment and a three-hundred-unit one.
     Parallel { first: EntityId, second: EntityId },
     /// Two segments meet at a right angle — the cosine of the angle between them, normalized for
     /// the same reason `Parallel` is.
@@ -1128,7 +1128,7 @@ pub struct Constraint {
     /// information. Redundancy is sometimes the intent, so it is flagged rather than refused.
     #[serde(default)]
     pub redundant: bool,
-    /// Where the author dropped this constraint's annotation, in the sketch plane's own voxel
+    /// Where the author dropped this constraint's annotation, in the sketch plane's own continuous
     /// coordinates — `None` for everything that draws a badge.
     ///
     /// **A badge has no position and a dimension does**, which is not the contradiction of
@@ -1143,9 +1143,8 @@ pub struct Constraint {
     /// CLAIM: [`ConstraintKind::is_about_the_same_as`] never sees it, so dragging a label somewhere
     /// else cannot turn one assertion into a second one about the same entities.
     ///
-    /// Voxels at the document's density, re-evaluated on a re-target like every other spatial
-    /// value — a label stored in absolute voxels would stay put while the geometry it annotates
-    /// doubled.
+    /// Plane coordinates re-evaluated on a re-target like every other spatial value — a label
+    /// stored against an absolute scale would stay put while the geometry it annotates doubled.
     #[serde(default)]
     pub anchor: Option<[f64; 2]>,
 }
@@ -1168,7 +1167,7 @@ where
 /// badges, an id is all the shell needs to point at one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConstraintRefusal {
-    /// A fixed curve source needs the document evaluation context; no cached voxel value is used.
+    /// A fixed curve source needs the document evaluation context; no cached value is used.
     MissingEvaluationContext,
     /// Tangent is intentionally not a relation between two line segments; Parallel owns that
     /// authoring claim, while a malformed branch/type combination names no meaningful assertion.
