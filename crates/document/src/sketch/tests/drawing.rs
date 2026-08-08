@@ -1425,3 +1425,68 @@ fn a_conics_control_stands_off_the_ink_its_shoulder_stands_on() {
         "both ends are on the curve"
     );
 }
+
+/// **A planted point rides its host, which is the only thing that makes planting worth doing.**
+///
+/// Standing on the line at the moment of the click is what a snapped coordinate already gave.
+/// What the claim buys is the next edit: swing the rail and the point is still on it. A test that
+/// only checked the position right after planting would pass on a point merely placed there.
+#[test]
+fn a_planted_point_rides_the_curve_when_the_curve_moves() {
+    let mut sketch = Sketch::new(PlaneAxis::Z, vec![]);
+    let tail = sketch.add_free_point(SketchPoint::new(0, 0));
+    let head = sketch.add_free_point(SketchPoint::new(40, 0));
+    sketch.connect(tail, head).expect("a rail");
+    let rail = SketchSolid::extrude(sketch, 3);
+
+    let (mut planted, point) = rail.with_point_planted(
+        SketchPoint::new(12, 0),
+        Some(SketchCurve::Segment(
+            rail.sketch.segments().first().unwrap().id,
+        )),
+        ctx(16),
+    );
+    let height = |solid: &SketchSolid| {
+        solid
+            .sketch
+            .points()
+            .iter()
+            .find(|held| held.id == point)
+            .unwrap()
+            .at
+            .in_plane()[1]
+    };
+    assert!(height(&planted).abs() < 1e-6, "planted on the rail");
+
+    // Swing the far end up. The rail is now slanted, and a point that had merely been PUT at
+    // y = 0 would still be sitting at y = 0, off the line it was drawn against.
+    planted
+        .sketch
+        .move_point(head, SketchPoint::new(40, 30), ctx(16))
+        .expect("the rail's free end can swing");
+    assert!(
+        height(&planted) > 1.0,
+        "the point followed the rail up: {}",
+        height(&planted)
+    );
+    // Read the rail's ends rather than assuming them: only the dragged end is pinned, so the
+    // solve was free to move the other one, and a hardcoded line would test the wrong line.
+    let coord = |id| {
+        planted
+            .sketch
+            .points()
+            .iter()
+            .find(|held| held.id == id)
+            .unwrap()
+            .at
+            .in_plane()
+    };
+    let (at, from, to) = (coord(point), coord(tail), coord(head));
+    let along = [to[0] - from[0], to[1] - from[1]];
+    let offset = [at[0] - from[0], at[1] - from[1]];
+    let across = (along[0] * offset[1] - along[1] * offset[0]).abs() / along[0].hypot(along[1]);
+    assert!(
+        across < 1e-6,
+        "and it is ON the swung rail, {across} off it"
+    );
+}
