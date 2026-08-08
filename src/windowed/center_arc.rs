@@ -213,7 +213,11 @@ mod tests {
     }
 
     fn target(at: SketchPoint) -> ResolvedSketchTarget {
-        ResolvedSketchTarget { at, existing: None }
+        ResolvedSketchTarget {
+            at,
+            existing: None,
+            on_curve: None,
+        }
     }
 
     #[test]

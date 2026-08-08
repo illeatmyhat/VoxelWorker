@@ -388,6 +388,7 @@ mod tests {
         ResolvedSketchTarget {
             at: SketchPoint::new(x, y),
             existing: None,
+            on_curve: None,
         }
     }
 

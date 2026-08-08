@@ -132,7 +132,11 @@ mod tests {
     use std::num::NonZeroU32;
 
     fn target(at: SketchPoint) -> ResolvedSketchTarget {
-        ResolvedSketchTarget { at, existing: None }
+        ResolvedSketchTarget {
+            at,
+            existing: None,
+            on_curve: None,
+        }
     }
 
     fn context() -> EvaluationContext {

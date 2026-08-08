@@ -504,6 +504,42 @@ impl SketchSolid {
         (next, id)
     }
 
+    /// [`with_point_placed`](Self::with_point_placed), plus the claim that the new point stands on
+    /// the curve it was planted on.
+    ///
+    /// The hold is what separates PLANTING a point from placing one. A click that lands on a line
+    /// means "here, on that line", and the snapped coordinate alone does not say so: it is merely
+    /// near the line, and stops being near it the moment anything the line depends on moves. The
+    /// claim survives that.
+    ///
+    /// Only a freshly minted point is held. Landing on a coordinate another point already occupies
+    /// answers with THAT point, and holding an existing point to a curve is an edit the author did
+    /// not ask for — they were pointing at the point.
+    ///
+    /// A refused claim is dropped rather than reported. Callers reach here from a hover highlight,
+    /// so the curve is one the author saw; the refusals left are the ones where the hold cannot
+    /// exist at all — a collapsed segment, a higher curve with no support the kernel models — and
+    /// there the point still belongs where it was planted.
+    pub fn with_point_planted(
+        &self,
+        at: SketchPoint,
+        onto: Option<SketchCurve>,
+        context: EvaluationContext,
+    ) -> (SketchSolid, EntityId) {
+        let minted = self.sketch.point_at(at).is_none();
+        let (mut next, id) = self.with_point_placed(at);
+        if let (true, Some(curve)) = (minted, onto) {
+            drop(next.sketch.add_constraint(
+                ConstraintKind::Coincident {
+                    point: id,
+                    onto: CoincidentTarget::Curve(curve),
+                },
+                context,
+            ));
+        }
+        (next, id)
+    }
+
     /// This producer with a segment joining the existing points `from → to` (the Line tool).
     /// Unchanged for a self-loop, an unknown endpoint, or an already-joined pair
     /// ([`Sketch::connect`]). Pure.

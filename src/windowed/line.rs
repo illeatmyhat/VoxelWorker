@@ -1,7 +1,8 @@
 //! Session-only state for the connected Line command.
 
+use super::sketch_target::ResolvedSketchTarget;
 use document::scene::NodeId;
-use document::sketch::{EntityId, SketchCurve, SketchPoint, SketchSolid, TangentArcRefusal};
+use document::sketch::{EntityId, SketchCurve, SketchSolid, TangentArcRefusal};
 use parametric::EvaluationContext;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -154,13 +155,15 @@ impl LineGesture {
         line_is_active && !constraint_is_armed && was_live
     }
 
+    /// The point this click continues from: the one already there, or a fresh one held to whatever
+    /// the click landed on.
     fn placed_point(
         producer: &SketchSolid,
-        at: SketchPoint,
-        existing: Option<EntityId>,
+        target: ResolvedSketchTarget,
+        context: EvaluationContext,
     ) -> (SketchSolid, EntityId) {
-        existing.map_or_else(
-            || producer.with_point_placed(at),
+        target.existing.map_or_else(
+            || producer.with_point_planted(target.at, target.on_curve, context),
             |id| (producer.clone(), id),
         )
     }
@@ -169,10 +172,10 @@ impl LineGesture {
         &mut self,
         owner: NodeId,
         producer: &SketchSolid,
-        at: SketchPoint,
-        existing: Option<EntityId>,
+        target: ResolvedSketchTarget,
+        context: EvaluationContext,
     ) -> LineEdit {
-        let (with_point, clicked) = Self::placed_point(producer, at, existing);
+        let (with_point, clicked) = Self::placed_point(producer, target, context);
         let Some(chain) = self.chain else {
             self.start(owner, clicked);
             return if with_point == *producer {
@@ -219,8 +222,7 @@ impl LineGesture {
     pub fn append_tangent_arc(
         &mut self,
         producer: &SketchSolid,
-        at: SketchPoint,
-        existing: Option<EntityId>,
+        target: ResolvedSketchTarget,
         context: EvaluationContext,
     ) -> Result<SketchSolid, TangentArcRefusal> {
         let Some(chain) = self.chain else {
@@ -229,7 +231,7 @@ impl LineGesture {
         let Some(incoming) = chain.incoming else {
             return Err(TangentArcRefusal::UnknownIncoming);
         };
-        let (with_point, clicked) = Self::placed_point(producer, at, existing);
+        let (with_point, clicked) = Self::placed_point(producer, target, context);
         let (next, arc) =
             with_point.with_tangent_arc_between(incoming, chain.end, clicked, context)?;
         self.advance(clicked, arc);
@@ -254,7 +256,7 @@ impl LineGesture {
 #[allow(clippy::float_cmp, clippy::panic, clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use document::sketch::ConstraintKind;
+    use document::sketch::{ConstraintKind, SketchPoint};
 
     fn empty() -> SketchSolid {
         SketchSolid::extrude(
@@ -265,6 +267,33 @@ mod tests {
 
     fn context() -> EvaluationContext {
         EvaluationContext::new(std::num::NonZeroU32::new(16).unwrap())
+    }
+
+    /// A click on empty plane: nothing under it to be held to.
+    const fn plain(at: SketchPoint) -> ResolvedSketchTarget {
+        ResolvedSketchTarget {
+            at,
+            existing: None,
+            on_curve: None,
+        }
+    }
+
+    /// A click on a point that is already there.
+    const fn at_existing(at: SketchPoint, existing: EntityId) -> ResolvedSketchTarget {
+        ResolvedSketchTarget {
+            at,
+            existing: Some(existing),
+            on_curve: None,
+        }
+    }
+
+    /// A click on empty plane that landed on `curve` — the case the planting rule is for.
+    const fn on_curve(at: SketchPoint, curve: SketchCurve) -> ResolvedSketchTarget {
+        ResolvedSketchTarget {
+            at,
+            existing: None,
+            on_curve: Some(curve),
+        }
     }
 
     #[test]
@@ -385,18 +414,21 @@ mod tests {
     fn clicks_place_one_point_then_continue_and_close_with_the_start_identity() {
         let owner = NodeId(10);
         let mut gesture = LineGesture::default();
-        let LineEdit::Document(one) = gesture.click(owner, &empty(), SketchPoint::new(0, 0), None)
+        let LineEdit::Document(one) =
+            gesture.click(owner, &empty(), plain(SketchPoint::new(0, 0)), context())
         else {
             panic!("first point edit")
         };
         let start = gesture.chain().unwrap().start;
         assert_eq!(one.sketch.points().len(), 1);
 
-        let LineEdit::Document(two) = gesture.click(owner, &one, SketchPoint::new(10, 0), None)
+        let LineEdit::Document(two) =
+            gesture.click(owner, &one, plain(SketchPoint::new(10, 0)), context())
         else {
             panic!("first segment edit")
         };
-        let LineEdit::Document(three) = gesture.click(owner, &two, SketchPoint::new(10, 10), None)
+        let LineEdit::Document(three) =
+            gesture.click(owner, &two, plain(SketchPoint::new(10, 10)), context())
         else {
             panic!("second segment edit")
         };
@@ -409,7 +441,9 @@ mod tests {
             .find(|point| point.id == start)
             .unwrap()
             .at;
-        let LineEdit::Document(closed) = gesture.click(owner, &three, start_at, Some(start)) else {
+        let LineEdit::Document(closed) =
+            gesture.click(owner, &three, at_existing(start_at, start), context())
+        else {
             panic!("closure edit")
         };
         assert_eq!(closed.sketch.points().len(), 3, "the start id is reused");
@@ -421,15 +455,18 @@ mod tests {
     fn close_action_joins_the_active_chain_without_minting_a_point() {
         let owner = NodeId(10);
         let mut gesture = LineGesture::default();
-        let LineEdit::Document(one) = gesture.click(owner, &empty(), SketchPoint::new(0, 0), None)
+        let LineEdit::Document(one) =
+            gesture.click(owner, &empty(), plain(SketchPoint::new(0, 0)), context())
         else {
             panic!("first point")
         };
-        let LineEdit::Document(two) = gesture.click(owner, &one, SketchPoint::new(10, 0), None)
+        let LineEdit::Document(two) =
+            gesture.click(owner, &one, plain(SketchPoint::new(10, 0)), context())
         else {
             panic!("first edge")
         };
-        let LineEdit::Document(three) = gesture.click(owner, &two, SketchPoint::new(10, 10), None)
+        let LineEdit::Document(three) =
+            gesture.click(owner, &two, plain(SketchPoint::new(10, 10)), context())
         else {
             panic!("second edge")
         };
@@ -445,14 +482,15 @@ mod tests {
     fn clicking_the_live_end_finishes_open_without_an_edit() {
         let owner = NodeId(10);
         let mut gesture = LineGesture::default();
-        let LineEdit::Document(one) = gesture.click(owner, &empty(), SketchPoint::new(0, 0), None)
+        let LineEdit::Document(one) =
+            gesture.click(owner, &empty(), plain(SketchPoint::new(0, 0)), context())
         else {
             panic!("point")
         };
         let end = gesture.chain().unwrap().end;
         let at = one.sketch.points()[0].at;
         assert_eq!(
-            gesture.click(owner, &one, at, Some(end)),
+            gesture.click(owner, &one, at_existing(at, end), context()),
             LineEdit::SessionOnly
         );
         assert_eq!(gesture.chain(), None);
@@ -462,16 +500,19 @@ mod tests {
     fn clicking_start_finishes_when_the_closing_segment_already_exists() {
         let owner = NodeId(10);
         let mut gesture = LineGesture::default();
-        let LineEdit::Document(one) = gesture.click(owner, &empty(), SketchPoint::new(0, 0), None)
+        let LineEdit::Document(one) =
+            gesture.click(owner, &empty(), plain(SketchPoint::new(0, 0)), context())
         else {
             panic!("point")
         };
         let start = gesture.chain().unwrap().start;
-        let LineEdit::Document(two) = gesture.click(owner, &one, SketchPoint::new(10, 0), None)
+        let LineEdit::Document(two) =
+            gesture.click(owner, &one, plain(SketchPoint::new(10, 0)), context())
         else {
             panic!("segment")
         };
-        let LineEdit::Document(three) = gesture.click(owner, &two, SketchPoint::new(10, 10), None)
+        let LineEdit::Document(three) =
+            gesture.click(owner, &two, plain(SketchPoint::new(10, 10)), context())
         else {
             panic!("second segment")
         };
@@ -485,7 +526,7 @@ mod tests {
             .unwrap()
             .at;
         assert_eq!(
-            gesture.click(owner, &preclosed, start_at, Some(start)),
+            gesture.click(owner, &preclosed, at_existing(start_at, start), context()),
             LineEdit::SessionOnly
         );
         assert_eq!(gesture.chain(), None);
@@ -496,18 +537,20 @@ mod tests {
     fn tangent_arc_closure_constrains_adjacent_curves_not_the_first_curve() {
         let owner = NodeId(10);
         let mut gesture = LineGesture::default();
-        let LineEdit::Document(one) = gesture.click(owner, &empty(), SketchPoint::new(0, 0), None)
+        let LineEdit::Document(one) =
+            gesture.click(owner, &empty(), plain(SketchPoint::new(0, 0)), context())
         else {
             panic!("point")
         };
         let start = gesture.chain().unwrap().start;
-        let LineEdit::Document(two) = gesture.click(owner, &one, SketchPoint::new(10, 0), None)
+        let LineEdit::Document(two) =
+            gesture.click(owner, &one, plain(SketchPoint::new(10, 0)), context())
         else {
             panic!("segment")
         };
         let first_curve = gesture.chain().unwrap().incoming.unwrap();
         let three = gesture
-            .append_tangent_arc(&two, SketchPoint::new(10, 10), None, context())
+            .append_tangent_arc(&two, plain(SketchPoint::new(10, 10)), context())
             .unwrap();
         let first_arc = gesture.chain().unwrap().incoming.unwrap();
         assert!(matches!(first_arc, SketchCurve::Arc(_)));
@@ -520,7 +563,7 @@ mod tests {
             .unwrap()
             .at;
         let closed = gesture
-            .append_tangent_arc(&three, start_at, Some(start), context())
+            .append_tangent_arc(&three, at_existing(start_at, start), context())
             .unwrap();
         assert_eq!(gesture.chain(), None);
         assert_eq!(closed.sketch.point_at(start_at), Some(start));
@@ -554,19 +597,22 @@ mod tests {
     fn ordinary_click_after_an_arc_returns_to_straight_continuation() {
         let owner = NodeId(10);
         let mut gesture = LineGesture::default();
-        let LineEdit::Document(one) = gesture.click(owner, &empty(), SketchPoint::new(0, 0), None)
+        let LineEdit::Document(one) =
+            gesture.click(owner, &empty(), plain(SketchPoint::new(0, 0)), context())
         else {
             panic!("point")
         };
-        let LineEdit::Document(two) = gesture.click(owner, &one, SketchPoint::new(10, 0), None)
+        let LineEdit::Document(two) =
+            gesture.click(owner, &one, plain(SketchPoint::new(10, 0)), context())
         else {
             panic!("segment")
         };
         let three = gesture
-            .append_tangent_arc(&two, SketchPoint::new(10, 10), None, context())
+            .append_tangent_arc(&two, plain(SketchPoint::new(10, 10)), context())
             .unwrap();
         let constraints = three.sketch.constraints().len();
-        let LineEdit::Document(four) = gesture.click(owner, &three, SketchPoint::new(20, 10), None)
+        let LineEdit::Document(four) =
+            gesture.click(owner, &three, plain(SketchPoint::new(20, 10)), context())
         else {
             panic!("straight continuation")
         };
@@ -582,21 +628,89 @@ mod tests {
     fn refused_arc_keeps_the_chain_and_document_byte_exact() {
         let owner = NodeId(10);
         let mut gesture = LineGesture::default();
-        let LineEdit::Document(one) = gesture.click(owner, &empty(), SketchPoint::new(0, 0), None)
+        let LineEdit::Document(one) =
+            gesture.click(owner, &empty(), plain(SketchPoint::new(0, 0)), context())
         else {
             panic!("point")
         };
-        let LineEdit::Document(two) = gesture.click(owner, &one, SketchPoint::new(10, 0), None)
+        let LineEdit::Document(two) =
+            gesture.click(owner, &one, plain(SketchPoint::new(10, 0)), context())
         else {
             panic!("segment")
         };
         let before_chain = gesture.chain();
         let before = serde_json::to_string(&two).unwrap();
         assert!(gesture
-            .append_tangent_arc(&two, SketchPoint::new(20, 0), None, context())
+            .append_tangent_arc(&two, plain(SketchPoint::new(20, 0)), context())
             .is_err());
         assert_eq!(gesture.chain(), before_chain);
         assert_eq!(serde_json::to_string(&two).unwrap(), before);
+    }
+
+    /// **A point planted on a curve is HELD to it.**
+    ///
+    /// This is the whole rule: the author pointing at a line and clicking means "here, on that
+    /// line". The snapped coordinate does not say so on its own — it is a place that happens to be
+    /// near the line this frame, and the two part company as soon as anything the line depends on
+    /// moves. Only a fresh point is held; clicking a vertex means that vertex.
+    #[test]
+    fn a_point_planted_on_a_curve_is_held_to_it() {
+        let owner = NodeId(10);
+        let mut drawn = LineGesture::default();
+        let LineEdit::Document(one) =
+            drawn.click(owner, &empty(), plain(SketchPoint::new(0, 0)), context())
+        else {
+            panic!("point")
+        };
+        let LineEdit::Document(rail) =
+            drawn.click(owner, &one, plain(SketchPoint::new(40, 0)), context())
+        else {
+            panic!("segment")
+        };
+        drawn.finish_chain();
+        let segment = rail.sketch.segments().first().unwrap().id;
+
+        let mut gesture = LineGesture::default();
+        let LineEdit::Document(next) = gesture.click(
+            owner,
+            &rail,
+            on_curve(SketchPoint::new(12, 0), SketchCurve::Segment(segment)),
+            context(),
+        ) else {
+            panic!("point")
+        };
+        let planted = next
+            .sketch
+            .points()
+            .iter()
+            .map(|point| point.id)
+            .max()
+            .unwrap();
+        assert!(
+            next.sketch
+                .constraints()
+                .iter()
+                .any(|constraint| constraint.kind
+                    == ConstraintKind::Coincident {
+                        point: planted,
+                        onto: document::sketch::CoincidentTarget::Curve(SketchCurve::Segment(
+                            segment
+                        )),
+                    }),
+            "the click landed on the rail, so the point says so: {:?}",
+            next.sketch.constraints()
+        );
+
+        // Clicking a vertex names the vertex. No point is minted, so there is nothing to hold, and
+        // holding the vertex the author pointed AT would be an edit they did not ask for.
+        let held = next.sketch.constraints().len();
+        let mut onto_a_point = LineGesture::default();
+        let start = rail.sketch.points().first().unwrap();
+        assert_eq!(
+            onto_a_point.click(owner, &next, at_existing(start.at, start.id), context()),
+            LineEdit::SessionOnly
+        );
+        assert_eq!(next.sketch.constraints().len(), held);
     }
 
     #[test]
@@ -607,6 +721,7 @@ mod tests {
             &producer,
             Some(grabbed),
             Some(SketchPoint::new(3, 5)),
+            None,
         )
         .unwrap();
         assert_eq!(resolved.existing, Some(grabbed));
@@ -617,11 +732,13 @@ mod tests {
     fn preview_candidate_sides_and_commit_use_the_same_geometry() {
         let owner = NodeId(10);
         let mut gesture = LineGesture::default();
-        let LineEdit::Document(one) = gesture.click(owner, &empty(), SketchPoint::new(0, 0), None)
+        let LineEdit::Document(one) =
+            gesture.click(owner, &empty(), plain(SketchPoint::new(0, 0)), context())
         else {
             panic!("point")
         };
-        let LineEdit::Document(two) = gesture.click(owner, &one, SketchPoint::new(10, 0), None)
+        let LineEdit::Document(two) =
+            gesture.click(owner, &one, plain(SketchPoint::new(10, 0)), context())
         else {
             panic!("segment")
         };
@@ -647,7 +764,7 @@ mod tests {
         assert!(lower.sweep_radians < -std::f64::consts::PI);
 
         let committed = gesture
-            .append_tangent_arc(&two, SketchPoint::new(5, 5), None, context())
+            .append_tangent_arc(&two, plain(SketchPoint::new(5, 5)), context())
             .unwrap();
         let created = gesture.chain().unwrap().incoming.unwrap();
         let parametric::sketch::CurveGeometry::Circular(persisted) =

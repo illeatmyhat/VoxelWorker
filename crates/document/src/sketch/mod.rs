@@ -6587,10 +6587,6 @@ fn counter_clockwise_sweep_degrees(center: [f64; 2], from: [f64; 2], to: [f64; 2
     arc_sweep_is_valid(turn).then_some(turn)
 }
 
-/// The arc's tessellated INTERIOR vertices from `from` to `to` (both endpoints
-/// exclusive), as continuous sub-voxel points, each chord's sagitta within
-/// [`ARC_SAGITTA_TOLERANCE_VOXELS`]. Empty when the arc is degenerate — the callers
-/// then fall back to the straight chord.
 /// Whether `at` stands on the DRAWN piece of `geometry`, closely enough to call them met.
 ///
 /// The drawn piece and not the support, which is the opposite of what

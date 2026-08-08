@@ -138,7 +138,11 @@ mod tests {
     }
 
     fn target(at: SketchPoint) -> ResolvedSketchTarget {
-        ResolvedSketchTarget { at, existing: None }
+        ResolvedSketchTarget {
+            at,
+            existing: None,
+            on_curve: None,
+        }
     }
 
     #[test]
@@ -233,6 +237,7 @@ mod tests {
         let endpoint_target = ResolvedSketchTarget {
             at: endpoint_at,
             existing: Some(endpoint),
+            on_curve: None,
         };
         let mut gesture = MidpointLineGesture::default();
         gesture.click(owner, &source, Some(target(SketchPoint::new(5, 0))));
@@ -324,6 +329,7 @@ mod tests {
                 Some(ResolvedSketchTarget {
                     at: SketchPoint::new(8, 0),
                     existing: Some(endpoint),
+                    on_curve: None,
                 }),
             ),
             MidpointLineEdit::SessionOnly

@@ -2552,6 +2552,10 @@ impl WindowedState {
 
     /// Resolve the exact target shared by sketch drawing previews and commits. A grabbed existing
     /// vertex wins over snap policy, so an off-grid target cannot drift on release.
+    ///
+    /// The hovered curve comes from the same nearest-edge resolution the overlay highlights, so a
+    /// point planted on an edge is held to the edge the author was looking at. A higher curve is
+    /// not offered: it has no support the kernel models, so the hold would only be refused.
     fn sketch_target_at(
         &self,
         cursor_x: f64,
@@ -2560,10 +2564,22 @@ impl WindowedState {
         let target = self.panel_state.sketch_mode?;
         let (producer, _) = self.sketch_node_state(target)?;
         let existing = self.sketch_geometry_point_at(target, cursor_x, cursor_y);
+        let hovered = self
+            .nearest_sketch_edge(cursor_x, cursor_y)
+            .map(sketch_curve_from_hit)
+            .filter(|curve| {
+                matches!(
+                    curve,
+                    document::sketch::SketchCurve::Segment(_)
+                        | document::sketch::SketchCurve::Arc(_)
+                        | document::sketch::SketchCurve::Circle(_)
+                )
+            });
         sketch_target::resolve_target(
             &producer,
             existing,
             self.sketch_snapped_point_at(cursor_x, cursor_y),
+            hovered,
         )
     }
 
@@ -2654,9 +2670,12 @@ impl WindowedState {
         let Some(resolved) = self.sketch_target_at(cursor_x, cursor_y) else {
             return;
         };
-        if let line::LineEdit::Document(next) =
-            self.line_gesture
-                .click(target, &producer, resolved.at, resolved.existing)
+        let Some(context) = self.sketch_evaluation_context() else {
+            return;
+        };
+        if let line::LineEdit::Document(next) = self
+            .line_gesture
+            .click(target, &producer, resolved, context)
         {
             self.commit_sketch_profile_edit(target, next);
         }
@@ -2678,12 +2697,10 @@ impl WindowedState {
         let Some(context) = self.sketch_evaluation_context() else {
             return;
         };
-        let Ok(next) = self.line_gesture.append_tangent_arc(
-            &producer,
-            resolved.at,
-            resolved.existing,
-            context,
-        ) else {
+        let Ok(next) = self
+            .line_gesture
+            .append_tangent_arc(&producer, resolved, context)
+        else {
             return;
         };
         self.commit_sketch_profile_edit(target, next);
