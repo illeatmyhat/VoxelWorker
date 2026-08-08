@@ -264,8 +264,10 @@ pub struct DimensionGizmo {
     /// Everything to draw, already projected into egui points and laid out by
     /// [`crate::gizmos::dimension`].
     pub drawing: crate::gizmos::dimension::Drawing,
-    /// The constraint this gizmo stands for, so a click on its number names an entity.
-    pub constraint: document::sketch::EntityId,
+    /// The constraint this gizmo stands for, so a click on its number names an entity —
+    /// `None` for the GHOST of a dimension being placed, which stands for nothing yet and so
+    /// must not answer a pick with an id no drawing holds.
+    pub constraint: Option<document::sketch::EntityId>,
     /// Whether that constraint is in the selection.
     pub picked: bool,
 }

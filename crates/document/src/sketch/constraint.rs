@@ -767,6 +767,26 @@ pub struct Constraint {
     /// information. Redundancy is sometimes the intent, so it is flagged rather than refused.
     #[serde(default)]
     pub redundant: bool,
+    /// Where the author dropped this constraint's annotation, in the sketch plane's own voxel
+    /// coordinates — `None` for everything that draws a badge.
+    ///
+    /// **A badge has no position and a dimension does**, which is not the contradiction of
+    /// [ADR 0046](../../../../docs/adr/0046-a-badge-takes-a-click-never-a-drag.md) it looks like.
+    /// A badge says a claim holds and could sit anywhere without saying anything different. A
+    /// dimension's position is part of the gesture that authored it: dropping the text above a
+    /// diagonal segment asks for its width and dropping it beside the segment asks for its length,
+    /// so the drop point is the answer to a question, not decoration. Re-deriving it every frame
+    /// would throw away what the author said.
+    ///
+    /// It lives on the constraint rather than inside [`Dimension`] because it is not part of the
+    /// CLAIM: [`ConstraintKind::is_about_the_same_as`] never sees it, so dragging a label somewhere
+    /// else cannot turn one assertion into a second one about the same entities.
+    ///
+    /// Voxels at the document's density, re-evaluated on a re-target like every other spatial
+    /// value — a label stored in absolute voxels would stay put while the geometry it annotates
+    /// doubled.
+    #[serde(default)]
+    pub anchor: Option<[f64; 2]>,
 }
 
 /// Persistence boundary for a stored constraint. Every unordered curve pair is normalized to

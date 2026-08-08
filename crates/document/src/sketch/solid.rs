@@ -1626,8 +1626,24 @@ impl SketchSolid {
         kind: ConstraintKind,
         context: EvaluationContext,
     ) -> Result<(SketchSolid, EntityId), ConstraintRefusal> {
+        self.with_constraint_anchored(kind, None, context)
+    }
+
+    /// [`with_constraint`](Self::with_constraint) with the place the author dropped the
+    /// annotation — the door a placed dimension comes through.
+    ///
+    /// # Errors
+    ///
+    /// Whatever [`with_constraint`](Self::with_constraint) refuses, unchanged: the anchor is
+    /// carried, never judged.
+    pub fn with_constraint_anchored(
+        &self,
+        kind: ConstraintKind,
+        anchor: Option<[f64; 2]>,
+        context: EvaluationContext,
+    ) -> Result<(SketchSolid, EntityId), ConstraintRefusal> {
         let mut next = self.clone();
-        let id = next.sketch.add_constraint(kind, context)?;
+        let id = next.sketch.add_constraint_anchored(kind, anchor, context)?;
         Ok((next, id))
     }
 
@@ -1652,10 +1668,21 @@ impl SketchSolid {
         dimension: super::Dimension,
         context: EvaluationContext,
     ) -> Result<(SketchSolid, EntityId), ConstraintRefusal> {
-        let mut next = self.with_constraint_deleted(constraint_id);
-        let id = next
+        // The label stays where the author put it. Restating is release-and-assert underneath, and
+        // an anchor dropped on the way through would send the text back to a default position for
+        // the sake of an edit that only changed a number.
+        let anchor = self
             .sketch
-            .add_constraint(ConstraintKind::Dimension(dimension), context)?;
+            .constraints()
+            .iter()
+            .find(|held| held.id == constraint_id)
+            .and_then(|held| held.anchor);
+        let mut next = self.with_constraint_deleted(constraint_id);
+        let id = next.sketch.add_constraint_anchored(
+            ConstraintKind::Dimension(dimension),
+            anchor,
+            context,
+        )?;
         Ok((next, id))
     }
 

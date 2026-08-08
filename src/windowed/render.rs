@@ -3331,6 +3331,10 @@ impl WindowedState {
         let scale = self.last_pixels_per_point;
         let half = ui::chrome::SKETCH_CONSTRAINT_BADGE * 0.5 * scale;
         for gizmo in &self.sketch_dimension_gizmos {
+            // A ghost is not in the drawing yet, so a rubber band cannot catch it.
+            let Some(entity) = gizmo.constraint else {
+                continue;
+            };
             let hit = gizmo.drawing.label_boxes().into_iter().any(|box_px| {
                 let box_px = egui::Rect::from_min_max(
                     egui::Pos2::new(box_px.min.x * scale, box_px.min.y * scale),
@@ -3343,10 +3347,7 @@ impl WindowedState {
                 }
             });
             if hit {
-                picked.push(ui::panel::SelectionTarget::SketchConstraint {
-                    sketch,
-                    entity: gizmo.constraint,
-                });
+                picked.push(ui::panel::SelectionTarget::SketchConstraint { sketch, entity });
             }
         }
         for badge in &self.sketch_constraint_badges {
@@ -4191,10 +4192,16 @@ impl WindowedState {
             )
         };
 
-        for constraint in producer.sketch.constraints() {
-            let document::sketch::ConstraintKind::Dimension(dimension) = constraint.kind else {
-                continue;
-            };
+        // How one dimension lays itself out, given where its annotation sits. Shared by the
+        // committed ones and by the ghost the author is dragging, because a preview drawn any
+        // other way is a preview that can disagree with what the click will actually produce.
+        //
+        // `placed` is `None` for a dimension authored before the annotation had a place of its
+        // own; each member then falls back to the position the renderer used to invent, so an old
+        // drawing opens looking exactly as it did.
+        let lay_out = |dimension: document::sketch::Dimension,
+                       placed: Option<egui::Pos2>|
+         -> Option<ui::gizmos::dimension::Drawing> {
             // Every authored dimension DRIVES: the family exists for quantities the author states
             // and the solver honours. Reference rank is reserved for a derived readout, which is a
             // different thing the drawing does not yet offer.
@@ -4205,44 +4212,50 @@ impl WindowedState {
                         in_plane(from).and_then(&to_px),
                         in_plane(to).and_then(&to_px),
                     ) else {
-                        continue;
+                        return None;
                     };
-                    // ABOVE the span on screen, whichever way it runs: the normal is flipped to
-                    // the side that points up, so two spans on one drawing do not sit on opposite
-                    // sides of geometry that merely happens to be drawn the other way round.
-                    let normal = egui::vec2((to - from).y, -(to - from).x);
-                    let offset = if normal.y > 0.0 {
-                        -DIMENSION_STANDOFF_PX
-                    } else {
-                        DIMENSION_STANDOFF_PX
+                    let run = to - from;
+                    let normal = egui::vec2(run.y, -run.x);
+                    let offset = match placed {
+                        // How far off the line the author put the text, measured along the same
+                        // normal the gizmo lays itself out on — so the label lands under the
+                        // cursor rather than near it.
+                        Some(placed) => {
+                            let length = run.length();
+                            let unit = if length > f32::EPSILON {
+                                normal / length
+                            } else {
+                                egui::Vec2::Y
+                            };
+                            (placed - from).dot(unit)
+                        }
+                        // ABOVE the span on screen, whichever way it runs: the normal is flipped
+                        // to the side that points up, so two spans on one drawing do not sit on
+                        // opposite sides of geometry that merely happens to be drawn the other
+                        // way round.
+                        None if normal.y > 0.0 => -DIMENSION_STANDOFF_PX,
+                        None => DIMENSION_STANDOFF_PX,
                     };
                     ui::gizmos::dimension::span(from, to, offset, &voxels(length), rank)
                 }
                 document::sketch::Dimension::Radius { curve, length } => {
-                    let Some(form) = producer.sketch.circular_form(curve, context) else {
-                        continue;
-                    };
+                    let form = producer.sketch.circular_form(curve, context)?;
                     let rim = [form.center[0] + form.radius, form.center[1]];
                     let (Some(center), Some(rim)) = (to_px(form.center), to_px(rim)) else {
-                        continue;
+                        return None;
                     };
                     let radius_px = center.distance(rim);
-                    // Out and up, the direction a badge on a point already goes.
-                    let away = egui::vec2(0.707, -0.707);
-                    let anchor = center + away * (radius_px + DIMENSION_STANDOFF_PX);
+                    let anchor = placed.unwrap_or_else(|| default_rim_anchor(center, radius_px));
                     ui::gizmos::dimension::radius(center, radius_px, anchor, &voxels(length), rank)
                 }
                 document::sketch::Dimension::Diameter { curve, length } => {
-                    let Some(form) = producer.sketch.circular_form(curve, context) else {
-                        continue;
-                    };
+                    let form = producer.sketch.circular_form(curve, context)?;
                     let rim = [form.center[0] + form.radius, form.center[1]];
                     let (Some(center), Some(rim)) = (to_px(form.center), to_px(rim)) else {
-                        continue;
+                        return None;
                     };
                     let radius_px = center.distance(rim);
-                    let away = egui::vec2(0.707, -0.707);
-                    let anchor = center + away * (radius_px + DIMENSION_STANDOFF_PX);
+                    let anchor = placed.unwrap_or_else(|| default_rim_anchor(center, radius_px));
                     ui::gizmos::dimension::diameter(
                         center,
                         radius_px,
@@ -4257,36 +4270,75 @@ impl WindowedState {
                     degrees,
                 } => {
                     let (Some(first), Some(second)) = (arm_line(first), arm_line(second)) else {
-                        continue;
+                        return None;
                     };
                     // The vertex is found in PLANE coordinates and only then projected: a virtual
                     // intersection is a fact about the drawing, and finding it after a perspective
                     // divide would make it a fact about the camera.
-                    let Some(vertex) =
+                    let vertex =
                         substrate::geom2d::line_intersection(first.0, first.1, second.0, second.1)
-                            .and_then(&to_px)
-                    else {
-                        continue;
-                    };
-                    let Some((from, to, reach)) = angle_legs(vertex, &to_px, first, second) else {
-                        continue;
-                    };
-                    let radius =
-                        (reach * 0.55).clamp(DIMENSION_STANDOFF_PX, DIMENSION_STANDOFF_PX * 2.5);
+                            .and_then(&to_px)?;
+                    let (from, to, reach) = angle_legs(vertex, &to_px, first, second)?;
+                    // How far out the author pulled the text is how big the sweep is drawn.
+                    // Clamped at both ends: an arc inside the arrowheads reads as noise, and one
+                    // past the legs would be measuring air.
+                    let radius = placed
+                        .map_or(reach * 0.55, |placed| placed.distance(vertex))
+                        .clamp(DIMENSION_STANDOFF_PX, reach.max(DIMENSION_STANDOFF_PX));
                     let value = format!("{}\u{b0}", trim_number(degrees.to_degrees_f64()));
                     ui::gizmos::dimension::angle(vertex, from, to, radius, reach, &value, rank)
                 }
             };
+            Some(drawing)
+        };
+
+        for constraint in producer.sketch.constraints() {
+            let document::sketch::ConstraintKind::Dimension(dimension) = constraint.kind else {
+                continue;
+            };
+            let Some(drawing) = lay_out(dimension, constraint.anchor.and_then(&to_px)) else {
+                continue;
+            };
             self.sketch_dimension_gizmos
                 .push(ui::chrome::DimensionGizmo {
                     drawing,
-                    constraint: constraint.id,
+                    constraint: Some(constraint.id),
                     picked: self.panel_state.selection.contains(
                         ui::panel::SelectionTarget::SketchConstraint {
                             sketch: target,
                             entity: constraint.id,
                         },
                     ),
+                });
+        }
+
+        // The one being placed right now, following the cursor. It goes through `lay_out` like
+        // every committed dimension, so what the author is dragging IS what the click will make —
+        // and it carries no id, so it cannot be picked or deleted while it is still a question.
+        let hovering = self
+            .last_cursor_position
+            .and_then(|(x, y)| self.sketch_unsnapped_profile_coord(x, y));
+        let ghost = self
+            .panel_state
+            .armed_constraint
+            .as_ref()
+            .filter(|armed| armed.is_placing())
+            .zip(hovering)
+            .and_then(|(armed, at)| {
+                let document::sketch::ConstraintKind::Dimension(dimension) = armed
+                    .dimension_dropped_at(at, &producer.sketch, context)
+                    .ok()?
+                else {
+                    return None;
+                };
+                lay_out(dimension, to_px(at))
+            });
+        if let Some(drawing) = ghost {
+            self.sketch_dimension_gizmos
+                .push(ui::chrome::DimensionGizmo {
+                    drawing,
+                    constraint: None,
+                    picked: false,
                 });
         }
     }
@@ -4570,9 +4622,15 @@ impl WindowedState {
             self.panel_state.selection.clear_sketch_entities();
             self.panel_state.armed_constraint = Some(armed.clone());
         }
+        // A dimension with all its picks in is asking WHERE, not WHAT: the click is a place, and
+        // resolving it against geometry would answer a question nobody asked.
+        if armed.is_placing() {
+            self.place_armed_dimension(target, cursor_x, cursor_y);
+            return;
+        }
         // The gesture's own question decides what the click can resolve to — see
-        // `sketch_entity_for_requirement`. A gesture with every slot filled cannot reach here (a
-        // completed offer disarms), so `wants` answering `None` means nothing is being asked.
+        // `sketch_entity_for_requirement`. Anything else with every slot filled cannot reach here
+        // (a completed offer disarms), so `wants` answering `None` means nothing is being asked.
         let Some(slot) = armed.wants() else {
             return;
         };
@@ -4585,7 +4643,7 @@ impl WindowedState {
             }
         };
 
-        let locus = if armed.verb() == ui::panel::ConstraintVerb::Tangent {
+        let locus = if armed.verb().reads_its_loci() {
             let Some(locus) = self.sketch_unsnapped_profile_coord(cursor_x, cursor_y) else {
                 self.panel_state.sketch_constraint_refusal =
                     Some("cursor is not on the sketch plane");
@@ -4604,6 +4662,15 @@ impl WindowedState {
                 // `toggle` only ever ADDS here: arming cleared the sketch selection, and `offer`
                 // refuses an entity the gesture already holds, so the remove branch is
                 // unreachable for as long as both of those hold.
+                self.panel_state
+                    .selection
+                    .toggle(selection_target(target, candidate));
+                self.panel_state.armed_constraint = Some(armed);
+            }
+            // Every entity is in and the annotation still needs somewhere to go. The picks stay
+            // lit, because they are what the author is about to measure.
+            ui::panel::Offer::Placing => {
+                self.panel_state.sketch_constraint_refusal = None;
                 self.panel_state
                     .selection
                     .toggle(selection_target(target, candidate));
@@ -4666,6 +4733,70 @@ impl WindowedState {
                         );
                     }
                 }
+            }
+        }
+    }
+
+    /// Drop the armed dimension's annotation where the cursor is, and commit it.
+    ///
+    /// The second half of a dimension gesture. The picks said WHAT is measured; this says where
+    /// the author wants to read it, which — once the region rules land — is also part of what is
+    /// being asked. The anchor is carried into the document rather than re-derived, so the label
+    /// stays where it was put.
+    ///
+    /// A refusal behaves exactly as it does for any other completion: the gesture gives its picks
+    /// back and names the culprits, because a full slot list can be told nothing more.
+    fn place_armed_dimension(
+        &mut self,
+        target: document::scene::NodeId,
+        cursor_x: f64,
+        cursor_y: f64,
+    ) {
+        let Some((producer, _)) = self.sketch_node_state(target) else {
+            return;
+        };
+        let Some(armed) = self.panel_state.armed_constraint.clone() else {
+            return;
+        };
+        let (Some(context), Some(anchor)) = (
+            self.sketch_evaluation_context(),
+            self.sketch_unsnapped_profile_coord(cursor_x, cursor_y),
+        ) else {
+            self.panel_state.sketch_constraint_refusal =
+                Some("point somewhere on the sketch plane");
+            return;
+        };
+        let kind = match armed.dimension_dropped_at(anchor, &producer.sketch, context) {
+            Ok(kind) => kind,
+            Err(why) => {
+                self.panel_state.sketch_constraint_refusal = Some(why);
+                reset_failed_sketch_constraint_completion(
+                    &mut self.panel_state.armed_constraint,
+                    &mut self.panel_state.selection,
+                    armed.verb(),
+                );
+                return;
+            }
+        };
+        match producer.with_constraint_anchored(kind, Some(anchor), context) {
+            Ok((constrained, _)) => {
+                self.commit_sketch_profile_edit(target, constrained);
+                self.panel_state.selection.clear_sketch_entities();
+                self.panel_state.armed_constraint = None;
+            }
+            Err(why) => {
+                self.panel_state.sketch_constraint_refusal =
+                    Some(reset_refused_sketch_constraint_completion(
+                        &mut self.panel_state.armed_constraint,
+                        &mut self.panel_state.selection,
+                        armed.verb(),
+                        &why,
+                    ));
+                select_sketch_constraint_refusal_culprits(
+                    &mut self.panel_state.selection,
+                    target,
+                    &why,
+                );
             }
         }
     }
@@ -7623,6 +7754,15 @@ where
 /// angle's arc all sit the same distance out and read as one drawing rather than three.
 const DIMENSION_STANDOFF_PX: f32 = 26.0;
 
+/// Where a rim dimension's leader ends when the author never said — out and up from the center,
+/// the direction a badge on a point already goes.
+///
+/// Only reached by a dimension authored before the annotation carried a place of its own. A placed
+/// one uses what the author dropped, which is the whole point of storing it.
+fn default_rim_anchor(center: egui::Pos2, radius_px: f32) -> egui::Pos2 {
+    center + egui::vec2(0.707, -0.707) * (radius_px + DIMENSION_STANDOFF_PX)
+}
+
 /// A number for a dimension label: no trailing zeros, and no decimal point when it is whole.
 ///
 /// An angle authored as 30 should read `30`, not `30.00`. Two places is where a sketch angle stops
@@ -7713,7 +7853,7 @@ fn sketch_dimension_value_at(
                 .into_iter()
                 .any(|box_px| box_px.expand(3.0).contains(cursor))
         })
-        .map(|gizmo| gizmo.constraint)
+        .and_then(|gizmo| gizmo.constraint)
 }
 
 /// What the top bar says about a refused constraint. `offer` screens the clerical

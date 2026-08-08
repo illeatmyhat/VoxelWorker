@@ -521,11 +521,13 @@ fn repair_erases_a_constraint_that_names_nothing() {
             at: SketchPoint::new(0, 0),
         },
         redundant: false,
+        anchor: None,
     });
     sketch.constraints_mut_for_test().push(Constraint {
         id: 902,
         kind: ConstraintKind::Horizontal { segment: 903 },
         redundant: false,
+        anchor: None,
     });
     assert_eq!(
         sketch.repair(ctx(16)),
@@ -683,6 +685,54 @@ fn restating_a_dimension_moves_the_drawing_and_mints_a_new_id() {
         position(&before.sketch, head),
     );
     assert!(((b[0] - a[0]).hypot(b[1] - a[1]) - 10.0).abs() < 1e-6);
+}
+
+/// **A label stays where the author dropped it** — through the restatement that mints a new id,
+/// and through a density re-target that moves everything it annotates.
+///
+/// The anchor is the only piece of a dimension that is neither asserted nor derived, so it is the
+/// one piece that can be quietly lost. Restating goes through release-and-assert, which throws the
+/// old constraint away; a re-target rescales the drawing out from under a label stored in voxels.
+#[test]
+fn a_dimension_keeps_the_place_its_annotation_was_dropped() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let tail = sketch.add_free_point(SketchPoint::new(0, 0));
+    let head = sketch.add_free_point(SketchPoint::new(10, 0));
+    let span = |length: i64| Dimension::Span {
+        from: tail,
+        to: head,
+        length: SketchLength::new(length),
+    };
+    let dropped = [4.0, 7.0];
+    let asserted = sketch
+        .add_constraint_anchored(ConstraintKind::Dimension(span(10)), Some(dropped), ctx(16))
+        .expect("the drawing already stands ten apart");
+    assert_eq!(sketch.constraints()[0].anchor, Some(dropped));
+
+    // A badge is not a dimension and drops nothing, which is what the `Option` is saying.
+    let plain = sketch.add_constraint(ConstraintKind::Horizontal { segment: tail }, ctx(16));
+    assert!(plain.is_err() || sketch.constraints()[1].anchor.is_none());
+
+    let before = SketchSolid::extrude(sketch, 3);
+    let (after, restated) = before
+        .with_dimension_restated(asserted, span(6), ctx(16))
+        .expect("two points with nothing else asserted can be six apart");
+    assert_ne!(restated, asserted);
+    assert_eq!(
+        after.sketch.constraints()[0].anchor,
+        Some(dropped),
+        "changing the number is not moving the label"
+    );
+
+    // Doubled density doubles every voxel the drawing is written in, and the label is written in
+    // the same voxels. Left alone it would end up half as far out as the author put it.
+    let mut retargeted = after.sketch.clone();
+    retargeted.retarget_density(16, 32);
+    assert_eq!(
+        retargeted.constraints()[0].anchor,
+        Some([8.0, 14.0]),
+        "the label rides with the drawing"
+    );
 }
 
 /// A number the drawing cannot reach is refused, and the refusal costs the author nothing — not
@@ -3487,6 +3537,7 @@ fn loaded_conflicting_concentric_solve_blames_stable_constraints_without_writeba
                 second: SketchCurve::Circle(second),
             },
             redundant: false,
+            anchor: None,
         },
         Constraint {
             id: 9,
@@ -3495,6 +3546,7 @@ fn loaded_conflicting_concentric_solve_blames_stable_constraints_without_writeba
                 at: SketchPoint::new(0, 0),
             },
             redundant: false,
+            anchor: None,
         },
         Constraint {
             id: 13,
@@ -3503,6 +3555,7 @@ fn loaded_conflicting_concentric_solve_blames_stable_constraints_without_writeba
                 at: SketchPoint::new(10, 0),
             },
             redundant: false,
+            anchor: None,
         },
     ]);
     let encoded = serde_json::to_string(&source).expect("persisted source");
@@ -3540,6 +3593,7 @@ fn derived_center_drag_rolls_back_against_loaded_conflicting_concentric() {
                 second: SketchCurve::Circle(circle),
             },
             redundant: false,
+            anchor: None,
         },
         Constraint {
             id: 9,
@@ -3548,6 +3602,7 @@ fn derived_center_drag_rolls_back_against_loaded_conflicting_concentric() {
                 at: SketchPoint::new(0, 0),
             },
             redundant: false,
+            anchor: None,
         },
         Constraint {
             id: 13,
@@ -3556,6 +3611,7 @@ fn derived_center_drag_rolls_back_against_loaded_conflicting_concentric() {
                 at: SketchPoint::new(10, 0),
             },
             redundant: false,
+            anchor: None,
         },
     ]);
     let encoded = serde_json::to_string(&source).expect("persisted source");

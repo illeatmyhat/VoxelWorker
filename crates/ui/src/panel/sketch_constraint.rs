@@ -231,6 +231,18 @@ pub enum ConstraintVerb {
 }
 
 impl ConstraintVerb {
+    /// Whether this verb reads WHERE on an entity each pick landed, not just which entity it was.
+    ///
+    /// Tangent chooses its durable branch from the two click loci. A dimension chooses which END
+    /// of an arc an angle is struck at the same way — pointing at part of a curve that turns is
+    /// the author saying which part, and a curve that turns has a different direction everywhere.
+    ///
+    /// The list is short on purpose: a locus is evidence about a gesture, so a verb that does not
+    /// read one should not carry one around and tempt a later reader into inventing a meaning.
+    pub const fn reads_its_loci(self) -> bool {
+        matches!(self, Self::Tangent | Self::Dimension)
+    }
+
     /// The entities this verb asks for, in the order it asks for them.
     ///
     /// The list IS the arity: a verb is complete when every slot is filled, so adding a
@@ -348,7 +360,8 @@ pub struct ArmedConstraint {
     verb: ConstraintVerb,
     /// One entity per filled slot, in slot order.
     picked: Vec<SketchEntity>,
-    /// Unsnapped profile click locations, only meaningful for Tangent and never persisted.
+    /// Unsnapped profile click locations, kept only for the verbs that read them and never
+    /// persisted. See [`ConstraintVerb::reads_its_loci`].
     loci: Vec<[f64; 2]>,
 }
 
@@ -360,6 +373,13 @@ pub enum Offer {
     /// Taken, and that was the last slot. The caller applies [`ArmedConstraint::kind`] and
     /// disarms.
     Complete,
+    /// Taken, that was the last ENTITY slot, and the gesture now wants a place to put its
+    /// annotation. The caller tracks the cursor, previews
+    /// [`ArmedConstraint::dimension_dropped_at`] as it moves, and commits on the next click.
+    ///
+    /// Only a dimension reaches this: where a badge sits says nothing, but where a dimension sits
+    /// is what chooses which quantity it states.
+    Placing,
     /// Not taken, and the reason. The gesture stays armed: a mis-click is not an abandonment.
     Refused(&'static str),
 }
@@ -382,8 +402,10 @@ impl ArmedConstraint {
     /// Asked of the rebuilt gesture rather than of the list's length, because the verb whose arity
     /// its first pick decides has no one length to compare against.
     pub fn from_parts(verb: ConstraintVerb, picked: Vec<SketchEntity>) -> Self {
-        // Tangent depends on unsnapped click evidence; restored artifacts intentionally restart it.
-        if verb == ConstraintVerb::Tangent {
+        // A verb that reads its click loci cannot be restored from the picks alone — the evidence
+        // that chose its branch or its arc end is session-only, so it restarts rather than coming
+        // back subtly answering a different question.
+        if verb.reads_its_loci() {
             return Self::new(verb);
         }
         let mut restored = Self::new(verb);
@@ -527,13 +549,22 @@ impl ArmedConstraint {
             return Offer::Refused("two lines use Parallel — pick a curve");
         }
         self.picked.push(candidate);
-        if self.verb == ConstraintVerb::Tangent {
+        if self.verb.reads_its_loci() {
             self.loci.push(locus);
         }
-        match self.wants() {
-            Some(_) => Offer::Taken,
-            None => Offer::Complete,
+        match (self.wants(), self.verb) {
+            (Some(_), _) => Offer::Taken,
+            // A dimension is not finished when its picks are: WHERE the author drops the
+            // annotation is still part of the question it is asking.
+            (None, ConstraintVerb::Dimension) => Offer::Placing,
+            (None, _) => Offer::Complete,
         }
+    }
+
+    /// Whether the picks are all in and the gesture is waiting to be told where its annotation
+    /// goes. Only a dimension ever is; a badge has no position (ADR 0046).
+    pub fn is_placing(&self) -> bool {
+        self.verb == ConstraintVerb::Dimension && self.wants().is_none()
     }
 
     /// The constraint the filled slots assert, or `None` while any slot is still empty.
@@ -700,6 +731,28 @@ impl ArmedConstraint {
             .choose_tangent_branch(first, *first_locus, second, *second_locus, context)
             .map_err(|_| "cannot choose a tangent branch here")?;
         Ok(ConstraintKind::tangent(first, second, branch))
+    }
+
+    /// The dimension this gesture would assert if the author dropped its annotation at `anchor`,
+    /// in the sketch plane's own voxel coordinates.
+    ///
+    /// Called every frame while [`is_placing`](Self::is_placing), so the ghost the author is
+    /// dragging IS the constraint they will get — there is no separate preview to drift out of
+    /// agreement with the thing it previews.
+    ///
+    /// # Errors
+    ///
+    /// Whatever [`kind_at_context`](Self::kind_at_context) refuses, unchanged.
+    pub fn dimension_dropped_at(
+        &self,
+        anchor: [f64; 2],
+        sketch: &Sketch,
+        context: parametric::EvaluationContext,
+    ) -> Result<ConstraintKind, &'static str> {
+        // The anchor does not choose a member yet — it is threaded through so the caller's preview
+        // and its commit already go through one door, and the region rule lands in one place.
+        let _ = anchor;
+        self.kind_at_context(sketch, context)
     }
 }
 
@@ -949,14 +1002,16 @@ mod tests {
             .circle_about(center, document::sketch::SketchLength::new(7))
             .expect("a circle about a free point");
 
-        // A rim: one pick, and the gesture is over. A whole circle is read across, so what it
-        // seeds is a DIAMETER at twice the radius it stands at.
+        // A rim: one pick, and the gesture has everything it needs to MEASURE — but not yet
+        // where to write the answer, so it goes placing rather than complete. A whole circle is
+        // read across, so what it seeds is a DIAMETER at twice the radius it stands at.
         let mut rim = ArmedConstraint::new(ConstraintVerb::Dimension);
         assert_eq!(rim.wants(), Some(PickRequirement::PointOrCurve));
         assert_eq!(
             rim.offer(SketchEntity::Curve(SketchCurve::Circle(circle)), &sketch),
-            Offer::Complete
+            Offer::Placing
         );
+        assert!(rim.is_placing());
         assert_eq!(rim.wants(), None);
         assert_eq!(
             rim.kind_at_context(&sketch, density_16()),
@@ -976,10 +1031,7 @@ mod tests {
             span.offer(SketchEntity::Curve(SketchCurve::Segment(first)), &sketch),
             Offer::Refused("that is not a point")
         );
-        assert_eq!(
-            span.offer(SketchEntity::Point(to), &sketch),
-            Offer::Complete
-        );
+        assert_eq!(span.offer(SketchEntity::Point(to), &sketch), Offer::Placing);
         let ConstraintKind::Dimension(Dimension::Span { length, .. }) = span
             .kind_at_context(&sketch, density_16())
             .expect("two points always have a distance")
@@ -1007,7 +1059,7 @@ mod tests {
         );
         assert_eq!(
             angle.offer(SketchEntity::Curve(SketchCurve::Segment(second)), &sketch),
-            Offer::Complete
+            Offer::Placing
         );
         let ConstraintKind::Dimension(Dimension::Angle { degrees, .. }) = angle
             .kind_at_context(&sketch, density_16())
@@ -1047,11 +1099,14 @@ mod tests {
         );
         assert_eq!(span.picked(), &[]);
 
-        // A gesture still mid-pick comes back intact, which is what the door is for.
+        // A dimension reads WHERE each pick landed, not just what it was — which end of an arc
+        // an angle is struck at comes from the click. That evidence is session-only, so a restored
+        // gesture restarts rather than coming back looking the same and quietly answering a
+        // different question. Tangent has always restarted for exactly this reason.
         let waiting =
             ArmedConstraint::from_parts(ConstraintVerb::Dimension, vec![SketchEntity::Point(from)]);
-        assert_eq!(waiting.picked(), &[SketchEntity::Point(from)]);
-        assert_eq!(waiting.wants(), Some(PickRequirement::Point));
+        assert_eq!(waiting.picked(), &[]);
+        assert!(ConstraintVerb::Dimension.reads_its_loci());
         let _ = &sketch;
     }
 

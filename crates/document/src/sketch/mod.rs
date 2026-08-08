@@ -2865,6 +2865,7 @@ impl Sketch {
             id: holding,
             kind: ConstraintKind::PointOnCurve { point: grip, curve },
             redundant: false,
+            anchor: None,
         });
         // A curve that TURNS is dragged by its rim, and a rim drag is about the radius: the center
         // holds and the distance out to it is what the author is changing. That is not a rule for
@@ -4246,10 +4247,27 @@ impl Sketch {
     /// after the typed trial has accepted do we allocate, append, and apply its solution together.
     /// Accepted redundancy remains visible because it can express author intent even when rank adds
     /// no new information.
-    #[allow(clippy::too_many_lines)]
     pub fn add_constraint(
         &mut self,
         kind: ConstraintKind,
+        context: parametric::EvaluationContext,
+    ) -> Result<EntityId, ConstraintRefusal> {
+        self.add_constraint_anchored(kind, None, context)
+    }
+
+    /// [`add_constraint`](Self::add_constraint) with the place the author dropped the annotation.
+    ///
+    /// The anchor rides along rather than being asserted: it reaches the stored constraint and
+    /// nothing else, so a refusal loses it with everything else the attempt built.
+    ///
+    /// # Errors
+    ///
+    /// Every refusal [`add_constraint`](Self::add_constraint) makes, for the same reasons.
+    #[allow(clippy::too_many_lines)]
+    pub fn add_constraint_anchored(
+        &mut self,
+        kind: ConstraintKind,
+        anchor: Option<[f64; 2]>,
         context: parametric::EvaluationContext,
     ) -> Result<EntityId, ConstraintRefusal> {
         let kind = kind.normalized();
@@ -4353,6 +4371,7 @@ impl Sketch {
             id,
             kind,
             redundant,
+            anchor,
         });
         let before = self.points.clone();
         plan.apply(self);
@@ -6189,6 +6208,13 @@ impl Sketch {
         }
         self.retarget_patterns(old_density, new_density);
         for constraint in &mut self.constraints {
+            // The label rides with the drawing. The same voxel numbers mean a different length at
+            // a new density, so an anchor left alone would slide off the geometry it annotates.
+            if let (Some(anchor), true) = (&mut constraint.anchor, old_density != 0) {
+                let scale = f64::from(new_density) / f64::from(old_density);
+                anchor[0] *= scale;
+                anchor[1] *= scale;
+            }
             match &mut constraint.kind {
                 ConstraintKind::Fix { at, .. } => {
                     *at = at.retargeted(old_density, new_density);
