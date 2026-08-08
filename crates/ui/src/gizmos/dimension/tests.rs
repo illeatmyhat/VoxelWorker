@@ -806,8 +806,8 @@ fn an_arm_the_arc_falls_short_of_is_carried_inward_to_meet_it() {
         .expect("the far arm needs carrying to the arc");
     let out = |at: Pos2| (at - vertex).length();
     assert!(
-        (out(dogleg.0) - 28.0).abs() < 1e-3 && (out(dogleg.1) - 70.0).abs() < 1e-3,
-        "the dogleg runs from just past the arc up to where the line starts: {dogleg:?}",
+        (out(dogleg.0) - 12.0).abs() < 1e-3 && (out(dogleg.1) - 70.0).abs() < 1e-3,
+        "the dogleg crosses the arc and runs up to where the line starts: {dogleg:?}",
     );
 }
 

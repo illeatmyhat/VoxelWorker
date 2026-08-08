@@ -67,7 +67,11 @@ pub fn angle(
         let gap = if target > leg.furthest {
             Some((leg.furthest, target))
         } else if target < leg.nearest {
-            Some((target, leg.nearest))
+            // Coming the other way, so the overrun is on the INNER side: the line crosses the arc
+            // and runs its eight past, exactly as it does when the arm stops short. Starting at
+            // `target` instead would leave a hole the width of the overrun between the arc and
+            // the line, with the arc's own terminator joined to nothing.
+            Some(((radius - OVERRUN).max(0.0), leg.nearest))
         } else {
             // The arc lands on the arm itself, which is already drawn.
             None

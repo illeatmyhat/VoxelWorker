@@ -4178,3 +4178,124 @@ fn a_gap_refuses_a_line_of_no_length_and_a_length_of_none() {
         "a point standing ON a line is `PointOnCurve`, which asserts a place and not a distance"
     );
 }
+
+/// **Every member of the dimension family survives being written out and read back.**
+///
+/// A dimension is the one relation whose whole point is that the AUTHOR stated it, so a member
+/// that failed to reload would silently hand back a claim nobody made. The family grew a member at
+/// a time and each arrived with its own solver row and its own refusals; what none of them was
+/// checked for is the part that only a saved document exercises — a renamed field, a variant that
+/// serializes as something an older reader already uses, or a `#[serde(default)]` quietly filling
+/// in a corner the author actually chose.
+#[test]
+fn every_dimension_member_round_trips_through_serde() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let (rail_from, rail_to, rail) = add_test_segment(&mut sketch, [0, 0], [10, 0]);
+    // A span along an axis gets its OWN slanted pair. On the horizontal rail the rise is zero, and
+    // a rise of zero has no direction to grow in — the row is degenerate, not merely unsatisfied.
+    let (stile_from, stile_to, _) = add_test_segment(&mut sketch, [40, 0], [46, 8]);
+    let (_, _, arm) = add_test_segment(&mut sketch, [0, 20], [8, 26]);
+    let stood = sketch.add_free_point(SketchPoint::new(3, 7));
+    let arc_from = sketch.add_free_point(SketchPoint::new(30, 0));
+    let arc_to = sketch.add_free_point(SketchPoint::new(20, 10));
+    let arc = sketch
+        .connect_arc(arc_from, arc_to, AngleMeasurement::from_degrees(90))
+        .expect("a quarter arc");
+    let hub = sketch.add_free_point(SketchPoint::new(-30, 0));
+    let rims = [6, 10].map(|radius| {
+        SketchCurve::Circle(
+            sketch
+                .circle_about(hub, SketchLength::new(radius))
+                .expect("a rim about a free point"),
+        )
+    });
+
+    // One of each, including the two that carry a choice a reader could not otherwise recover:
+    // which END of an arc an angle arm reads, and which of the four CORNERS it was struck in.
+    let stated = [
+        Dimension::Span {
+            from: rail_from,
+            to: rail_to,
+            length: SketchLength::new(10),
+        },
+        Dimension::SpanAlong {
+            from: stile_from,
+            to: stile_to,
+            axis: InPlaneAxis::Up,
+            length: SketchLength::new(8),
+        },
+        Dimension::Gap {
+            point: stood,
+            segment: rail,
+            length: SketchLength::new(7),
+        },
+        Dimension::RimGap {
+            first: rims[0],
+            second: rims[1],
+            length: SketchLength::new(4),
+        },
+        Dimension::Angle {
+            first: AngleArm::Segment { segment: arm },
+            second: AngleArm::ArcEnd {
+                arc,
+                end: ArcEnd::To,
+            },
+            degrees: AngleMeasurement::from_degrees(35),
+            corner: AngleCorner::Supplementary,
+        },
+        Dimension::Radius {
+            curve: SketchCurve::Arc(arc),
+            length: SketchLength::new(10),
+        },
+        Dimension::Diameter {
+            curve: rims[0],
+            length: SketchLength::new(12),
+        },
+    ];
+    for dimension in stated {
+        sketch
+            .add_constraint(ConstraintKind::Dimension(dimension), ctx(16))
+            .unwrap_or_else(|fault| panic!("{dimension:?} was refused: {fault:?}"));
+    }
+
+    let json = serde_json::to_string(&sketch).expect("serialize");
+    let loaded: Sketch = serde_json::from_str(&json).expect("deserialize");
+    let reloaded: Vec<ConstraintKind> = loaded
+        .constraints()
+        .iter()
+        .map(|constraint| constraint.kind)
+        .collect();
+    for dimension in stated {
+        assert!(
+            reloaded.contains(&ConstraintKind::Dimension(dimension)),
+            "{dimension:?} did not come back: {reloaded:?}"
+        );
+    }
+    assert_eq!(reloaded.len(), stated.len(), "and nothing else came back");
+
+    // A re-target rescales what it should and leaves the angle alone, on the RELOADED document —
+    // an authored quantity that lost its density on the way through would only show up here.
+    let mut retargeted = loaded;
+    retargeted.retarget_density(16, 32);
+    for kind in retargeted.constraints().iter().map(|held| held.kind) {
+        let ConstraintKind::Dimension(dimension) = kind else {
+            panic!("only dimensions were asserted")
+        };
+        match dimension {
+            Dimension::Angle { degrees, .. } => {
+                assert!(
+                    (degrees.to_degrees_f64() - 35.0).abs() < 1e-9,
+                    "{degrees:?}"
+                );
+            }
+            Dimension::Span { length, .. }
+            | Dimension::SpanAlong { length, .. }
+            | Dimension::Gap { length, .. }
+            | Dimension::RimGap { length, .. }
+            | Dimension::Radius { length, .. }
+            | Dimension::Diameter { length, .. } => {
+                assert!(length.value() > 0.0, "a length went missing: {dimension:?}");
+            }
+        }
+    }
+}

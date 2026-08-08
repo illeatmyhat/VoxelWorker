@@ -73,6 +73,38 @@ fn rim_curve(painter: &Painter, rim: dimension::Rim) {
     }
 }
 
+/// Draws an angle arm that is an arc's own TANGENT: the curve is drawn, the tangent line is not,
+/// and the leg the angle is given runs from the arc's end out along it by the arc's own radius.
+///
+/// `side` picks which way the circle sits off the tangent, and with it which way the curve leaves
+/// the end the angle is struck at.
+fn tangent_arm(
+    painter: &Painter,
+    vertex: Pos2,
+    bearing: f32,
+    reach: f32,
+    radius: f32,
+    side: f32,
+) -> dimension::Leg {
+    let along = Vec2::angled(bearing);
+    let end = vertex + along * reach;
+    let center = end + Vec2::new(-along.y, along.x) * side * radius;
+    let standing = round(center, radius);
+    let start = (end - center).y.atan2((end - center).x);
+    rim_curve(
+        painter,
+        dimension::Rim {
+            from: start,
+            turn: side * 1.15,
+            at: &standing,
+        },
+    );
+    dimension::Leg {
+        nearest: reach,
+        furthest: reach + radius,
+    }
+}
+
 /// Draws the sketch line an angle's leg is read off, over the interval that line actually occupies.
 fn arm(painter: &Painter, vertex: Pos2, bearing: f32, leg: dimension::Leg) {
     let along = Vec2::new(bearing.cos(), bearing.sin());
@@ -495,6 +527,57 @@ impl Sheet {
                     40.0,
                     [stops_short, runs_past],
                     "74°",
+                    Rank::Driving,
+                )
+                .paint(p);
+            },
+        );
+        self.specimen_row(
+            ui,
+            "angle · struck against an arc's tangent",
+            "An arm can be an ARC instead of a line, and what it contributes is the tangent at one \
+             of its two ends. The tangent is never drawn — only the curve is — so the dogleg out \
+             to the arc's end is the whole of what says where the arm is read from, and the \
+             corner it meets the line in is virtual as usual. Left and right are the same idea at \
+             ends that curve away opposite ways: which end an arm names is authored, not derived, \
+             because one arc gives two different angles against the same line.",
+            |p, s| {
+                let vertex = Pos2::new(s.left() + 20.0, s.bottom() - 10.0);
+                let (line, curve) = (-0.20_f32, -1.30_f32);
+                // The arc is struck inside the straight arm, so only the curved arm needs a
+                // dogleg — which is the whole point of the row.
+                let straight = dimension::Leg {
+                    nearest: 18.0,
+                    furthest: 82.0,
+                };
+                arm(p, vertex, line, straight);
+                let tangent = tangent_arm(p, vertex, curve, 62.0, 16.0, 1.0);
+                dimension::angle(
+                    vertex,
+                    line,
+                    curve,
+                    46.0,
+                    [straight, tangent],
+                    "63\u{b0}",
+                    Rank::Driving,
+                )
+                .paint(p);
+
+                let vertex = Pos2::new(s.left() + 196.0, s.bottom() - 8.0);
+                let (line, curve) = (-2.90_f32, -1.95_f32);
+                let straight = dimension::Leg {
+                    nearest: 16.0,
+                    furthest: 76.0,
+                };
+                arm(p, vertex, line, straight);
+                let tangent = tangent_arm(p, vertex, curve, 68.0, 14.0, -1.0);
+                dimension::angle(
+                    vertex,
+                    line,
+                    curve,
+                    54.0,
+                    [straight, tangent],
+                    "54\u{b0}",
                     Rank::Driving,
                 )
                 .paint(p);
