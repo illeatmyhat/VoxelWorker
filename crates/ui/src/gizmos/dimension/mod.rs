@@ -221,24 +221,41 @@ impl Rim {
         ((bearing - self.from) * self.turn.signum()).rem_euclid(std::f32::consts::TAU)
     }
 
-    /// The arc that carries this curve round to `bearing`, as `(from, to)` bearings — `None` when
-    /// the curve already reaches it. `overrun` is the extra turn past the meeting point, so the
-    /// extension crosses what it is reaching for rather than stopping dead on it.
-    fn carry_to(self, bearing: f32, overrun: f32) -> Option<(f32, f32)> {
-        let direction = self.turn.signum();
+    /// How far this curve falls short of `bearing`, as `(the end that is nearer, the signed turn
+    /// from it to the ask)` — `None` when the curve is drawn there and falls short of nothing.
+    fn shortfall(self, bearing: f32) -> Option<(f32, f32)> {
         let round = self.round_to(bearing);
         if round <= self.turn.abs() {
             return None;
         }
         // Past the far end, or short of the near one — whichever is the shorter way to reach it.
+        let direction = self.turn.signum();
         let past = round - self.turn.abs();
         let short = std::f32::consts::TAU - round;
         Some(if past <= short {
-            let end = self.from + self.turn;
-            (end, end + direction * (past + overrun))
+            (self.from + self.turn, direction * past)
         } else {
-            (self.from, self.from - direction * (short + overrun))
+            (self.from, -direction * short)
         })
+    }
+
+    /// The arc that carries this curve round to `bearing`, as `(from, to)` bearings — `None` when
+    /// the curve already reaches it. `overrun` is the extra turn past the meeting point, so the
+    /// extension crosses what it is reaching for rather than stopping dead on it.
+    fn carry_to(self, bearing: f32, overrun: f32) -> Option<(f32, f32)> {
+        let (end, over) = self.shortfall(bearing)?;
+        Some((end, end + over + over.signum() * overrun))
+    }
+
+    /// The bearing on this curve nearest the one asked for: the ask itself where the curve is drawn
+    /// there, and the nearer of its two ends where it is not.
+    ///
+    /// This is what keeps a dimension between two curves ON both of them. Where either falls short,
+    /// the annotation hangs off an end rather than floating out past where anything is drawn, and
+    /// the extension lines grow to say so.
+    #[must_use]
+    pub fn nearest_drawn(self, bearing: f32) -> f32 {
+        self.shortfall(bearing).map_or(bearing, |(end, _)| end)
     }
 }
 

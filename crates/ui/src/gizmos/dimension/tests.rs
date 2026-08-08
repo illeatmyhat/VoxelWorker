@@ -705,3 +705,46 @@ fn every_piece_is_finite_at_a_degenerate_input() {
         assert!(drawing.labels.iter().all(|l| l.radians.is_finite()));
     }
 }
+/// **A bearing a curve does not reach is answered with the end that is nearer.** This is what keeps
+/// a dimension between two rims ON both of them: the annotation hangs off an end rather than
+/// floating out past where anything is drawn, and the extension lines grow to say so.
+#[test]
+fn a_rim_answers_a_bearing_it_does_not_reach_with_its_nearer_end() {
+    let quarter = std::f32::consts::FRAC_PI_2;
+    // A quarter of the circle, from due east round to due south (screen y runs down).
+    let rim = Rim {
+        from: 0.0,
+        turn: quarter,
+    };
+    let near = |bearing: f32| rim.nearest_drawn(bearing);
+    assert!(
+        (near(quarter / 2.0) - quarter / 2.0).abs() < 1e-6,
+        "the curve is drawn there, so the ask is its own answer"
+    );
+    assert!(
+        (near(quarter * 1.2) - quarter).abs() < 1e-6,
+        "just past the far end lands on the far end"
+    );
+    assert!(
+        near(-0.2).abs() < 1e-6,
+        "just short of the near end lands on the near end"
+    );
+    // Due west is a half turn from the start and a quarter from the end, so the END is nearer.
+    assert!(
+        (near(std::f32::consts::PI) - quarter).abs() < 1e-6,
+        "the nearer of the two ends wins, not whichever comes first"
+    );
+    // A rim that turns the other way answers the mirror of all of it.
+    let widdershins = Rim {
+        from: 0.0,
+        turn: -quarter,
+    };
+    assert!(
+        (widdershins.nearest_drawn(-0.2) + 0.2).abs() < 1e-6,
+        "inside its own sweep, which now runs the other way"
+    );
+    assert!(
+        widdershins.nearest_drawn(0.2).abs() < 1e-6,
+        "just past the start it now leaves behind, so the start is the answer"
+    );
+}

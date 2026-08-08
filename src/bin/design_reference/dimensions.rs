@@ -191,6 +191,70 @@ impl Sheet {
         );
         self.specimen_row(
             ui,
+            "rim gap · two rims about one center",
+            "The same measurement a gap across a line makes, read on a curve: the dimension line \
+             runs ALONG a radius, so each extension line lies on the tangent at the rim it leaves. \
+             Left: two whole circles, the annotation dropped at the bearing it is measured out along, \
+             so neither extension has anywhere to go and the value is evicted the way any span too \
+             narrow to hold it is. Right: two arcs, with the annotation pulled round past where the \
+             outer one is drawn — the bearing lands on that arc's nearer end and both tangents grow \
+             to reach the line.",
+            |p, s| {
+                let center = Pos2::new(s.left() + 46.0, s.center().y);
+                for radius in [12.0_f32, 30.0] {
+                    rim_curve(
+                        p,
+                        center,
+                        radius,
+                        dimension::Rim {
+                            from: 0.0,
+                            turn: std::f32::consts::TAU * 0.999,
+                        },
+                    );
+                }
+                dimension::axis_span(
+                    center + Vec2::X * 12.0,
+                    center + Vec2::X * 30.0,
+                    Vec2::X,
+                    center + Vec2::X * 21.0,
+                    "18",
+                    Rank::Driving,
+                )
+                .paint(p);
+
+                let hub = Pos2::new(s.left() + 150.0, s.center().y + 14.0);
+                // The outer arc stops short of where the text was dropped; the inner one does not.
+                let drawn = [
+                    dimension::Rim {
+                        from: -2.4,
+                        turn: 2.4,
+                    },
+                    dimension::Rim {
+                        from: -2.0,
+                        turn: 1.4,
+                    },
+                ];
+                for (radius, rim) in [12.0_f32, 30.0].into_iter().zip(drawn) {
+                    rim_curve(p, hub, radius, rim);
+                }
+                let dropped = -0.2;
+                let bearing = drawn
+                    .into_iter()
+                    .fold(dropped, |bearing, rim| rim.nearest_drawn(bearing));
+                let out = Vec2::angled(bearing);
+                dimension::axis_span(
+                    hub + out * 12.0,
+                    hub + out * 30.0,
+                    out,
+                    hub + Vec2::angled(dropped) * 21.0,
+                    "18",
+                    Rank::Driving,
+                )
+                .paint(p);
+            },
+        );
+        self.specimen_row(
+            ui,
             "radius · anchor outside / inside the curve",
             "The arc point is DERIVED from the anchor, never stored beside it: the leader meets \
              the curve on the anchor's own ray, so no drag can make a radius stop pointing at its \

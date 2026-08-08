@@ -4314,6 +4314,48 @@ impl WindowedState {
                         rank,
                     )
                 }
+                document::sketch::Dimension::RimGap {
+                    first,
+                    second,
+                    length,
+                } => {
+                    let sized = |curve| {
+                        let form = producer.sketch.circular_form(curve, context)?;
+                        let edge = [form.center[0] + form.radius, form.center[1]];
+                        let (center, edge) = (to_px(form.center)?, to_px(edge)?);
+                        Some((center, center.distance(edge)))
+                    };
+                    let ((center, inner), (_, outer)) = (sized(first)?, sized(second)?);
+                    let anchor =
+                        placed.unwrap_or_else(|| default_rim_anchor(center, inner.max(outer)));
+                    // The bearing the annotation was dropped at is the radius the gap is measured
+                    // out along, clamped to where each rim is actually drawn — asked of each in
+                    // turn, so a bearing NEITHER reaches settles on the second's end and the
+                    // drawing hangs off a rim rather than floating past where anything is drawn.
+                    let reach = anchor - center;
+                    if reach.length() <= f32::EPSILON {
+                        return None;
+                    }
+                    let bearing = [first, second].into_iter().fold(
+                        reach.y.atan2(reach.x),
+                        |bearing, curve| {
+                            drawn_rim(&producer.sketch, curve, center, &to_px)
+                                .map_or(bearing, |rim| rim.nearest_drawn(bearing))
+                        },
+                    );
+                    let out = egui::vec2(bearing.cos(), bearing.sin());
+                    // The dimension line runs ALONG that radius, so each extension line lies on
+                    // the tangent at the rim it leaves — the same drawing a gap across a line
+                    // makes, read on a curve.
+                    ui::gizmos::dimension::axis_span(
+                        center + out * inner,
+                        center + out * outer,
+                        out,
+                        anchor,
+                        &voxels(length),
+                        rank,
+                    )
+                }
                 document::sketch::Dimension::Radius { curve, length } => {
                     let form = producer.sketch.circular_form(curve, context)?;
                     let edge = [form.center[0] + form.radius, form.center[1]];

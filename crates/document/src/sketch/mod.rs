@@ -4616,6 +4616,27 @@ impl Sketch {
                     return Err(ConstraintRefusal::Impossible);
                 }
             }
+            ConstraintKind::Dimension(Dimension::RimGap {
+                first,
+                second,
+                length,
+            }) => {
+                if first.id() == second.id() {
+                    return Err(ConstraintRefusal::Impossible);
+                }
+                // A center is the one thing every rim has and no straight curve does, so asking
+                // for it asks both liveness and circularity at once.
+                if self.circular_curve_center(first).is_none()
+                    || self.circular_curve_center(second).is_none()
+                {
+                    return Err(ConstraintRefusal::UnknownEntity);
+                }
+                // Zero is refused for the reason a zero gap is: two rims of one size about one
+                // center are one rim, and saying so is `Equal`.
+                if !length.value().is_finite() || length.value() <= 0.0 {
+                    return Err(ConstraintRefusal::Impossible);
+                }
+            }
             ConstraintKind::Coincident { first, second } => {
                 if !known_point(first) || !known_point(second) {
                     return Err(ConstraintRefusal::UnknownEntity);
@@ -6289,6 +6310,7 @@ impl Sketch {
                     Dimension::Span { length, .. }
                     | Dimension::SpanAlong { length, .. }
                     | Dimension::Gap { length, .. }
+                    | Dimension::RimGap { length, .. }
                     | Dimension::Radius { length, .. }
                     | Dimension::Diameter { length, .. },
                 ) => {

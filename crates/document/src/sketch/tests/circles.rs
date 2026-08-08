@@ -890,3 +890,143 @@ fn extruding_a_circle_resolves_a_disc() {
         "a disc of about {expected} voxels per layer, got {per_layer}"
     );
 }
+/// Two circles about one shared center, `inner` first.
+fn two_rims(inner: i64, outer: i64) -> (Sketch, SketchCurve, SketchCurve) {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let center = sketch.add_free_point(SketchPoint::new(0, 0));
+    let rims = [inner, outer].map(|radius| {
+        SketchCurve::Circle(
+            sketch
+                .circle_about(center, SketchLength::new(radius))
+                .expect("a rim about a free point"),
+        )
+    });
+    (sketch, rims[0], rims[1])
+}
+
+/// **The gap between two rims about one center is a distance the drawing can be told to take.**
+/// Pin the inner one and the outer one moves to leave the room asked for — which is the whole
+/// reason the claim is a difference of radii rather than two separate sizes.
+#[test]
+fn a_rim_gap_pushes_the_outer_rim_out_to_leave_the_room_asked_for() {
+    let (mut sketch, inner, outer) = two_rims(6, 10);
+    sketch
+        .add_constraint(
+            ConstraintKind::Dimension(Dimension::Radius {
+                curve: inner,
+                length: SketchLength::new(6),
+            }),
+            ctx(16),
+        )
+        .expect("the inner rim is held at the size it was drawn");
+    sketch
+        .add_constraint(
+            ConstraintKind::Dimension(Dimension::RimGap {
+                first: inner,
+                second: outer,
+                length: SketchLength::new(9),
+            }),
+            ctx(16),
+        )
+        .expect("four apart can be asked to stand nine apart");
+    sketch.solve(ctx(16)).expect("two rows and two free radii");
+
+    let radius = |curve: SketchCurve| {
+        sketch
+            .circular_form(curve, ctx(16))
+            .expect("a rim still turns")
+            .radius
+    };
+    assert!(
+        (radius(inner) - 6.0).abs() < 1e-6,
+        "the inner rim was pinned: {}",
+        radius(inner)
+    );
+    assert!(
+        (radius(outer) - 15.0).abs() < 1e-6,
+        "the outer rim took the gap rather than crossing to the near side: {}",
+        radius(outer)
+    );
+}
+
+/// **The claim is about the two rims and not about which is named first.** Both ids come from one
+/// store and the measurement reads the same either way round, so the pair written backwards is the
+/// same question asked twice.
+#[test]
+fn a_rim_gap_reads_the_same_either_way_round() {
+    let (mut sketch, inner, outer) = two_rims(6, 10);
+    let stated = |first, second, length| {
+        ConstraintKind::Dimension(Dimension::RimGap {
+            first,
+            second,
+            length: SketchLength::new(length),
+        })
+    };
+    let held = sketch
+        .add_constraint(stated(inner, outer, 4), ctx(16))
+        .expect("the gap the drawing already has");
+    assert_eq!(
+        sketch.add_constraint(stated(outer, inner, 7), ctx(16)),
+        Err(ConstraintRefusal::AlreadyAsserted { existing: held }),
+        "backwards, and a different number, is still one question"
+    );
+    // Each rim's own size is a different question and takes.
+    sketch
+        .add_constraint(
+            ConstraintKind::Dimension(Dimension::Radius {
+                curve: inner,
+                length: SketchLength::new(6),
+            }),
+            ctx(16),
+        )
+        .expect("how big one rim is, is not how far the two stand apart");
+
+    // And it is an authored length, so a density re-target rescales it.
+    sketch.retarget_density(16, 32);
+    let ConstraintKind::Dimension(Dimension::RimGap { length, .. }) = sketch.constraints()[0].kind
+    else {
+        panic!("the gap is still a gap");
+    };
+    assert!((length.value() - 8.0).abs() < 1e-6, "{}", length.value());
+}
+
+/// A rim gap needs two rims and a distance that is really one. A rim against itself is not a pair,
+/// and a gap of nothing makes the two rims one rim — which is `Equal`, a claim about shape.
+#[test]
+fn a_rim_gap_refuses_one_rim_twice_and_a_gap_of_none() {
+    let (mut sketch, inner, outer) = two_rims(6, 10);
+    for (first, second, length, why) in [
+        (inner, inner, 4, "one rim named twice is not a pair"),
+        (inner, outer, 0, "a gap of nothing makes the two one"),
+    ] {
+        assert_eq!(
+            sketch.add_constraint(
+                ConstraintKind::Dimension(Dimension::RimGap {
+                    first,
+                    second,
+                    length: SketchLength::new(length),
+                }),
+                ctx(16),
+            ),
+            Err(ConstraintRefusal::Impossible),
+            "{why}"
+        );
+    }
+    // A line has no rim to measure across, so naming one is naming geometry the claim cannot hold.
+    let ends = [
+        sketch.add_free_point(SketchPoint::new(0, 0)),
+        sketch.add_free_point(SketchPoint::new(9, 0)),
+    ];
+    let line = sketch.connect(ends[0], ends[1]).expect("a line");
+    assert_eq!(
+        sketch.add_constraint(
+            ConstraintKind::Dimension(Dimension::RimGap {
+                first: inner,
+                second: SketchCurve::Segment(line),
+                length: SketchLength::new(4),
+            }),
+            ctx(16),
+        ),
+        Err(ConstraintRefusal::UnknownEntity)
+    );
+}

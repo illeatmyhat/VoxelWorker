@@ -250,6 +250,21 @@ pub enum Dimension {
         segment: EntityId,
         length: SketchLength,
     },
+    /// Two rims about one center stand this far apart, measured straight out along a radius.
+    ///
+    /// The same claim [`Gap`](Self::Gap) makes about a line, read on a curve: the dimension line
+    /// runs across both rims instead of along them, so the two extension lines lie on the tangents
+    /// rather than on the geometry itself.
+    ///
+    /// What it asserts is that the two rims differ in size by this much, which where they share a
+    /// center is exactly the gap between them. Sharing the center is `Concentric`'s claim and is
+    /// stated separately — an author who wants both says both, and one that has come apart still
+    /// holds the size it was given.
+    RimGap {
+        first: SketchCurve,
+        second: SketchCurve,
+        length: SketchLength,
+    },
     /// Two segments meet at this angle, measured turning from `first` to `second`.
     ///
     /// The one member whose value is an [`parametric::units::AngleMeasurement`] rather than a
@@ -307,6 +322,7 @@ impl Dimension {
             Self::Span { length, .. }
             | Self::SpanAlong { length, .. }
             | Self::Gap { length, .. }
+            | Self::RimGap { length, .. }
             | Self::Radius { length, .. }
             | Self::Diameter { length, .. } => Some(length),
             // An angle is a quantity, but it is not a length, and there is no length to answer
@@ -320,11 +336,14 @@ impl Dimension {
     const fn measures_a_distance(self) -> bool {
         match self {
             Self::Span { .. } | Self::SpanAlong { .. } => true,
-            // A gap measures one, but it names a point and a SEGMENT — a pair no other member can
-            // hold — so the general rule already keeps it apart and this one never has to.
-            Self::Gap { .. } | Self::Radius { .. } | Self::Diameter { .. } | Self::Angle { .. } => {
-                false
-            }
+            // Both gaps measure one, and neither is in the family: a gap names a point and a
+            // SEGMENT, a rim gap names two CURVES, and no other member can hold either pair. The
+            // general rule already keeps them apart and this one never has to.
+            Self::Gap { .. }
+            | Self::RimGap { .. }
+            | Self::Radius { .. }
+            | Self::Diameter { .. }
+            | Self::Angle { .. } => false,
         }
     }
 
@@ -338,6 +357,7 @@ impl Dimension {
             Self::SpanAlong { axis, .. } => Some(axis),
             Self::Span { .. }
             | Self::Gap { .. }
+            | Self::RimGap { .. }
             | Self::Radius { .. }
             | Self::Diameter { .. }
             | Self::Angle { .. } => None,
@@ -588,7 +608,10 @@ impl ConstraintKind {
             // Both name curves. The points those curves are drawn between are not what
             // either one is about.
             Self::Dimension(
-                Dimension::Radius { .. } | Dimension::Diameter { .. } | Dimension::Angle { .. },
+                Dimension::Radius { .. }
+                | Dimension::Diameter { .. }
+                | Dimension::RimGap { .. }
+                | Dimension::Angle { .. },
             )
             | Self::Horizontal { .. }
             | Self::Vertical { .. }
@@ -682,6 +705,9 @@ impl ConstraintKind {
             ) => [from.min(to), from.max(to)],
             // Sharing the pair is what refuses a diameter on a curve that already states a
             // radius: it is the same claim written the other way, not a second one.
+            Self::Dimension(Dimension::RimGap { first, second, .. }) => {
+                [first.id().min(second.id()), first.id().max(second.id())]
+            }
             Self::Dimension(
                 Dimension::Radius { curve, .. } | Dimension::Diameter { curve, .. },
             ) => [curve.id(), curve.id()],
@@ -809,7 +835,9 @@ impl ConstraintKind {
             | Self::Midpoint { point, segment } => vec![point, segment],
             Self::PointOnCurve { point, curve } => vec![point, curve.id()],
             Self::Curvature { joint, against } => vec![joint, against.id()],
-            Self::Tangent { first, second, .. } | Self::Concentric { first, second } => {
+            Self::Tangent { first, second, .. }
+            | Self::Concentric { first, second }
+            | Self::Dimension(Dimension::RimGap { first, second, .. }) => {
                 vec![first.id(), second.id()]
             }
             Self::Symmetry {
@@ -1412,6 +1440,17 @@ fn relation_for(
             .map(|(point, line)| Relation::PointLineDistance {
                 point,
                 line,
+                distance: length.value(),
+            }),
+        ConstraintKind::Dimension(Dimension::RimGap {
+            first,
+            second,
+            length,
+        }) => curve(first)
+            .zip(curve(second))
+            .map(|(first, second)| Relation::RimGap {
+                first,
+                second,
                 distance: length.value(),
             }),
         ConstraintKind::Dimension(Dimension::Radius {

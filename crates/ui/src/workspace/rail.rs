@@ -945,6 +945,29 @@ fn sketch_dimension_value(ui: &mut egui::Ui, state: &mut PanelState, response: &
                 length: document::sketch::SketchLength::retained(commit.measurement, commit.voxels),
             })
         }
+        document::sketch::Dimension::RimGap {
+            first,
+            second,
+            length,
+        } => {
+            crate::widgets::MeasurementField::new(
+                id_base,
+                // The same word a gap across a line uses, because it is the same measurement read
+                // on a curve — and neither one is the "Radius" the two rims each carry of their
+                // own.
+                "Offset",
+                length.value().round() as i64,
+                density,
+            )
+            // A gap of nothing makes the two rims one rim, which Equal already says.
+            .min_voxels(1, "a gap is at least one voxel")
+            .show(ui)
+            .map(|commit| document::sketch::Dimension::RimGap {
+                first,
+                second,
+                length: document::sketch::SketchLength::retained(commit.measurement, commit.voxels),
+            })
+        }
         document::sketch::Dimension::Radius { curve, length }
         | document::sketch::Dimension::Diameter { curve, length } => {
             let across = matches!(dimension, document::sketch::Dimension::Diameter { .. });

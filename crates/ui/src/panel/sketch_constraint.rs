@@ -497,9 +497,10 @@ impl ArmedConstraint {
             return None;
         }
         match self.picked[..] {
-            [SketchEntity::Curve(curve)] if !curve.is_circular() => {
-                Some(PickRequirement::DirectedCurve)
+            [SketchEntity::Curve(curve)] if curve.is_circular() => {
+                Some(PickRequirement::CircularCurve)
             }
+            [SketchEntity::Curve(_)] => Some(PickRequirement::DirectedCurve),
             _ => None,
         }
     }
@@ -890,6 +891,14 @@ fn seeded_dimension(
             Some(SketchEntity::Point(point)),
             Some(SketchEntity::Curve(SketchCurve::Segment(segment))),
         ) => gap_between(sketch, *point, *segment)?,
+        // Two rims: the distance across them, measured out along a radius. Which distance that
+        // is depends on whether they share a center, and the SAME witness the overlay reads
+        // decides, so the seed and the drawing can never disagree about which claim this is.
+        (Some(SketchEntity::Curve(first)), Some(SketchEntity::Curve(second)))
+            if first.is_circular() && second.is_circular() =>
+        {
+            rims_apart(sketch, *first, *second, anchor, context)?
+        }
         (
             Some(SketchEntity::Curve(SketchCurve::Segment(first))),
             Some(SketchEntity::Curve(second)),
@@ -1034,6 +1043,46 @@ fn lines_that_never_meet(
         }
     };
     Some(gap_between(sketch, nearer, first))
+}
+
+/// What two rims state about each other: the gap between them where they share a center, and the
+/// distance between their centers where they do not.
+///
+/// Sharing a center is what makes a radial gap a single number at all — off-center, how far apart
+/// two rims stand depends on where round them you look, and there is no one answer to state. So the
+/// pair falls back to the question that always has one: how far apart the two centers are. That is
+/// also the reading a drafter expects of two separate holes.
+///
+/// # Errors
+///
+/// A named refusal for a curve that has left the drawing or never turned, and for two rims already
+/// the same size — that is `Equal`, which asserts a shape rather than a distance.
+fn rims_apart(
+    sketch: &Sketch,
+    first: SketchCurve,
+    second: SketchCurve,
+    anchor: Option<[f64; 2]>,
+    context: parametric::EvaluationContext,
+) -> Result<Dimension, &'static str> {
+    let sized = |curve| {
+        sketch
+            .circular_form(curve, context)
+            .ok_or("that curve has no radius to measure from")
+    };
+    if sketch.concentric_center(first, second).is_none() {
+        let centers = [first, second].map(|curve| sketch.center_point_of(curve).ok_or(GONE));
+        let [here, there] = centers;
+        return span_between(sketch, here?, there?, anchor);
+    }
+    let across = (sized(second)?.radius - sized(first)?.radius).abs();
+    if across <= f64::EPSILON {
+        return Err("those two rims are already the same size — that is Equal, not a distance");
+    }
+    Ok(Dimension::RimGap {
+        first,
+        second,
+        length: SketchLength::from_continuous(across),
+    })
 }
 
 /// A segment's two placed ends.
@@ -1358,6 +1407,100 @@ mod tests {
             (degrees.to_degrees_f64() - expected).abs() < 0.01,
             "{}",
             degrees.to_degrees_f64()
+        );
+    }
+
+    /// **Two rims state the distance across them, and whether they share a center says which
+    /// distance that is.**
+    ///
+    /// Concentric, it is the gap between the two rims — one number, the same wherever round them
+    /// you look. Off-center there is no such number, so the pair falls back to the question that
+    /// always has one: how far apart the two centers stand. The seed asks the SAME witness the
+    /// overlay reads, so neither can decide this differently from the other.
+    #[test]
+    fn two_rims_state_the_gap_between_them_or_the_distance_between_their_centers() {
+        let mut sketch = Sketch::empty(PlaneAxis::Z);
+        let center = sketch.add_free_point(SketchPoint::from_continuous(0.0, 0.0));
+        let rims = [6, 10].map(|radius| {
+            SketchCurve::Circle(
+                sketch
+                    .circle_about(center, document::sketch::SketchLength::new(radius))
+                    .expect("a rim about a free point"),
+            )
+        });
+
+        let mut apart = ArmedConstraint::new(ConstraintVerb::Dimension);
+        assert_eq!(
+            apart.offer(SketchEntity::Curve(rims[0]), &sketch),
+            Offer::Placing
+        );
+        // A lone rim is a whole gesture — it states its own size — and still welcomes a second
+        // rim, which is the same "offer and keep listening" a lone line makes for an angle.
+        assert_eq!(apart.wants(), None);
+        assert_eq!(
+            apart.would_also_take(),
+            Some(PickRequirement::CircularCurve)
+        );
+        assert_eq!(
+            apart.offer(SketchEntity::Curve(rims[1]), &sketch),
+            Offer::Placing
+        );
+        assert_eq!(
+            apart.kind_at_context(&sketch, density_16()),
+            Ok(ConstraintKind::Dimension(Dimension::RimGap {
+                first: rims[0],
+                second: rims[1],
+                length: SketchLength::from_continuous(4.0),
+            }))
+        );
+
+        // Two rims of the SAME size about one center are one rim, and the gesture says so rather
+        // than seeding a distance of nothing for the document to refuse.
+        // About a SECOND point standing in the same place, because one center will not hold two
+        // rims of one size — that pair is already refused where circles are made.
+        let twin = sketch.add_free_point(SketchPoint::from_continuous(0.0, 0.0));
+        let same = SketchCurve::Circle(
+            sketch
+                .circle_about(twin, document::sketch::SketchLength::new(6))
+                .expect("a rim the size of the first"),
+        );
+        let mut equal = ArmedConstraint::new(ConstraintVerb::Dimension);
+        assert_eq!(
+            equal.offer(SketchEntity::Curve(rims[0]), &sketch),
+            Offer::Placing
+        );
+        assert_eq!(
+            equal.offer(SketchEntity::Curve(same), &sketch),
+            Offer::Placing
+        );
+        assert_eq!(
+            equal.kind_at_context(&sketch, density_16()),
+            Err("those two rims are already the same size — that is Equal, not a distance")
+        );
+
+        // Off-center, the pair states how far apart the two centers stand instead.
+        let elsewhere = sketch.add_free_point(SketchPoint::from_continuous(8.0, 6.0));
+        let away = SketchCurve::Circle(
+            sketch
+                .circle_about(elsewhere, document::sketch::SketchLength::new(3))
+                .expect("a rim about somewhere else"),
+        );
+        let mut between = ArmedConstraint::new(ConstraintVerb::Dimension);
+        assert_eq!(
+            between.offer(SketchEntity::Curve(rims[0]), &sketch),
+            Offer::Placing
+        );
+        assert_eq!(
+            between.offer(SketchEntity::Curve(away), &sketch),
+            Offer::Placing
+        );
+        assert_eq!(
+            between.kind_at_context(&sketch, density_16()),
+            Ok(ConstraintKind::Dimension(Dimension::Span {
+                from: center,
+                to: elsewhere,
+                length: SketchLength::from_continuous(10.0),
+            }))
         );
     }
 

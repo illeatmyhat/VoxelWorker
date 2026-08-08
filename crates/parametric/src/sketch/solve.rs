@@ -228,6 +228,23 @@ pub enum Relation {
     /// this relation can be written once. A segment has no center and no radius, and the document
     /// refuses to build one against it rather than this arm having to.
     Radius { curve: SketchCurve, length: f64 },
+    /// Two curves that turn differ in size by this much.
+    ///
+    /// Where the two share a center — the drawing this exists for — that difference IS the gap
+    /// between the two rims, measured straight out along any radius. The row does not assert the
+    /// shared center: that is `Concentric`'s claim, stated separately, and an author who wants
+    /// both says both.
+    ///
+    /// The row is `|r_second - r_first| - distance`, unsigned for the reason `Distance`'s is: the
+    /// author asked how far apart the two rims stand and not which of them is the larger, so a
+    /// signed row would refuse a drawing that had merely been drawn the other way round. The cost
+    /// is that a solve could in principle carry one rim through the other and settle on the far
+    /// side. Not observed; recorded here rather than guarded.
+    RimGap {
+        first: SketchCurve,
+        second: SketchCurve,
+        distance: f64,
+    },
     /// Two independently-addressable points occupy one place. This relation deliberately does not
     /// merge their handles: merging destroys an id, rewrites every segment that named it, and makes
     /// deleting the assertion unable to restore the drawing.
@@ -349,6 +366,7 @@ impl Relation {
             | Self::Distance { .. }
             | Self::AxisDistance { .. }
             | Self::Radius { .. }
+            | Self::RimGap { .. }
             | Self::Parallel { .. }
             | Self::Perpendicular { .. }
             | Self::Angle { .. }
@@ -1145,6 +1163,15 @@ impl Problem {
             } => Ok(Resolved::Radius {
                 curve: curve(subject)?,
                 length,
+            }),
+            Relation::RimGap {
+                first,
+                second,
+                distance,
+            } => Ok(Resolved::RimGap {
+                first: curve(first)?,
+                second: curve(second)?,
+                distance,
             }),
             Relation::TangentDirection {
                 joint,
@@ -2982,6 +3009,11 @@ enum Resolved {
         curve: ResolvedCurve,
         length: f64,
     },
+    RimGap {
+        first: ResolvedCurve,
+        second: ResolvedCurve,
+        distance: f64,
+    },
     TangentDirection {
         joint: usize,
         joint_arm: usize,
@@ -3655,6 +3687,32 @@ impl ResidualSystem for Residuals<'_> {
                         // curve. Zero rather than a panic, so a hand-built problem misbehaves
                         // by saying nothing instead of by falling over.
                         CurveGeometry::Segment { .. } => 0.0,
+                    };
+                    row += 1;
+                }
+                Resolved::RimGap {
+                    first,
+                    second,
+                    distance,
+                } => {
+                    let radius = |which| {
+                        match curve_geometry(
+                            which,
+                            &at,
+                            &self.problem.parameters,
+                            &whole,
+                            self.problem.points.len(),
+                        ) {
+                            CurveGeometry::Circular(support) => Some(support.radius),
+                            // Unreachable: the document will not build a rim gap against a
+                            // straight curve. `None` rather than a panic, so a hand-built problem
+                            // misbehaves by saying nothing instead of by falling over.
+                            CurveGeometry::Segment { .. } => None,
+                        }
+                    };
+                    into[row] = match (radius(first), radius(second)) {
+                        (Some(inner), Some(outer)) => (outer - inner).abs() - distance,
+                        _ => 0.0,
                     };
                     row += 1;
                 }
@@ -5118,12 +5176,12 @@ impl Problem {
                 .into_iter()
                 .chain(self.points_of_curve(against))
                 .collect(),
-            Relation::Tangent { first, second, .. } | Relation::Concentric { first, second } => {
-                [first, second]
-                    .into_iter()
-                    .flat_map(|curve| self.points_of_curve(curve))
-                    .collect()
-            }
+            Relation::Tangent { first, second, .. }
+            | Relation::Concentric { first, second }
+            | Relation::RimGap { first, second, .. } => [first, second]
+                .into_iter()
+                .flat_map(|curve| self.points_of_curve(curve))
+                .collect(),
             // An arc arm brings the whole arc into the scope, not only the end it reads: the
             // tangent there is measured against the center, and a scope that left the center out
             // would be solving an arm whose direction nothing could change.
@@ -5192,12 +5250,14 @@ impl Problem {
                     SketchCurve::Arc(_) | SketchCurve::Circle(_) => Vec::new(),
                 }
             }
-            // A radius only ever names a curve that turns, so it never names a segment.
+            // A radius only ever names a curve that turns, so it never names a segment. Nor
+            // does the gap between two of them.
             Relation::Fix { .. }
             | Relation::Quantize { .. }
             | Relation::Distance { .. }
             | Relation::AxisDistance { .. }
             | Relation::Radius { .. }
+            | Relation::RimGap { .. }
             | Relation::Coincident { .. }
             | Relation::Concentric { .. } => Vec::new(),
         }
