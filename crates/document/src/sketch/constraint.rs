@@ -159,6 +159,33 @@ impl AngleArm {
     }
 }
 
+/// Which of the four corners two crossing arms make a stated angle is struck in.
+///
+/// Two lines that cross make four corners: two of one size, two of its supplement, each pair
+/// opposite the other. So "the angle between these lines" is two questions, not one, and an author
+/// who dropped the annotation in the wide corner did not ask about the narrow one.
+///
+/// **Only the SIZE is stored here.** Which of the two same-sized corners the arc is drawn in is not
+/// a claim — both are the same number about the same lines — so it is read off the annotation's own
+/// place instead. Storing it would be storing the same fact twice and letting the two disagree.
+///
+/// The size is stored rather than derived, for the reason [`TangentBranch`] and [`SymmetryBranch`]
+/// are: a corner read from where the label currently sits would change identity mid-solve as the
+/// geometry it measures moves, and a constraint that quietly becomes a different constraint is not
+/// one the author can rely on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum AngleCorner {
+    /// The turn from the first arm onto the second, the way the drawing already runs them.
+    ///
+    /// The default, so a document written before an angle could name its corner opens stating the
+    /// corner it has always stated.
+    #[default]
+    Between,
+    /// Its supplement: the corner on the far side of either arm. A different number about the same
+    /// two lines, and therefore a different claim rather than a different drawing of one.
+    Supplementary,
+}
+
 /// A quantity the AUTHOR states, which the drawing then has to honour.
 ///
 /// One family, three members, because a dimension is a single idea the author has — "this is how
@@ -215,11 +242,14 @@ pub enum Dimension {
     /// says that where a dimension line cannot.
     ///
     /// A stated angle and that angle plus a half turn are the same claim, because a segment has
-    /// two ends and the drawing has no opinion about which one it points from.
+    /// two ends and the drawing has no opinion about which one it points from. Its SUPPLEMENT is
+    /// not — see [`AngleCorner`], which says which of the two the author asked about.
     Angle {
         first: AngleArm,
         second: AngleArm,
         degrees: parametric::units::AngleMeasurement,
+        #[serde(default)]
+        corner: AngleCorner,
     },
     /// A curve that turns stands this far from its own center, everywhere.
     ///
@@ -1360,6 +1390,7 @@ fn relation_for(
             first,
             second,
             degrees,
+            corner,
         }) => {
             let arm = |arm: AngleArm| match arm {
                 AngleArm::Segment { segment: id } => {
@@ -1376,12 +1407,21 @@ fn relation_for(
                         },
                     }),
             };
+            // The supplement is stated as the turn that PRODUCES it, for the reason a diameter is
+            // stated as half of itself: the solver has one angle row, and a second one written to
+            // say the same thing the other way round would be a second way for the two to
+            // disagree. What the author typed stays in `degrees`; what the drawing must turn to is
+            // what crosses into the solver.
+            let turn = match corner {
+                AngleCorner::Between => degrees.to_degrees_f64(),
+                AngleCorner::Supplementary => 180.0 - degrees.to_degrees_f64(),
+            };
             arm(first)
                 .zip(arm(second))
                 .map(|(first, second)| Relation::Angle {
                     first,
                     second,
-                    radians: degrees.to_degrees_f64().to_radians(),
+                    radians: turn.to_radians(),
                 })
         }
         ConstraintKind::Coincident { first, second } => point(first)

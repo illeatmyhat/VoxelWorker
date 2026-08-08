@@ -4298,6 +4298,7 @@ impl WindowedState {
                     first,
                     second,
                     degrees,
+                    corner,
                 } => {
                     let (Some(first), Some(second)) = (arm_line(first), arm_line(second)) else {
                         return None;
@@ -4308,10 +4309,14 @@ impl WindowedState {
                     let vertex =
                         substrate::geom2d::line_intersection(first.0, first.1, second.0, second.1)
                             .and_then(&to_px)?;
-                    let (from, to, reach) = angle_legs(vertex, &to_px, first, second)?;
+                    let (from, to, legs) =
+                        angle_legs(vertex, &to_px, first, second, corner, placed)?;
+                    // The shorter leg sets the default arc: it is the one that decides whether an
+                    // extension line is needed at all.
+                    let reach = legs[0].furthest.min(legs[1].furthest);
                     let radius = angle_arc_radius(vertex, placed, reach);
                     let value = format!("{}\u{b0}", trim_number(degrees.to_degrees_f64()));
-                    ui::gizmos::dimension::angle(vertex, from, to, radius, reach, &value, rank)
+                    ui::gizmos::dimension::angle(vertex, from, to, radius, legs, &value, rank)
                 }
             };
             Some(drawing)
@@ -7827,40 +7832,83 @@ fn trim_number(value: f64) -> String {
     }
 }
 
-/// The two bearings an angular dimension is struck between, and how far its legs reach.
+/// The signed turn from `from` onto `to`, folded into `(-π, π]` — the short way round.
+fn signed_turn(from: egui::Vec2, to: egui::Vec2) -> f32 {
+    let cross = from.x * to.y - from.y * to.x;
+    cross.atan2(from.dot(to))
+}
+
+/// Whether `at` lies in the corner swept from `first` onto `second` the short way round.
+fn corner_holds(first: egui::Vec2, second: egui::Vec2, at: egui::Vec2) -> bool {
+    let sweep = signed_turn(first, second);
+    let toward = signed_turn(first, at);
+    if sweep >= 0.0 {
+        (0.0..=sweep).contains(&toward)
+    } else {
+        (sweep..=0.0).contains(&toward)
+    }
+}
+
+/// The two bearings an angular dimension is struck between, and how far each leg reaches THAT WAY.
 ///
-/// Both legs are read from the VERTEX outward, toward whichever of their own ends is further from
-/// it, so the arc lands in the corner the drawing actually makes rather than in whichever of the
-/// four quadrants the two segments happened to be authored pointing at. `reach` is the SHORTER of
-/// the two legs: an extension line is drawn wherever a leg falls short of the arc, and the shorter
-/// leg is the one that decides whether any are needed at all.
+/// **Two lines make four corners and the annotation's own place picks one of them.** Two of the
+/// four are the turn between the arms and two are its supplement, so `corner` — which is stored,
+/// because it is the claim — narrows the four to two, and the anchor chooses between the pair that
+/// remains. Anything less than this and an author cannot dimension the corner they are pointing at.
+///
+/// Each leg is answered as the INTERVAL its own line occupies along the ray the arc is struck on,
+/// separately from the other. Two lines that never touch cross at a point neither of them reaches,
+/// so an arc struck near the vertex sits in a gap and the dogleg runs inward to meet it; a line the
+/// corner points away from has an interval entirely behind the vertex and is carried forward
+/// through it. Both are the same rule — the dogleg spans whatever the line does not.
+///
+/// Without an anchor — a dimension authored before annotations had a place — the arms are read the
+/// way they were drawn, which is the pair that agrees with the number `corner` names.
 fn angle_legs(
     vertex: egui::Pos2,
     to_px: &dyn Fn([f64; 2]) -> Option<egui::Pos2>,
     first: ([f64; 2], [f64; 2]),
     second: ([f64; 2], [f64; 2]),
-) -> Option<(f32, f32, f32)> {
-    let leg = |(from, to): ([f64; 2], [f64; 2])| {
+    corner: document::sketch::AngleCorner,
+    placed: Option<egui::Pos2>,
+) -> Option<(f32, f32, [ui::gizmos::dimension::Leg; 2])> {
+    let line = |(from, to): ([f64; 2], [f64; 2])| {
         let (from, to) = (to_px(from)?, to_px(to)?);
-        let far = if vertex.distance(from) >= vertex.distance(to) {
-            from
-        } else {
-            to
-        };
-        let away = far - vertex;
-        let reach = away.length();
-        (reach > f32::EPSILON).then(|| (away.y.atan2(away.x), reach))
+        let along = to - from;
+        let length = along.length();
+        (length > f32::EPSILON).then(|| (along / length, [from, to]))
     };
-    let ((from, first_reach), (to, second_reach)) = (leg(first)?, leg(second)?);
-    // The SHORT way round. A sweep past a half turn is the same corner measured the long way, and
-    // the gizmo would strike its arc all the way around the outside of the drawing.
-    let sweep = (to - from).rem_euclid(std::f32::consts::TAU);
-    let to = if sweep > std::f32::consts::PI {
-        from + sweep - std::f32::consts::TAU
-    } else {
-        from + sweep
+    let ((first_along, first_ends), (second_along, second_ends)) = (line(first)?, line(second)?);
+    // The supplement is the same two lines with one arm read the other way, which is what makes it
+    // a different number rather than a different picture of the same one.
+    let facing = match corner {
+        document::sketch::AngleCorner::Between => 1.0,
+        document::sketch::AngleCorner::Supplementary => -1.0,
     };
-    Some((from, to, first_reach.min(second_reach)))
+    let canonical = (first_along, second_along * facing);
+    let opposite = (-canonical.0, -canonical.1);
+    // The two remaining corners are opposite each other, so at most one holds the anchor.
+    let (first_ray, second_ray) = match placed {
+        Some(placed) if corner_holds(opposite.0, opposite.1, placed - vertex) => opposite,
+        _ => canonical,
+    };
+
+    // Where this line starts and stops along the ray its arc is struck on. Both ends negative
+    // means the line lies entirely the other way, which the gizmo draws by carrying it forward
+    // through the vertex rather than by a case of its own.
+    let leg = |ends: [egui::Pos2; 2], ray: egui::Vec2| {
+        let (one, other) = ((ends[0] - vertex).dot(ray), (ends[1] - vertex).dot(ray));
+        ui::gizmos::dimension::Leg {
+            nearest: one.min(other),
+            furthest: one.max(other),
+        }
+    };
+    let from = first_ray.y.atan2(first_ray.x);
+    Some((
+        from,
+        from + signed_turn(first_ray, second_ray),
+        [leg(first_ends, first_ray), leg(second_ends, second_ray)],
+    ))
 }
 
 /// Return the topmost generic constraint badge under a physical-pixel cursor. The badge keeps
@@ -9041,60 +9089,116 @@ mod tests {
         assert_eq!(trim_number(0.0), "0");
     }
 
-    /// **An angular dimension is struck the SHORT way round**, and its legs are read from the
-    /// vertex outward.
+    /// **Two lines make four corners and the annotation picks one of them.**
     ///
-    /// The two rules together are what keep the arc inside the corner the drawing makes. Read the
-    /// legs by their authored direction instead and a segment drawn away from the vertex points
-    /// the wrong way; take the sweep as measured instead and the arc runs all the way around the
-    /// outside of the drawing.
+    /// The stored corner narrows the four to two — a size is a claim and the supplement is a
+    /// different number — and the anchor chooses between the two of that size, which are opposite
+    /// each other and say the same thing. Read the arms by their authored direction alone and an
+    /// author can only ever dimension one of the four.
     #[test]
-    fn an_angle_gizmo_strikes_the_corner_its_legs_actually_make() {
+    fn the_corner_an_angle_is_struck_in_is_the_one_the_text_was_dropped_in() {
         let flat = |coord: [f64; 2]| Some(egui::Pos2::new(coord[0] as f32, coord[1] as f32));
         let vertex = egui::Pos2::new(0.0, 0.0);
-
-        // Two legs out along +x and +y (y running DOWN on screen, so this is a quarter turn).
-        let (from, to, reach) = angle_legs(
-            vertex,
-            &flat,
-            ([0.0, 0.0], [10.0, 0.0]),
-            ([0.0, 0.0], [0.0, 4.0]),
-        )
-        .expect("two legs off one vertex");
-        assert!(from.abs() < 1e-6, "the first leg bears along +x: {from}");
-        assert!(
-            (to - std::f32::consts::FRAC_PI_2).abs() < 1e-6,
-            "a quarter turn away: {to}"
-        );
-        assert!((reach - 4.0).abs() < 1e-6, "the SHORTER leg: {reach}");
-
-        // The same corner with the second leg AUTHORED away from the vertex reads the same, and
-        // the sweep stays the short way rather than becoming three quarters.
-        let (from, to, _) = angle_legs(
-            vertex,
-            &flat,
-            ([10.0, 0.0], [0.0, 0.0]),
-            ([0.0, 4.0], [0.0, 0.0]),
-        )
-        .expect("direction is not the author's to decide here");
-        assert!(from.abs() < 1e-6, "{from}");
-        assert!((to - std::f32::consts::FRAC_PI_2).abs() < 1e-6, "{to}");
-        assert!(
-            (to - from).abs() <= std::f32::consts::PI,
-            "never the long way: {}",
-            to - from
-        );
-
-        // A leg of no length has no bearing to give, and the gizmo is skipped rather than struck
-        // about an arbitrary direction.
-        assert_eq!(
+        let quarter = std::f32::consts::FRAC_PI_2;
+        // Along +x and +y. Screen y runs DOWN, so this reads as a quarter turn clockwise.
+        let across = ([0.0, 0.0], [10.0, 0.0]);
+        let up = ([0.0, 0.0], [0.0, 4.0]);
+        let struck = |corner, at: Option<[f32; 2]>| {
             angle_legs(
                 vertex,
                 &flat,
-                ([0.0, 0.0], [0.0, 0.0]),
-                ([0.0, 0.0], [0.0, 4.0])
-            ),
-            None
+                across,
+                up,
+                corner,
+                at.map(|at| egui::Pos2::new(at[0], at[1])),
+            )
+            .expect("two live arms off one vertex")
+        };
+
+        // Dropped inside the corner the two arms bound: the arc is struck there.
+        let (from, to, legs) = struck(document::sketch::AngleCorner::Between, Some([3.0, 3.0]));
+        assert!(from.abs() < 1e-5, "the first arm bears along +x: {from}");
+        assert!((to - quarter).abs() < 1e-5, "a quarter turn away: {to}");
+        assert!((legs[0].furthest - 10.0).abs() < 1e-5);
+        assert!((legs[1].furthest - 4.0).abs() < 1e-5);
+
+        // Dropped in the corner OPPOSITE it: the same number, struck the other side of the vertex,
+        // and now each arm reaches BACKWARD so the whole of both legs is a dogleg.
+        let (from, to, legs) = struck(document::sketch::AngleCorner::Between, Some([-3.0, -3.0]));
+        assert!(
+            (from.abs() - std::f32::consts::PI).abs() < 1e-5,
+            "the first arm now bears along -x: {from}"
+        );
+        assert!(
+            (to - from).abs() - quarter < 1e-5,
+            "still a quarter: {}",
+            to - from
+        );
+        assert!(
+            legs[0].furthest <= 0.0 && legs[1].furthest <= 0.0,
+            "both arms lie behind the corner: {legs:?}"
+        );
+
+        // Dropped in a corner only ONE arm bounds: the supplement, and the arms are counter-run.
+        let (from, to, _) = struck(
+            document::sketch::AngleCorner::Supplementary,
+            Some([3.0, -3.0]),
+        );
+        assert!(from.abs() < 1e-5, "{from}");
+        assert!(
+            ((to - from).abs() - quarter).abs() < 1e-5,
+            "a right angle's supplement is also a right angle: {}",
+            to - from
+        );
+        assert!(
+            to < from,
+            "and it is struck the other way round: {to} from {from}"
+        );
+
+        // With no anchor the arms are read the way they were drawn, which is the pair that agrees
+        // with the number the corner names.
+        let (from, to, _) = struck(document::sketch::AngleCorner::Between, None);
+        assert!(from.abs() < 1e-5 && (to - quarter).abs() < 1e-5);
+
+        // An arm of no length has no direction to give, and the gizmo is skipped rather than
+        // struck about an arbitrary one.
+        assert!(angle_legs(
+            vertex,
+            &flat,
+            ([0.0, 0.0], [0.0, 0.0]),
+            up,
+            document::sketch::AngleCorner::Between,
+            None,
+        )
+        .is_none());
+    }
+
+    /// **The dogleg spans whatever the line does not**, which for two lines that never touch means
+    /// it can have to run INWARD, toward a vertex neither of them reaches.
+    #[test]
+    fn two_lines_that_never_touch_still_state_the_angle_between_them() {
+        let flat = |coord: [f64; 2]| Some(egui::Pos2::new(coord[0] as f32, coord[1] as f32));
+        let vertex = egui::Pos2::new(0.0, 0.0);
+        // Neither line contains the origin they cross at: one starts 2 out along +x, the other 3
+        // out along +y.
+        let (_, _, legs) = angle_legs(
+            vertex,
+            &flat,
+            ([2.0, 0.0], [10.0, 0.0]),
+            ([0.0, 3.0], [0.0, 9.0]),
+            document::sketch::AngleCorner::Between,
+            Some(egui::Pos2::new(4.0, 4.0)),
+        )
+        .expect("two lines that cross nowhere on themselves still cross");
+        assert!(
+            (legs[0].nearest - 2.0).abs() < 1e-5 && (legs[0].furthest - 10.0).abs() < 1e-5,
+            "the first line runs 2 to 10 along its ray: {:?}",
+            legs[0]
+        );
+        assert!(
+            (legs[1].nearest - 3.0).abs() < 1e-5 && (legs[1].furthest - 9.0).abs() < 1e-5,
+            "{:?}",
+            legs[1]
         );
     }
 }

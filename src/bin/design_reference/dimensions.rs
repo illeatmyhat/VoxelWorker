@@ -17,6 +17,24 @@ use ui::theme::color_palette;
 
 use crate::sheet::Sheet;
 
+/// An arm running from the corner out to `reach`, which is the case where the two lines meet.
+const fn whole_arm(reach: f32) -> dimension::Leg {
+    dimension::Leg {
+        nearest: 0.0,
+        furthest: reach,
+    }
+}
+
+/// Draws the sketch line an angle's leg is read off, over the interval that line actually occupies.
+fn arm(painter: &Painter, vertex: Pos2, bearing: f32, leg: dimension::Leg) {
+    let along = Vec2::new(bearing.cos(), bearing.sin());
+    gizmos::segment(
+        painter,
+        vertex + along * leg.nearest,
+        vertex + along * leg.furthest,
+    );
+}
+
 impl Sheet {
     /// Both ranks, the three span states, one extent of a diagonal, the two rim cases, the two
     /// angles.
@@ -186,22 +204,89 @@ impl Sheet {
              drawn: where the legs do not meet, the intersection is virtual and no pick can ever \
              land on it.",
             |p, s| {
-                let leg = |p: &Painter, at: Pos2, bearing: f32, reach: f32| {
-                    gizmos::segment(p, at, at + Vec2::new(bearing.cos(), bearing.sin()) * reach);
-                };
                 let wide = Pos2::new(s.left() + 26.0, s.bottom() - 18.0);
                 let (from, to) = (-std::f32::consts::FRAC_PI_2, -0.5_f32);
-                leg(p, wide, from, 62.0);
-                leg(p, wide, to, 62.0);
+                arm(p, wide, from, whole_arm(62.0));
+                arm(p, wide, to, whole_arm(62.0));
                 // 48, not 40: at 40 the arc is 42.8 long and the value is evicted onto a leader,
                 // which is the tight drawing — this row is here to show the wide one.
-                dimension::angle(wide, from, to, 48.0, 62.0, "62°", Rank::Driving).paint(p);
+                dimension::angle(
+                    wide,
+                    from,
+                    to,
+                    48.0,
+                    [whole_arm(62.0); 2],
+                    "62°",
+                    Rank::Driving,
+                )
+                .paint(p);
 
                 let tight = Pos2::new(s.left() + 128.0, s.bottom() - 6.0);
                 let (from, to) = (-1.78_f32, -1.36_f32);
-                leg(p, tight, from, 56.0);
-                leg(p, tight, to, 56.0);
-                dimension::angle(tight, from, to, 34.0, 56.0, "24°", Rank::Driving).paint(p);
+                arm(p, tight, from, whole_arm(56.0));
+                arm(p, tight, to, whole_arm(56.0));
+                dimension::angle(
+                    tight,
+                    from,
+                    to,
+                    34.0,
+                    [whole_arm(56.0); 2],
+                    "24°",
+                    Rank::Driving,
+                )
+                .paint(p);
+            },
+        );
+        self.specimen_row(
+            ui,
+            "angle · a corner neither line reaches",
+            "Two lines that cross where neither of them runs. The corner is still a real angle and \
+             still dimensionable, and the arc is struck wherever the author dropped the text — \
+             here inside both lines, so each dogleg runs INWARD, from where its line starts back \
+             down to the arc. That is the same rule as the wide case above, read the other way: a \
+             dogleg spans whatever its line does not. Right: the arc struck outside one of them, \
+             so one dogleg runs in and the other out.",
+            |p, s| {
+                let inside = Pos2::new(s.left() + 26.0, s.bottom() - 14.0);
+                let (from, to) = (-1.35_f32, -0.30_f32);
+                let (near, far) = (
+                    dimension::Leg {
+                        nearest: 34.0,
+                        furthest: 66.0,
+                    },
+                    dimension::Leg {
+                        nearest: 38.0,
+                        furthest: 74.0,
+                    },
+                );
+                arm(p, inside, from, near);
+                arm(p, inside, to, far);
+                dimension::angle(inside, from, to, 24.0, [near, far], "60°", Rank::Driving).paint(p);
+
+                let across = Pos2::new(s.left() + 126.0, s.bottom() - 14.0);
+                let (from, to) = (-1.60_f32, -0.30_f32);
+                let (stops_short, runs_past) = (
+                    dimension::Leg {
+                        nearest: 0.0,
+                        furthest: 26.0,
+                    },
+                    dimension::Leg {
+                        nearest: 58.0,
+                        furthest: 76.0,
+                    },
+                );
+                arm(p, across, from, stops_short);
+                arm(p, across, to, runs_past);
+                dimension::angle(
+                    across,
+                    from,
+                    to,
+                    40.0,
+                    [stops_short, runs_past],
+                    "74°",
+                    Rank::Driving,
+                )
+                .paint(p);
             },
         );
     }

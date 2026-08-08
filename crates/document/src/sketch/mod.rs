@@ -63,8 +63,8 @@ mod tests;
 mod transform;
 
 pub use constraint::{
-    AngleArm, ArcEnd, Constraint, ConstraintKind, ConstraintRefusal, Dimension, InPlaneAxis,
-    InternalContainment, LineSide, SketchCurve, SymmetryBranch, TangentBranch,
+    AngleArm, AngleCorner, ArcEnd, Constraint, ConstraintKind, ConstraintRefusal, Dimension,
+    InPlaneAxis, InternalContainment, LineSide, SketchCurve, SymmetryBranch, TangentBranch,
 };
 pub use faces::{Face, FaceKey};
 pub use modify::{
@@ -4506,10 +4506,14 @@ impl Sketch {
             //
             // "The same arm twice" is the whole arm and not merely its entity: the two ENDS of one
             // arc are two different tangents, and the angle between them is what a sweep is.
+            // The corner is not checked: both are real corners of any crossing, and which one the
+            // author asked about is a fact about the gesture rather than a claim the drawing can
+            // refuse.
             ConstraintKind::Dimension(Dimension::Angle {
                 first,
                 second,
                 degrees,
+                corner: _,
             }) => {
                 let drawn = |arm: AngleArm| match arm {
                     AngleArm::Segment { segment } => live_segment(segment)

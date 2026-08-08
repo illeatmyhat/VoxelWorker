@@ -97,6 +97,7 @@ fn an_angle_arm_can_be_an_arcs_own_tangent() {
                 },
                 second: crate::sketch::AngleArm::Segment { segment: line },
                 degrees: AngleMeasurement::from_degrees(30),
+                corner: crate::sketch::AngleCorner::Between,
             }),
             ctx(16),
         )
@@ -133,6 +134,7 @@ fn an_angle_arm_can_be_an_arcs_own_tangent() {
         },
         second: crate::sketch::AngleArm::Segment { segment: line },
         degrees: AngleMeasurement::from_degrees(60),
+        corner: crate::sketch::AngleCorner::Between,
     });
     assert!(
         !sketch.constraints()[sketch.constraints().len() - 1]
@@ -153,6 +155,7 @@ fn an_angle_arm_can_be_an_arcs_own_tangent() {
                 },
                 second: crate::sketch::AngleArm::Segment { segment: line },
                 degrees: AngleMeasurement::from_degrees(45),
+                corner: crate::sketch::AngleCorner::Between,
             }),
             ctx(16),
         ),

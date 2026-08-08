@@ -176,7 +176,7 @@ mod radius;
 )]
 mod span;
 
-pub use angle::angle;
+pub use angle::{angle, Leg};
 pub use diameter::diameter;
 pub use radius::radius;
 pub use span::{axis_span, span};

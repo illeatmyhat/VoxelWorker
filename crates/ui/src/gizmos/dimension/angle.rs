@@ -20,18 +20,36 @@ const OVERRUN: f32 = 8.0;
 /// How far the leader runs out along the bisector when the value cannot sit on the arc.
 const LEADER: f32 = 30.0;
 
+/// How much of one arm's own geometry lies along the ray its corner is struck on, as the interval
+/// it occupies measured out from the vertex.
+///
+/// An interval and not a length, because a line does not have to start at the vertex. Two lines
+/// that cross without touching each begin some way out along their own ray, and the arc struck
+/// between them can land nearer than either — so the dogleg that carries a leg to the arc runs
+/// INWARD there, where for a line the arc overshoots it runs outward. One number cannot say both.
+///
+/// Both may be negative, which is the arm the corner points away from: the drawing extends it back
+/// through the vertex, which is the same rule and not a case of its own.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Leg {
+    /// Where the arm's own geometry starts, along the ray.
+    pub nearest: f32,
+    /// Where it stops.
+    pub furthest: f32,
+}
+
 /// An angle at `vertex` between the bearings `from` and `to` (radians, y running down), its arc
 /// struck at `radius`.
 ///
-/// `reach` is how far each leg's own geometry extends from the vertex; where that falls short of
-/// the arc, this draws the extension lines that carry it there. Pass the real leg length — a
-/// virtual intersection is just the case where `reach` is short.
+/// `legs` says where each arm's own geometry sits along the ray its side of the corner is struck
+/// on, one entry per bearing — see [`Leg`]. Wherever that does not already cover the arc, this
+/// draws the extension line that carries it there.
 pub fn angle(
     vertex: Pos2,
     from: f32,
     to: f32,
     radius: f32,
-    reach: f32,
+    legs: [Leg; 2],
     value: &str,
     rank: Rank,
 ) -> Drawing {
@@ -41,13 +59,21 @@ pub fn angle(
         |bearing: f32, distance: f32| vertex + Vec2::new(bearing.cos(), bearing.sin()) * distance;
 
     let mut pieces = Vec::new();
-    // Extension lines, drawn only where a leg does not already reach the arc.
-    if reach < radius + OVERRUN {
-        for bearing in [from, to] {
-            pieces.push(Piece::Polyline(vec![
-                at(bearing, reach),
-                at(bearing, radius + OVERRUN),
-            ]));
+    // Extension lines, each drawn only across the gap ITS OWN arm leaves. Asked per leg because
+    // the answer is per leg: the dogleg has to start where that line stops, and which end of it
+    // that is depends on whether the arc overshoots the arm or falls short of it.
+    let target = radius + OVERRUN;
+    for (bearing, leg) in [from, to].into_iter().zip(legs) {
+        let gap = if target > leg.furthest {
+            Some((leg.furthest, target))
+        } else if target < leg.nearest {
+            Some((target, leg.nearest))
+        } else {
+            // The arc lands on the arm itself, which is already drawn.
+            None
+        };
+        if let Some((start, end)) = gap {
+            pieces.push(Piece::Polyline(vec![at(bearing, start), at(bearing, end)]));
         }
     }
 

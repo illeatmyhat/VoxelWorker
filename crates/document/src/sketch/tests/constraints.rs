@@ -310,6 +310,7 @@ fn an_angle_dimension_turns_one_segment_onto_the_other() {
                 first: AngleArm::Segment { segment: base },
                 second: AngleArm::Segment { segment: arm },
                 degrees: AngleMeasurement::from_degrees(30),
+                corner: AngleCorner::Between,
             }),
             ctx(16),
         )
@@ -343,6 +344,7 @@ fn an_angle_dimension_turns_one_segment_onto_the_other() {
                 first: AngleArm::Segment { segment: base },
                 second: AngleArm::Segment { segment: arm },
                 degrees: AngleMeasurement::from_degrees(90),
+                corner: AngleCorner::Between,
             }),
             ctx(16),
         )
@@ -360,6 +362,7 @@ fn an_angle_dimension_turns_one_segment_onto_the_other() {
                 first: AngleArm::Segment { segment: base },
                 second: AngleArm::Segment { segment: base },
                 degrees: AngleMeasurement::from_degrees(45),
+                corner: AngleCorner::Between,
             }),
             ctx(16),
         ),

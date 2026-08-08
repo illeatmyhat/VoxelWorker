@@ -879,13 +879,18 @@ fn seeded_dimension(
                 document::sketch::AngleArm::Segment { segment: *first },
                 angle_arm(sketch, *second, loci.get(1).copied()).ok_or(GONE)?,
             );
+            let corner = corner_holding(sketch, arms.0, arms.1, anchor);
+            let turn = turn_between(sketch, arms.0, arms.1).ok_or(GONE)?;
+            let stated = match corner {
+                document::sketch::AngleCorner::Between => turn,
+                document::sketch::AngleCorner::Supplementary => 180.0 - turn,
+            };
             Dimension::Angle {
                 first: arms.0,
                 second: arms.1,
-                degrees: parametric::units::AngleMeasurement::try_from_degrees_f64(
-                    turn_between(sketch, arms.0, arms.1).ok_or(GONE)?,
-                )
-                .map_err(|_| "those lines do not meet at an angle this can state")?,
+                degrees: parametric::units::AngleMeasurement::try_from_degrees_f64(stated)
+                    .map_err(|_| "those lines do not meet at an angle this can state")?,
+                corner,
             }
         }
         _ => return Err("pick two points, a line and a line or arc, or one arc or circle"),
@@ -992,6 +997,67 @@ fn angle_arm(
         | SketchCurve::Ellipse(_)
         | SketchCurve::Conic(_)
         | SketchCurve::Spline(_) => None,
+    }
+}
+
+/// Which of the four corners the annotation at `anchor` was dropped in — or rather, which of the
+/// two SIZES, since the two corners of one size are the same claim about the same lines.
+///
+/// The rule is one product of two cross products. `a` is the anchor read from the vertex; the
+/// anchor is inside the turn exactly when it lies on opposite sides of the two arms, because the
+/// turn is the corner both arms bound and its supplement is the corner only one of them does.
+///
+/// [`Between`](document::sketch::AngleCorner::Between) when there is no anchor, when the arms are
+/// parallel and so cross nowhere, and when the anchor sits exactly on an arm — a boundary has to
+/// fall one way and this is the way the gesture opens.
+fn corner_holding(
+    sketch: &Sketch,
+    first: document::sketch::AngleArm,
+    second: document::sketch::AngleArm,
+    anchor: Option<[f64; 2]>,
+) -> document::sketch::AngleCorner {
+    let between = document::sketch::AngleCorner::Between;
+    let Some(anchor) = anchor else { return between };
+    let (Some(first), Some(second)) = (arm_ray(sketch, first), arm_ray(sketch, second)) else {
+        return between;
+    };
+    let ends = |ray: ([f64; 2], [f64; 2])| (ray.0, [ray.0[0] + ray.1[0], ray.0[1] + ray.1[1]]);
+    let (first_ends, second_ends) = (ends(first), ends(second));
+    let Some(vertex) = substrate::geom2d::line_intersection(
+        first_ends.0,
+        first_ends.1,
+        second_ends.0,
+        second_ends.1,
+    ) else {
+        return between;
+    };
+    let away = [anchor[0] - vertex[0], anchor[1] - vertex[1]];
+    let side = |along: [f64; 2]| along[0] * away[1] - along[1] * away[0];
+    if side(first.1) * side(second.1) < 0.0 {
+        between
+    } else {
+        document::sketch::AngleCorner::Supplementary
+    }
+}
+
+/// A point an arm passes through and the direction it runs, in the sketch plane's coordinates.
+fn arm_ray(sketch: &Sketch, arm: document::sketch::AngleArm) -> Option<([f64; 2], [f64; 2])> {
+    match arm {
+        document::sketch::AngleArm::Segment { segment } => {
+            let held = sketch.segments().iter().find(|held| held.id == segment)?;
+            let (from, to) = (point_at(sketch, held.from)?, point_at(sketch, held.to)?);
+            Some((from, [to[0] - from[0], to[1] - from[1]]))
+        }
+        document::sketch::AngleArm::ArcEnd { arc, end } => {
+            let held = sketch.arcs().iter().find(|held| held.id == arc)?;
+            let standing = match end {
+                document::sketch::ArcEnd::From => held.from,
+                document::sketch::ArcEnd::To => held.to,
+            };
+            let (at, center) = (point_at(sketch, standing)?, point_at(sketch, held.center)?);
+            let radius = [at[0] - center[0], at[1] - center[1]];
+            Some((at, [-radius[1], radius[0]]))
+        }
     }
 }
 

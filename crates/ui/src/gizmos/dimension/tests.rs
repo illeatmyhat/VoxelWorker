@@ -346,6 +346,15 @@ fn a_diameter_leader_dragged_inside_still_stops_at_the_rim() {
     );
 }
 
+/// An arm that runs from the vertex out to `reach` — the ordinary case, where the two lines
+/// actually meet at the corner being dimensioned.
+fn from_the_vertex(reach: f32) -> Leg {
+    Leg {
+        nearest: 0.0,
+        furthest: reach,
+    }
+}
+
 #[test]
 fn a_wide_angle_puts_its_value_on_the_arc() {
     let drawing = angle(
@@ -353,7 +362,7 @@ fn a_wide_angle_puts_its_value_on_the_arc() {
         -std::f32::consts::FRAC_PI_2,
         -0.5,
         54.0,
-        80.0,
+        [from_the_vertex(80.0); 2],
         "62°",
         Rank::Driving,
     );
@@ -369,7 +378,15 @@ fn a_wide_angle_puts_its_value_on_the_arc() {
 fn a_tight_angle_makes_the_same_reversal_the_span_does() {
     let vertex = Pos2::new(96.0, 108.0);
     let (from, to) = (-1.78, -1.36);
-    let drawing = angle(vertex, from, to, 34.0, 60.0, "24°", Rank::Driving);
+    let drawing = angle(
+        vertex,
+        from,
+        to,
+        34.0,
+        [from_the_vertex(60.0); 2],
+        "24°",
+        Rank::Driving,
+    );
     // Arc length 34 * 0.42 = 14.3, under 2 * 9 + 2.
     let arrows = heads(&drawing);
     let outward_tangent = Vec2::new(-from.sin(), from.cos());
@@ -388,8 +405,24 @@ fn a_tight_angle_makes_the_same_reversal_the_span_does() {
 fn a_leg_that_already_reaches_the_arc_grows_no_extension() {
     let vertex = Pos2::new(120.0, 116.0);
     let (from, to) = (-2.7, -0.7);
-    let short = angle(vertex, from, to, 46.0, 40.0, "115°", Rank::Driving);
-    let long = angle(vertex, from, to, 46.0, 90.0, "115°", Rank::Driving);
+    let short = angle(
+        vertex,
+        from,
+        to,
+        46.0,
+        [from_the_vertex(40.0); 2],
+        "115°",
+        Rank::Driving,
+    );
+    let long = angle(
+        vertex,
+        from,
+        to,
+        46.0,
+        [from_the_vertex(90.0); 2],
+        "115°",
+        Rank::Driving,
+    );
     let lines = |d: &Drawing| {
         d.pieces
             .iter()
@@ -400,6 +433,43 @@ fn a_leg_that_already_reaches_the_arc_grows_no_extension() {
         lines(&short) - lines(&long),
         2,
         "the virtual-intersection case carries each leg out; the reaching one does not",
+    );
+}
+
+/// Two lines can cross at a point neither of them contains, and then an arc struck near that
+/// crossing sits in a gap: the dogleg runs INWARD, from where the line starts back down to the arc.
+#[test]
+fn an_arm_the_arc_falls_short_of_is_carried_inward_to_meet_it() {
+    let vertex = Pos2::new(100.0, 100.0);
+    let (from, to) = (0.0, std::f32::consts::FRAC_PI_2);
+    // The second arm starts 70 out and the arc is struck at 20, well inside it.
+    let drawing = angle(
+        vertex,
+        from,
+        to,
+        20.0,
+        [
+            from_the_vertex(60.0),
+            Leg {
+                nearest: 70.0,
+                furthest: 120.0,
+            },
+        ],
+        "90°",
+        Rank::Driving,
+    );
+    let dogleg = drawing
+        .pieces
+        .iter()
+        .find_map(|piece| match piece {
+            Piece::Polyline(points) if points.len() == 2 => Some((points[0], points[1])),
+            _ => None,
+        })
+        .expect("the far arm needs carrying to the arc");
+    let out = |at: Pos2| (at - vertex).length();
+    assert!(
+        (out(dogleg.0) - 28.0).abs() < 1e-3 && (out(dogleg.1) - 70.0).abs() < 1e-3,
+        "the dogleg runs from just past the arc up to where the line starts: {dogleg:?}",
     );
 }
 
@@ -455,7 +525,15 @@ fn every_piece_is_finite_at_a_degenerate_input() {
         ),
         radius(Pos2::ZERO, 10.0, Pos2::ZERO, "10", Rank::Driving),
         diameter(Pos2::ZERO, 0.0, Pos2::ZERO, "0", Rank::Driving),
-        angle(Pos2::ZERO, 1.0, 1.0, 20.0, 30.0, "0°", Rank::Driving),
+        angle(
+            Pos2::ZERO,
+            1.0,
+            1.0,
+            20.0,
+            [from_the_vertex(30.0); 2],
+            "0°",
+            Rank::Driving,
+        ),
     ];
     for drawing in &drawings {
         for piece in &drawing.pieces {

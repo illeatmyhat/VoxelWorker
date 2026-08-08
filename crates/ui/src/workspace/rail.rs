@@ -932,6 +932,7 @@ fn sketch_dimension_value(ui: &mut egui::Ui, state: &mut PanelState, response: &
             first,
             second,
             degrees,
+            corner,
         } => {
             let mut turn = degrees.to_degrees_f64();
             let changed = ui
@@ -955,6 +956,7 @@ fn sketch_dimension_value(ui: &mut egui::Ui, state: &mut PanelState, response: &
                     first,
                     second,
                     degrees,
+                    corner,
                 })
         }
     };
