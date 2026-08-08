@@ -481,7 +481,7 @@ pub use orbit_center::{orbit_center, orbit_center_overlay, ORBIT_CENTER_RADIUS};
 pub use orbit_reticle::{orbit_reticle, orbit_reticle_overlay};
 pub use segment::{
     curve_stroke, dashed_guide_polyline, dashed_preview_polyline, dashed_segment, marked_segment,
-    roled_curve, roled_segment, segment, styled_segment, tangent_lever, warn_cross,
+    roled_curve, roled_segment, segment, styled_segment, tangent_lever, undrawn_reach, warn_cross,
     warn_cross_sized, warn_segment,
 };
 pub use snap_ticks::snap_ticks;

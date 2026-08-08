@@ -110,3 +110,87 @@ pub fn within_drawn_extent(curve: CurveGeometry, at: [f64; 2], slack: f64) -> bo
         }
     }
 }
+
+/// The piece of a curve's SUPPORT that was never drawn, running from the drawn extent out to a
+/// point standing beyond it.
+///
+/// A value descriptor like [`CurveGeometry`], not a tessellation: the caller that draws it already
+/// knows what a chord tolerance is worth on its own screen, and this module has no business
+/// choosing one.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum UndrawnReach {
+    /// A straight run, collinear with the segment it extends.
+    Span { from: [f64; 2], to: [f64; 2] },
+    /// A turn around the arc's own circle, measured from `from_radians` with its sign.
+    Sweep {
+        center: [f64; 2],
+        radius: f64,
+        from_radians: f64,
+        sweep_radians: f64,
+    },
+}
+
+/// The support a point stands on but the author never drew.
+///
+/// Runs from the near end of `curve`'s drawn extent out to `at`. `None` when `at` is within the
+/// extent, which is the ordinary case and has nothing to show.
+///
+/// This is what makes a coincidence legible when the solve carries its point off the end. The
+/// relation reads the SUPPORT on purpose (see [`within_drawn_extent`]), so the point really is on
+/// the curve and the claim really does hold — what misleads is the drawing, which shows only the
+/// piece and so implies the point left it. Drawing the rest says the true thing instead: the point
+/// is on this curve, and here is the part of the curve you did not draw.
+///
+/// A whole circle never answers: it has no ends, so nothing standing on it is beyond them.
+///
+/// The turn is the SHORT way round. Both ends of an arc lead to a point outside it, and the two
+/// gaps sum to the whole undrawn remainder — showing the smaller one keeps the mark to the reading
+/// the author can follow rather than sweeping it the long way past geometry it has nothing to do
+/// with.
+#[must_use]
+pub fn undrawn_reach_to(curve: CurveGeometry, at: [f64; 2], slack: f64) -> Option<UndrawnReach> {
+    if within_drawn_extent(curve, at, slack) {
+        return None;
+    }
+    match curve {
+        CurveGeometry::Segment { from, to } => {
+            let span = [to[0] - from[0], to[1] - from[1]];
+            let length_squared = span[0].mul_add(span[0], span[1] * span[1]);
+            if length_squared <= COLLAPSE_TOLERANCE.powi(2) {
+                return None;
+            }
+            let delta = [at[0] - from[0], at[1] - from[1]];
+            let parameter = delta[0].mul_add(span[0], delta[1] * span[1]) / length_squared;
+            // Past `to` runs from `to`; short of `from` runs from `from`. `within_drawn_extent`
+            // already refused everything between, so there is no third side.
+            Some(UndrawnReach::Span {
+                from: if parameter > 1.0 { to } else { from },
+                to: at,
+            })
+        }
+        CurveGeometry::Circular(circular) => {
+            let arc = circular.arc?;
+            if !arc.sweep_radians.is_finite() || arc.sweep_radians.abs() <= f64::EPSILON {
+                return None;
+            }
+            let bearing =
+                |of: [f64; 2]| (of[1] - circular.center[1]).atan2(of[0] - circular.center[0]);
+            let (start, here) = (bearing(arc.from), bearing(at));
+            let sign = arc.sweep_radians.signum();
+            let travel = (sign * (here - start)).rem_euclid(std::f64::consts::TAU);
+            let past_the_end = travel - arc.sweep_radians.abs();
+            let before_the_start = std::f64::consts::TAU - travel;
+            let (from_radians, sweep_radians) = if past_the_end <= before_the_start {
+                (bearing(arc.to), sign * past_the_end)
+            } else {
+                (start, -sign * before_the_start)
+            };
+            Some(UndrawnReach::Sweep {
+                center: circular.center,
+                radius: circular.radius,
+                from_radians,
+                sweep_radians,
+            })
+        }
+    }
+}

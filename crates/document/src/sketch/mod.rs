@@ -1884,6 +1884,44 @@ impl Sketch {
             .map_err(TangentArcRefusal::Candidate)
     }
 
+    /// Every coincidence whose point has been carried off the DRAWN piece of the curve it names,
+    /// paired with the support the author never drew.
+    ///
+    /// The claim is not broken and the point is not misplaced — a point-on-curve residual reads the
+    /// support on purpose, so the point really is on the curve. What misleads is the drawing, which
+    /// shows only the piece the author cut and so reads as though the point escaped it. Handing the
+    /// undrawn remainder to the shell lets it say the true thing: the point is on this curve, and
+    /// here is the part of the curve you did not draw.
+    ///
+    /// Only a curve TARGET can answer. A coincidence between two points names no extent to be
+    /// outside of.
+    ///
+    /// Read per frame, so it walks the live store and clones nothing.
+    #[must_use]
+    pub fn undrawn_reaches(
+        &self,
+        context: parametric::EvaluationContext,
+    ) -> Vec<(EntityId, parametric::sketch::UndrawnReach)> {
+        // The gate's own tolerance: a point within the piece by any margin at all is simply on it,
+        // and a reach the width of a rounding error is a mark that says nothing.
+        const MET: f64 = 1.0e-6;
+        self.constraints
+            .iter()
+            .filter_map(|constraint| match constraint.kind {
+                ConstraintKind::Coincident {
+                    point,
+                    onto: CoincidentTarget::Curve(curve),
+                } => {
+                    let at = self.point_in_plane(point)?;
+                    let geometry = self.curve_geometry(curve, context)?;
+                    parametric::sketch::undrawn_reach_to(geometry, at, MET)
+                        .map(|reach| (point, reach))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
     /// Resolve one persisted curve into continuous relation geometry at this evaluation context.
     pub fn curve_geometry(
         &self,
@@ -6680,7 +6718,12 @@ fn arc_interior_on_circle(arc: ProfileArc, sagitta_tolerance_voxels: f64) -> Vec
 }
 
 /// How many chords keep each sagitta within tolerance, capped at [`ARC_MAX_CHORDS`].
-fn arc_chord_count(radius: f64, sweep_degrees: f64, tolerance: f64) -> u32 {
+///
+/// Public because a shell that tessellates a turn of its own — one named by an angle rather than
+/// by two stored ends, so [`arc_interior_points`] cannot answer it — still has to flatten it to
+/// the same standard as every other curve on the page.
+#[must_use]
+pub fn arc_chord_count(radius: f64, sweep_degrees: f64, tolerance: f64) -> u32 {
     // A non-positive or non-finite tolerance would ask for infinite refinement; the chord cap
     // answers it instead of the arithmetic below producing a NaN step.
     if !tolerance.is_finite() || tolerance <= 0.0 {

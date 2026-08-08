@@ -6048,6 +6048,61 @@ impl WindowedState {
             }
         }
 
+        // The support under a point the solve carried past its curve's own end. A point-on-curve
+        // residual reads the support on purpose, so the point IS on the curve and the drawing is
+        // what misleads: it shows only the piece the author cut. Drawing the rest says the true
+        // thing. Asked of the sketch in place, like the faces below and for the same reason.
+        if let (Some((producer, _)), Some(context)) = (
+            self.sketch_node_state(target),
+            self.sketch_evaluation_context(),
+        ) {
+            for (_, reach) in producer.sketch.undrawn_reaches(context) {
+                let points = match reach {
+                    parametric::sketch::UndrawnReach::Span { from, to } => vec![from, to],
+                    parametric::sketch::UndrawnReach::Sweep {
+                        center,
+                        radius,
+                        from_radians,
+                        sweep_radians,
+                    } => {
+                        // Its own tessellation rather than `arc_interior_points`, which walks
+                        // between two stored ENDS; a reach is named by a turn, and both of its
+                        // ends are wanted.
+                        let steps = document::sketch::arc_chord_count(
+                            radius,
+                            sweep_radians.to_degrees(),
+                            document::sketch::ARC_SAGITTA_TOLERANCE_VOXELS,
+                        );
+                        (0..=steps)
+                            .map(|step| {
+                                let turn = sweep_radians * f64::from(step) / f64::from(steps);
+                                let bearing = from_radians + turn;
+                                [
+                                    radius.mul_add(bearing.cos(), center[0]),
+                                    radius.mul_add(bearing.sin(), center[1]),
+                                ]
+                            })
+                            .collect()
+                    }
+                };
+                let projected: Option<Vec<egui::Pos2>> = points
+                    .into_iter()
+                    .map(|point| {
+                        to_viewport_px(point).map(|px| {
+                            egui::Pos2::new(px.x / pixels_per_point, px.y / pixels_per_point)
+                        })
+                    })
+                    .collect();
+                if let Some(chords) = projected {
+                    self.sketch_arc_lines.push(ui::chrome::SketchCurveLine {
+                        chords,
+                        state: ui::gizmos::HandleState::Idle,
+                        ink: ui::chrome::SketchCurveInk::UndrawnReach,
+                    });
+                }
+            }
+        }
+
         // The derived faces (#100), in physical px for the right-press hit-test. Derivation is a
         // graph walk over the sketch's own entities, and it is asked for here once per frame. The
         // WASH is not projected here at all: it is a GPU pass over the plane

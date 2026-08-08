@@ -29,7 +29,10 @@ pub use circle::{
 pub use curvature::{
     curvature_arrow_at, curvature_residual, direction_at, direction_residual, JointSpan, SpanEnd,
 };
-pub use curve::{foot_on_span, within_drawn_extent, ArcDomain, CircularCurve, CurveGeometry};
+pub use curve::{
+    foot_on_span, undrawn_reach_to, within_drawn_extent, ArcDomain, CircularCurve, CurveGeometry,
+    UndrawnReach,
+};
 pub use dimension::{span_reading, SpanReading};
 pub use higher_curve::{
     conic_candidate, conic_rho_from_shoulder, conic_shoulder_track, conic_vertex_from_rho,

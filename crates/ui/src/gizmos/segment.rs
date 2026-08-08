@@ -122,6 +122,29 @@ pub fn tangent_lever(painter: &Painter, chords: &[Pos2], state: HandleState) {
     ));
 }
 
+/// The support a point stands on but the author never drew: from the end its curve stops at, out
+/// to the point standing beyond it.
+///
+/// Dashed and quiet, which between them say the two true things. Dashed, because the run is not
+/// part of the shape — the same reading construction already carries. Quiet, because it is
+/// EXPLANATION rather than geometry: it is the reason a point is where it is, and a mark the author
+/// cannot author should not compete with the marks they did. `SKETCH_POINT_OFF_INK` is an accent
+/// value step rather than a fourth ink outside the accent, and the palette declares the third to
+/// be the last.
+///
+/// Deliberately not construction's warm dash, which would offer reference geometry that does not
+/// exist and cannot be snapped to, selected, or deleted.
+pub fn undrawn_reach(painter: &Painter, chords: &[Pos2]) {
+    if chords.len() < 2 {
+        return;
+    }
+    super::dashed_polyline(
+        painter,
+        chords,
+        Stroke::new(STROKE_SEGMENT, color_palette::SKETCH_POINT_OFF_INK),
+    );
+}
+
 /// A profile segment **armed for deletion** — the Delete tool is hovering this edge (and no
 /// vertex, which would take priority). The whole line goes warn-red with a warn `✕` at its
 /// midpoint: the line analog of the vertex handle's [`Marked`](super::HandleState::Marked)

@@ -396,6 +396,10 @@ pub enum SketchCurveInk {
     Construction,
     /// A fit point's tangent lever. Solid teal, and nothing snaps or constrains to it.
     TangentLever,
+    /// The part of a curve's support the author never drew, shown because a point is standing on
+    /// it past the curve's own end. Dashed and quiet — an explanation, not geometry, and nothing
+    /// snaps or constrains to it either.
+    UndrawnReach,
 }
 
 /// What a sketch DOT is, which is what decides its ink at rest.
@@ -462,6 +466,8 @@ pub fn sketch_arc_curves(ui: &egui::Ui, curves: &[SketchCurveLine]) {
             SketchCurveInk::TangentLever => {
                 gizmos::tangent_lever(&painter, &curve.chords, curve.state);
             }
+            // No state: an explanation is not a thing the pointer can be over.
+            SketchCurveInk::UndrawnReach => gizmos::undrawn_reach(&painter, &curve.chords),
             ink => gizmos::roled_curve(
                 &painter,
                 &curve.chords,

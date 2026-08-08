@@ -1490,3 +1490,49 @@ fn a_planted_point_rides_the_curve_when_the_curve_moves() {
         "and it is ON the swung rail, {across} off it"
     );
 }
+
+/// **Shortening a rail past its planted point strands the point, and the sketch says so.**
+///
+/// The reverse of [`a_planted_point_rides_the_curve_when_the_curve_moves`]: there the curve carried
+/// the point, here the curve is pulled out from under it. The claim still holds — the point is on
+/// the rail's support — and that is exactly why the drawing needs the extra mark, because on screen
+/// the point is now sitting past the end of a line it is supposedly on.
+#[test]
+fn pulling_a_rail_back_past_its_planted_point_reports_the_undrawn_reach() {
+    let mut sketch = Sketch::new(PlaneAxis::Z, vec![]);
+    let tail = sketch.add_free_point(SketchPoint::new(0, 0));
+    let head = sketch.add_free_point(SketchPoint::new(40, 0));
+    sketch.connect(tail, head).expect("a rail");
+    let rail = SketchSolid::extrude(sketch, 3);
+    let (mut planted, point) = rail.with_point_planted(
+        SketchPoint::new(30, 0),
+        Some(SketchCurve::Segment(
+            rail.sketch.segments().first().unwrap().id,
+        )),
+        ctx(16),
+    );
+    assert!(
+        planted.sketch.undrawn_reaches(ctx(16)).is_empty(),
+        "planted well inside the rail, so nothing to explain"
+    );
+
+    planted
+        .sketch
+        .move_point(head, SketchPoint::new(10, 0), ctx(16))
+        .expect("the rail's free end can be pulled back");
+
+    let reaches = planted.sketch.undrawn_reaches(ctx(16));
+    let [(stranded, reach)] = reaches[..] else {
+        panic!("exactly one point was left behind, got {reaches:?}")
+    };
+    assert_eq!(stranded, point);
+    let parametric::sketch::UndrawnReach::Span { from, to } = reach else {
+        panic!("a segment's support is straight, got {reach:?}")
+    };
+    // It joins the two things it explains: the end the rail now stops at, and the point.
+    assert!(
+        (from[0] - 10.0).abs() < 1e-6 && from[1].abs() < 1e-6,
+        "{from:?}"
+    );
+    assert!((to[0] - 30.0).abs() < 1e-6 && to[1].abs() < 1e-6, "{to:?}");
+}
