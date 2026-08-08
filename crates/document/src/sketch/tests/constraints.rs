@@ -4364,3 +4364,56 @@ fn a_coincidence_saved_before_the_merge_still_loads() {
     let reloaded: Constraint = serde_json::from_str(&written).expect("round trip");
     assert_eq!(reloaded.kind, current.kind);
 }
+
+/// **A coincidence between two points reads the same both ways round, so it is STORED one way.**
+///
+/// Which point the author clicked first is not part of the claim. Left unordered, the same
+/// assertion is two different values — `!=` under `PartialEq`, different bytes on disk — while
+/// `subject` already calls them one, so a drawing would carry a distinction nothing in it
+/// means. A curve target is not ordered: there the two operands play different parts.
+#[test]
+fn a_point_pair_is_stored_in_one_order_and_a_curve_target_is_not() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let earlier = sketch.add_free_point(SketchPoint::new(0, 0));
+    let later = sketch.add_free_point(SketchPoint::new(8, 3));
+
+    let clicked_backwards = ConstraintKind::Coincident {
+        point: later,
+        onto: CoincidentTarget::Point(earlier),
+    };
+    let clicked_forwards = ConstraintKind::Coincident {
+        point: earlier,
+        onto: CoincidentTarget::Point(later),
+    };
+    assert_eq!(
+        clicked_backwards.normalized(),
+        clicked_forwards,
+        "the later id names the target whichever way it was picked"
+    );
+    assert_eq!(clicked_forwards.normalized(), clicked_forwards);
+
+    // What the store keeps agrees with that, so a saved drawing cannot record the click order.
+    let held = sketch
+        .add_constraint(clicked_backwards, ctx(16))
+        .expect("two free points can always meet");
+    assert_eq!(
+        sketch
+            .constraints()
+            .iter()
+            .find(|constraint| constraint.id == held)
+            .map(|constraint| constraint.kind),
+        Some(clicked_forwards)
+    );
+
+    // A curve target keeps the order it was given: the point and the curve are not interchangeable.
+    let (from, to, segment) = add_test_segment(&mut sketch, [0, 20], [10, 20]);
+    let on_a_curve = ConstraintKind::Coincident {
+        point: earlier,
+        onto: CoincidentTarget::Curve(SketchCurve::Segment(segment)),
+    };
+    assert_eq!(on_a_curve.normalized(), on_a_curve);
+    assert!(
+        earlier < from && earlier < to,
+        "the point outranks the curve's own ends, so an id sort would have moved it"
+    );
+}

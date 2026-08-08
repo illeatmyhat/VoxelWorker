@@ -639,6 +639,25 @@ impl ConstraintKind {
         }
     }
 
+    /// Construct a coincidence with the two POINTS in stable id order.
+    ///
+    /// Only that case is ordered, because only that case reads the same both ways: a point put on
+    /// a curve names two different parts, and swapping them would state something else. Without
+    /// this, one claim written the other way round is a value that is `!=` to the first while
+    /// [`subject`](Self::subject) calls them the same, so which of the two is stored
+    /// depends on the order the author happened to click in.
+    pub const fn coincident(point: EntityId, onto: CoincidentTarget) -> Self {
+        match onto {
+            CoincidentTarget::Point(other) if other < point => Self::Coincident {
+                point: other,
+                onto: CoincidentTarget::Point(point),
+            },
+            CoincidentTarget::Point(_) | CoincidentTarget::Curve(_) => {
+                Self::Coincident { point, onto }
+            }
+        }
+    }
+
     /// Construct a branch-free circular pair in stable entity-id order.
     pub const fn concentric(first: SketchCurve, second: SketchCurve) -> Self {
         if first.id() <= second.id() {
@@ -683,6 +702,7 @@ impl ConstraintKind {
                 branch,
             } => Self::tangent(first, second, branch),
             Self::Concentric { first, second } => Self::concentric(first, second),
+            Self::Coincident { point, onto } => Self::coincident(point, onto),
             Self::Symmetry {
                 first,
                 second,
