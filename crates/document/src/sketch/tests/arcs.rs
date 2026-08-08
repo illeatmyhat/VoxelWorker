@@ -42,6 +42,125 @@ fn rounded_bottom_solid(height: u32) -> SketchSolid {
     SketchSolid::extrude(sketch, height)
 }
 
+/// **An angle can be struck against an arc, and it is struck at an END.**
+///
+/// The whole reason the arm is a type rather than a segment id: a curve that turns has a different
+/// direction at every point, so an angle to one is not a question until a place is named. Here a
+/// free line is turned to leave a pinned quarter arc's end at 30 degrees, and what it ends up doing
+/// is measured against the TANGENT there — perpendicular to the radius standing at that end.
+#[test]
+fn an_angle_arm_can_be_an_arcs_own_tangent() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    // A quarter arc about the origin, running counter-clockwise from (10,0) to (0,10). All THREE
+    // of its points are pinned — the center included, which the arc minted for itself — so the
+    // only thing left free to move is the line.
+    let start = sketch.add_free_point(SketchPoint::new(10, 0));
+    let finish = sketch.add_free_point(SketchPoint::new(0, 10));
+    let arc = sketch
+        .connect_arc(start, finish, AngleMeasurement::from_degrees(90))
+        .expect("a quarter arc");
+    let held_arc = *sketch
+        .arcs()
+        .iter()
+        .find(|held| held.id == arc)
+        .expect("the arc");
+    for point in [held_arc.center, held_arc.from, held_arc.to] {
+        let at = sketch
+            .points()
+            .iter()
+            .find(|held| held.id == point)
+            .expect("the point")
+            .at;
+        sketch
+            .add_constraint(ConstraintKind::Fix { point, at }, ctx(16))
+            .expect("pinning a point where it already is");
+    }
+    let tail = sketch.add_free_point(SketchPoint::new(10, 0));
+    let head = sketch.add_free_point(SketchPoint::new(20, 4));
+    let line = sketch.connect(tail, head).expect("a free line");
+    sketch
+        .add_constraint(
+            ConstraintKind::Fix {
+                point: tail,
+                at: SketchPoint::new(10, 0),
+            },
+            ctx(16),
+        )
+        .expect("pinning the line's tail at the arc's end");
+
+    sketch
+        .add_constraint(
+            ConstraintKind::Dimension(Dimension::Angle {
+                first: crate::sketch::AngleArm::ArcEnd {
+                    arc,
+                    end: crate::sketch::ArcEnd::From,
+                },
+                second: crate::sketch::AngleArm::Segment { segment: line },
+                degrees: AngleMeasurement::from_degrees(30),
+            }),
+            ctx(16),
+        )
+        .expect("a free line can always stand thirty degrees off a pinned tangent");
+
+    let at = |id: EntityId| {
+        sketch
+            .points()
+            .iter()
+            .find(|held| held.id == id)
+            .expect("the point")
+            .at
+            .in_plane()
+    };
+    // The tangent at (10,0) about (0,0) runs straight up, so the line should end up 30 degrees
+    // off vertical — and the residual is a sine, so 30 either way is the same claim.
+    let (tail_at, head_at) = (at(tail), at(head));
+    let line_bearing = (head_at[1] - tail_at[1])
+        .atan2(head_at[0] - tail_at[0])
+        .to_degrees();
+    let off_the_tangent = (line_bearing - 90.0).rem_euclid(180.0);
+    let turn = off_the_tangent.min(180.0 - off_the_tangent);
+    assert!(
+        (turn - 30.0).abs() < 1e-6,
+        "thirty degrees off the tangent, got {turn} (line bears {line_bearing})"
+    );
+
+    // The OTHER end is a different tangent, so the same pair can state it too — an id pair alone
+    // would have called the second one already asserted.
+    let other_end = ConstraintKind::Dimension(Dimension::Angle {
+        first: crate::sketch::AngleArm::ArcEnd {
+            arc,
+            end: crate::sketch::ArcEnd::To,
+        },
+        second: crate::sketch::AngleArm::Segment { segment: line },
+        degrees: AngleMeasurement::from_degrees(60),
+    });
+    assert!(
+        !sketch.constraints()[sketch.constraints().len() - 1]
+            .kind
+            .is_about_the_same_as(other_end),
+        "the two ends of one arc are two different tangents"
+    );
+
+    // And an arm on a curve that has gone is refused rather than silently dropped.
+    let mut orphaned = sketch.clone();
+    orphaned.delete_arc(held_arc.id);
+    assert_eq!(
+        orphaned.add_constraint(
+            ConstraintKind::Dimension(Dimension::Angle {
+                first: crate::sketch::AngleArm::ArcEnd {
+                    arc,
+                    end: crate::sketch::ArcEnd::To,
+                },
+                second: crate::sketch::AngleArm::Segment { segment: line },
+                degrees: AngleMeasurement::from_degrees(45),
+            }),
+            ctx(16),
+        ),
+        Err(ConstraintRefusal::UnknownEntity),
+        "the arc went with its endpoint"
+    );
+}
+
 #[test]
 fn three_point_solve_recovers_the_signed_sweep() {
     // Semicircle through the TOP: from (0,0) to (2,0) via (1,1) — center (1,0), and the

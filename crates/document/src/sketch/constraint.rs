@@ -110,6 +110,55 @@ impl SketchCurve {
 /// load-bearing rather than stylistic: it makes adding a variant a compiler error at every place
 /// that has to answer for it instead of a silent default. In particular, a new two-residual kind
 /// assigned one row shifts every later constraint's row and corrupts the whole system.
+/// Which of an arc's two ends an angle is read at.
+///
+/// The arc's own vocabulary: an arc is stored as the two points it is drawn between and the point
+/// it turns about, so these are those two points and not a start-and-finish imposed on top.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum ArcEnd {
+    From,
+    To,
+}
+
+/// One side of a stated angle: something the drawing gives a DIRECTION for.
+///
+/// A straight curve has one direction everywhere on it, so a segment arm names no place. A curve
+/// that turns has a different direction at every point, so an angle to one is not a question until
+/// a place is named — and what an arc arm names is an END, because an end is on its own arc by
+/// construction. Naming a free point instead would put a coincidence between the arm and the curve
+/// that every later solve would have to keep agreeing about.
+///
+/// A whole circle has no ends and so cannot be an arm. What an author wants there is a tangency,
+/// which [`ConstraintKind::Tangent`] already states at a contact the drawing finds for itself.
+///
+/// Neither arm carries a SENSE and neither needs one: the solver's row is a sine, which repeats
+/// every half turn, so reading an arm the other way round changes nothing it asserts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum AngleArm {
+    /// A straight curve, read along the direction it was drawn in.
+    Segment { segment: EntityId },
+    /// The direction an arc leaves at one of its own ends.
+    ArcEnd { arc: EntityId, end: ArcEnd },
+}
+
+impl AngleArm {
+    /// The entity this arm reads, whichever kind it is.
+    pub const fn entity(self) -> EntityId {
+        match self {
+            Self::Segment { segment } => segment,
+            Self::ArcEnd { arc, .. } => arc,
+        }
+    }
+
+    /// The segment this arm reads, for the cascade and liveness checks that are about segments.
+    pub const fn segment(self) -> Option<EntityId> {
+        match self {
+            Self::Segment { segment } => Some(segment),
+            Self::ArcEnd { .. } => None,
+        }
+    }
+}
+
 /// A quantity the AUTHOR states, which the drawing then has to honour.
 ///
 /// One family, three members, because a dimension is a single idea the author has — "this is how
@@ -145,8 +194,8 @@ pub enum Dimension {
     /// A stated angle and that angle plus a half turn are the same claim, because a segment has
     /// two ends and the drawing has no opinion about which one it points from.
     Angle {
-        first: EntityId,
-        second: EntityId,
+        first: AngleArm,
+        second: AngleArm,
         degrees: parametric::units::AngleMeasurement,
     },
     /// A curve that turns stands this far from its own center, everywhere.
@@ -440,6 +489,38 @@ impl ConstraintKind {
                 && second.id() == other_second.id()
                 && axis == other_axis;
         }
+        // An angle is the second relation whose stored values participate, and for Symmetry's
+        // reason: the two arms are the claim. Two angles struck at OPPOSITE ends of one arc against
+        // one line are different statements about different tangents, and an id pair alone cannot
+        // tell them apart because it holds no room for the end.
+        if let (
+            Self::Dimension(Dimension::Angle { first, second, .. }),
+            Self::Dimension(Dimension::Angle {
+                first: other_first,
+                second: other_second,
+                ..
+            }),
+        ) = (*self, other)
+        {
+            // A TOTAL key, so the two ends of one arc do not tie and get ordered by luck.
+            let key = |arm: AngleArm| match arm {
+                AngleArm::Segment { segment } => (segment, 0_u8),
+                AngleArm::ArcEnd {
+                    arc,
+                    end: ArcEnd::From,
+                } => (arc, 1),
+                AngleArm::ArcEnd {
+                    arc,
+                    end: ArcEnd::To,
+                } => (arc, 2),
+            };
+            let pair = |one, another| {
+                let mut both = [key(one), key(another)];
+                both.sort_unstable();
+                both
+            };
+            return pair(first, second) == pair(other_first, other_second);
+        }
         std::mem::discriminant(self) == std::mem::discriminant(&other)
             && self.subject() == other.subject()
     }
@@ -457,8 +538,13 @@ impl ConstraintKind {
             Self::Dimension(
                 Dimension::Radius { curve, .. } | Dimension::Diameter { curve, .. },
             ) => [curve.id(), curve.id()],
-            Self::Dimension(Dimension::Angle { first, second, .. })
-            | Self::Coincident { first, second }
+            // Reached only by a caller that is not `is_about_the_same_as`, which answers an
+            // angle from its arms before it ever gets here.
+            Self::Dimension(Dimension::Angle { first, second, .. }) => {
+                let (first, second) = (first.entity(), second.entity());
+                [first.min(second), first.max(second)]
+            }
+            Self::Coincident { first, second }
             | Self::Parallel { first, second }
             | Self::Perpendicular { first, second }
             | Self::Equal { first, second }
@@ -480,11 +566,16 @@ impl ConstraintKind {
             Self::Horizontal { segment }
             | Self::Vertical { segment }
             | Self::Midpoint { segment, .. } => vec![segment],
-            Self::Dimension(Dimension::Angle { first, second, .. })
-            | Self::Parallel { first, second }
+            Self::Parallel { first, second }
             | Self::Perpendicular { first, second }
             | Self::Equal { first, second }
             | Self::Collinear { first, second } => vec![first, second],
+            // Only the straight arms are segments. An arc arm names an arc, and an arc that goes
+            // takes the constraint by a different cascade.
+            Self::Dimension(Dimension::Angle { first, second, .. }) => [first, second]
+                .into_iter()
+                .filter_map(AngleArm::segment)
+                .collect(),
             Self::Tangent { first, second, .. } => [first, second]
                 .into_iter()
                 .filter_map(|curve| match curve {
@@ -553,8 +644,10 @@ impl ConstraintKind {
             Self::Dimension(
                 Dimension::Radius { curve, .. } | Dimension::Diameter { curve, .. },
             ) => vec![curve.id()],
-            Self::Dimension(Dimension::Angle { first, second, .. })
-            | Self::Coincident { first, second }
+            Self::Dimension(Dimension::Angle { first, second, .. }) => {
+                vec![first.entity(), second.entity()]
+            }
+            Self::Coincident { first, second }
             | Self::Parallel { first, second }
             | Self::Perpendicular { first, second }
             | Self::Equal { first, second }
@@ -1144,13 +1237,30 @@ fn relation_for(
             first,
             second,
             degrees,
-        }) => segment(first)
-            .zip(segment(second))
-            .map(|(first, second)| Relation::Angle {
-                first,
-                second,
-                radians: degrees.to_degrees_f64().to_radians(),
-            }),
+        }) => {
+            let arm = |arm: AngleArm| match arm {
+                AngleArm::Segment { segment: id } => {
+                    segment(id).map(parametric::sketch::AngleArm::Segment)
+                }
+                AngleArm::ArcEnd { arc: id, end } => arcs
+                    .iter()
+                    .find(|(candidate, _)| *candidate == id)
+                    .map(|(_, local)| parametric::sketch::AngleArm::ArcEnd {
+                        arc: *local,
+                        end: match end {
+                            ArcEnd::From => SpanEnd::Start,
+                            ArcEnd::To => SpanEnd::Finish,
+                        },
+                    }),
+            };
+            arm(first)
+                .zip(arm(second))
+                .map(|(first, second)| Relation::Angle {
+                    first,
+                    second,
+                    radians: degrees.to_degrees_f64().to_radians(),
+                })
+        }
         ConstraintKind::Coincident { first, second } => point(first)
             .zip(point(second))
             .map(|(first, second)| Relation::Coincident { first, second }),

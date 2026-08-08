@@ -60,6 +60,10 @@ pub enum PickRequirement {
     Segment,
     Curve,
     CircularCurve,
+    /// A curve the drawing can read a DIRECTION off: a line, or an arc at one of its ends. What an
+    /// angle's second arm asks for, and the only slot where an arc and a segment are
+    /// interchangeable — everywhere else the two answer different questions.
+    DirectedCurve,
     /// A curve of the same KIND as one already picked. Symmetry is the only verb that narrows this
     /// way, and it carries the curve rather than a kind tag so that adding a curve kind to the
     /// document needs nothing here.
@@ -84,6 +88,9 @@ impl PickRequirement {
             Self::Segment => matches!(curve, SketchCurve::Segment(_)),
             Self::Curve | Self::PointOrCurve => curve.carries_relation_geometry(),
             Self::CircularCurve => curve.is_circular(),
+            Self::DirectedCurve => {
+                matches!(curve, SketchCurve::Segment(_) | SketchCurve::Arc(_))
+            }
             Self::MatchingCurve(like) => {
                 like.same_kind_as(curve) && curve.carries_relation_geometry()
             }
@@ -96,6 +103,7 @@ impl PickRequirement {
             Self::Segment => "a line",
             Self::Curve => "a curve",
             Self::CircularCurve => "an arc or circle",
+            Self::DirectedCurve => "a line or an arc",
             Self::MatchingCurve(like) => another_of_the_same_kind(like),
             Self::PointOrCurve => "a point or a curve",
         }
@@ -112,6 +120,7 @@ impl PickRequirement {
             Self::Segment => "nothing under the cursor — pick a line",
             Self::Curve => "nothing under the cursor — pick a curve",
             Self::CircularCurve => "nothing under the cursor — pick an arc or circle",
+            Self::DirectedCurve => "nothing under the cursor — pick a line or an arc",
             Self::MatchingCurve(SketchCurve::Segment(_)) => {
                 "nothing under the cursor — pick another line"
             }
@@ -421,7 +430,7 @@ impl ArmedConstraint {
                 Some(_) if self.picked.len() > 1 => None,
                 Some(SketchEntity::Point(_)) => Some(PickRequirement::Point),
                 Some(SketchEntity::Curve(curve)) if curve.is_circular() => None,
-                Some(SketchEntity::Curve(_)) => Some(PickRequirement::Segment),
+                Some(SketchEntity::Curve(_)) => Some(PickRequirement::DirectedCurve),
             };
         }
         if self.verb == ConstraintVerb::Symmetry && self.picked.len() == 1 {
@@ -482,6 +491,9 @@ impl ArmedConstraint {
                 // reads a spline or an ellipse as a whole shape, so to this slot it is not one.
                 PickRequirement::Curve => "that is not a curve a constraint can hold",
                 PickRequirement::CircularCurve => "pick an arc or circle — lines have no center",
+                PickRequirement::DirectedCurve => {
+                    "pick a line or an arc — a circle has no end to read an angle at"
+                }
                 PickRequirement::MatchingCurve(like) => match like {
                     SketchCurve::Segment(_) => "pick another line",
                     SketchCurve::Arc(_) => "pick another arc",
@@ -649,7 +661,7 @@ impl ArmedConstraint {
             return self.kind(sketch).ok_or("constraint is incomplete");
         }
         if self.verb == ConstraintVerb::Dimension {
-            return seeded_dimension(&self.picked, sketch, context);
+            return seeded_dimension(&self.picked, &self.loci, sketch, context);
         }
         if self.verb == ConstraintVerb::Symmetry {
             let (
@@ -705,6 +717,7 @@ impl ArmedConstraint {
 /// out from under them between the click and here.
 fn seeded_dimension(
     picked: &[SketchEntity],
+    loci: &[[f64; 2]],
     sketch: &Sketch,
     context: parametric::EvaluationContext,
 ) -> Result<ConstraintKind, &'static str> {
@@ -740,16 +753,22 @@ fn seeded_dimension(
         }
         (
             Some(SketchEntity::Curve(SketchCurve::Segment(first))),
-            Some(SketchEntity::Curve(SketchCurve::Segment(second))),
-        ) => Dimension::Angle {
-            first: *first,
-            second: *second,
-            degrees: parametric::units::AngleMeasurement::try_from_degrees_f64(
-                turn_between(sketch, *first, *second).ok_or(GONE)?,
-            )
-            .map_err(|_| "those lines do not meet at an angle this can state")?,
-        },
-        _ => return Err("pick two points, two lines, or one arc or circle"),
+            Some(SketchEntity::Curve(second)),
+        ) => {
+            let arms = (
+                document::sketch::AngleArm::Segment { segment: *first },
+                angle_arm(sketch, *second, loci.get(1).copied()).ok_or(GONE)?,
+            );
+            Dimension::Angle {
+                first: arms.0,
+                second: arms.1,
+                degrees: parametric::units::AngleMeasurement::try_from_degrees_f64(
+                    turn_between(sketch, arms.0, arms.1).ok_or(GONE)?,
+                )
+                .map_err(|_| "those lines do not meet at an angle this can state")?,
+            }
+        }
+        _ => return Err("pick two points, a line and a line or arc, or one arc or circle"),
     };
     Ok(ConstraintKind::Dimension(dimension))
 }
@@ -768,19 +787,84 @@ fn point_at(sketch: &Sketch, id: EntityId) -> Option<[f64; 2]> {
     )
 }
 
+/// The arm a picked curve stands for, and for an arc, WHICH END it is read at.
+///
+/// The end is the one nearer where the author clicked, which is a reading of the gesture and not an
+/// inference about the drawing: they pointed at that part of the arc. It is the same thing Tangent
+/// does with its own loci, and the reason a pick carries one at all.
+///
+/// A click with no locus — a gesture rebuilt from a restored selection rather than made — falls
+/// back to the arc's `from` end. That is arbitrary and it is allowed to be: the author can see
+/// which end the mark is struck at and pick the other if they meant the other.
+fn angle_arm(
+    sketch: &Sketch,
+    curve: SketchCurve,
+    locus: Option<[f64; 2]>,
+) -> Option<document::sketch::AngleArm> {
+    match curve {
+        SketchCurve::Segment(segment) => Some(document::sketch::AngleArm::Segment { segment }),
+        SketchCurve::Arc(arc) => {
+            let held = sketch.arcs().iter().find(|held| held.id == arc)?;
+            let end = match locus {
+                None => document::sketch::ArcEnd::From,
+                Some(at) => {
+                    let reach = |id| {
+                        point_at(sketch, id)
+                            .map_or(f64::INFINITY, |end| (end[0] - at[0]).hypot(end[1] - at[1]))
+                    };
+                    if reach(held.to) < reach(held.from) {
+                        document::sketch::ArcEnd::To
+                    } else {
+                        document::sketch::ArcEnd::From
+                    }
+                }
+            };
+            Some(document::sketch::AngleArm::ArcEnd { arc, end })
+        }
+        SketchCurve::Circle(_)
+        | SketchCurve::Bezier(_)
+        | SketchCurve::Ellipse(_)
+        | SketchCurve::Conic(_)
+        | SketchCurve::Spline(_) => None,
+    }
+}
+
 /// The turn from `first` onto `second`, in degrees, folded into `[0, 180)`.
 ///
 /// Folded because a segment has two ends and the drawing has no opinion about which one it points
 /// from, so an angle and that angle plus a half turn are the same claim — which is exactly what
 /// the residual, being a sine, already says. Seeding outside the fold would show the author a
 /// number their own drawing disagrees with.
-fn turn_between(sketch: &Sketch, first: EntityId, second: EntityId) -> Option<f64> {
-    let bearing = |id: EntityId| {
-        let held = sketch.segments().iter().find(|held| held.id == id)?;
-        let (from, to) = (point_at(sketch, held.from)?, point_at(sketch, held.to)?);
-        Some((to[1] - from[1]).atan2(to[0] - from[0]).to_degrees())
-    };
+fn turn_between(
+    sketch: &Sketch,
+    first: document::sketch::AngleArm,
+    second: document::sketch::AngleArm,
+) -> Option<f64> {
+    let bearing = |arm| arm_bearing(sketch, arm);
     Some((bearing(second)? - bearing(first)?).rem_euclid(180.0))
+}
+
+/// Which way an arm points, in degrees. An arc's tangent at an end is perpendicular to the radius
+/// standing there, which is the solver's rule for the same arm written against document ids.
+fn arm_bearing(sketch: &Sketch, arm: document::sketch::AngleArm) -> Option<f64> {
+    let along = match arm {
+        document::sketch::AngleArm::Segment { segment } => {
+            let held = sketch.segments().iter().find(|held| held.id == segment)?;
+            let (from, to) = (point_at(sketch, held.from)?, point_at(sketch, held.to)?);
+            [to[0] - from[0], to[1] - from[1]]
+        }
+        document::sketch::AngleArm::ArcEnd { arc, end } => {
+            let held = sketch.arcs().iter().find(|held| held.id == arc)?;
+            let standing = match end {
+                document::sketch::ArcEnd::From => held.from,
+                document::sketch::ArcEnd::To => held.to,
+            };
+            let (at, center) = (point_at(sketch, standing)?, point_at(sketch, held.center)?);
+            let radius = [at[0] - center[0], at[1] - center[1]];
+            [-radius[1], radius[0]]
+        }
+    };
+    Some(along[1].atan2(along[0]).to_degrees())
 }
 
 /// Which axis constraint a segment is asking for: the one it is ALREADY nearer.
@@ -915,10 +999,10 @@ mod tests {
             angle.offer(SketchEntity::Curve(SketchCurve::Segment(first)), &sketch),
             Offer::Taken
         );
-        assert_eq!(angle.wants(), Some(PickRequirement::Segment));
+        assert_eq!(angle.wants(), Some(PickRequirement::DirectedCurve));
         assert_eq!(
             angle.offer(SketchEntity::Point(to), &sketch),
-            Offer::Refused("that is not a line")
+            Offer::Refused("pick a line or an arc — a circle has no end to read an angle at")
         );
         assert_eq!(
             angle.offer(SketchEntity::Curve(SketchCurve::Segment(second)), &sketch),

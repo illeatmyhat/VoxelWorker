@@ -63,8 +63,8 @@ mod tests;
 mod transform;
 
 pub use constraint::{
-    Constraint, ConstraintKind, ConstraintRefusal, Dimension, InternalContainment, LineSide,
-    SketchCurve, SymmetryBranch, TangentBranch,
+    AngleArm, ArcEnd, Constraint, ConstraintKind, ConstraintRefusal, Dimension,
+    InternalContainment, LineSide, SketchCurve, SymmetryBranch, TangentBranch,
 };
 pub use faces::{Face, FaceKey};
 pub use modify::{
@@ -4272,6 +4272,7 @@ impl Sketch {
                 | parametric::sketch::RequestError::InvalidRelation(
                     parametric::sketch::BuildError::UnknownPoint
                     | parametric::sketch::BuildError::UnknownSegment
+                    | parametric::sketch::BuildError::UnknownArc
                     | parametric::sketch::BuildError::UnknownParameter,
                 ),
             ) => ConstraintRefusal::UnknownEntity,
@@ -4480,18 +4481,40 @@ impl Sketch {
                     return Err(ConstraintRefusal::Impossible);
                 }
             }
-            // An angle is between two straight curves, and the refusals are Parallel's because
-            // the claim is Parallel's with a number attached: two live segments, neither
-            // collapsed, and not the same one twice.
+            // An angle is between two things the drawing gives a direction for, and the refusals
+            // are Parallel's because the claim is Parallel's with a number attached: both arms
+            // live, neither collapsed to nothing, and not the same arm twice.
+            //
+            // "The same arm twice" is the whole arm and not merely its entity: the two ENDS of one
+            // arc are two different tangents, and the angle between them is what a sweep is.
             ConstraintKind::Dimension(Dimension::Angle {
                 first,
                 second,
                 degrees,
             }) => {
-                let (Some(one), Some(other)) = (live_segment(first), live_segment(second)) else {
-                    return Err(ConstraintRefusal::UnknownEntity);
+                let drawn = |arm: AngleArm| match arm {
+                    AngleArm::Segment { segment } => live_segment(segment)
+                        .map(|held| held.from != held.to)
+                        .ok_or(ConstraintRefusal::UnknownEntity),
+                    // An arc whose end stands on its own center has no radius there and so no
+                    // tangent — the same nothing a collapsed segment gives.
+                    AngleArm::ArcEnd { arc, end } => {
+                        let held = self
+                            .arcs
+                            .iter()
+                            .find(|held| held.id == arc)
+                            .ok_or(ConstraintRefusal::UnknownEntity)?;
+                        let standing = match end {
+                            ArcEnd::From => held.from,
+                            ArcEnd::To => held.to,
+                        };
+                        Ok(standing != held.center)
+                    }
                 };
-                if one.from == one.to || other.from == other.to || first == second {
+                if !drawn(first)? || !drawn(second)? {
+                    return Err(ConstraintRefusal::Impossible);
+                }
+                if first == second {
                     return Err(ConstraintRefusal::Impossible);
                 }
                 if !degrees.to_degrees_f64().is_finite() {

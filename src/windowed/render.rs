@@ -4166,6 +4166,23 @@ impl WindowedState {
                 .find(|held| held.id == id)?;
             Some((in_plane(held.from)?, in_plane(held.to)?))
         };
+        // What an angle's arm draws, as two plane points a line can be struck through. A straight
+        // arm is its own two ends; an arc arm is the TANGENT at the end it names, given the arc's
+        // own radius as a length so the leg reaches about as far as the curve does.
+        let arm_line = |arm: document::sketch::AngleArm| match arm {
+            document::sketch::AngleArm::Segment { segment } => ends_in_plane(segment),
+            document::sketch::AngleArm::ArcEnd { arc, end } => {
+                let held = producer.sketch.arcs().iter().find(|held| held.id == arc)?;
+                let standing = match end {
+                    document::sketch::ArcEnd::From => held.from,
+                    document::sketch::ArcEnd::To => held.to,
+                };
+                let (at, center) = (in_plane(standing)?, in_plane(held.center)?);
+                let radius = [at[0] - center[0], at[1] - center[1]];
+                let reach = radius[0].hypot(radius[1]);
+                (reach > f64::EPSILON).then(|| (at, [at[0] - radius[1], at[1] + radius[0]]))
+            }
+        };
         let voxels = |length: document::sketch::SketchLength| {
             parametric::units::format(
                 length.value().round() as i64,
@@ -4239,8 +4256,7 @@ impl WindowedState {
                     second,
                     degrees,
                 } => {
-                    let (Some(first), Some(second)) = (ends_in_plane(first), ends_in_plane(second))
-                    else {
+                    let (Some(first), Some(second)) = (arm_line(first), arm_line(second)) else {
                         continue;
                     };
                     // The vertex is found in PLANE coordinates and only then projected: a virtual
@@ -7308,6 +7324,11 @@ fn nearest_sketch_edge_for_requirement(
         }
         ui::panel::PickRequirement::CircularCurve => {
             nearest_sketch_edge_from_candidates([arc, circle])
+        }
+        // A circle is left out on purpose: it has no end, and an angle to a curve that turns is
+        // read at one.
+        ui::panel::PickRequirement::DirectedCurve => {
+            nearest_sketch_edge_from_candidates([segment, arc])
         }
         ui::panel::PickRequirement::Point => None,
     }

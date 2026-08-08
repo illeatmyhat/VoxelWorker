@@ -100,6 +100,46 @@ pub enum SketchCurve {
     Circle(CircleId),
 }
 
+/// One side of a stated angle: something the drawing gives a DIRECTION for.
+///
+/// A straight run has the same direction at every point on it, so a segment arm names no place. A
+/// curve that turns has a different direction everywhere, so an angle to one is not a question
+/// until a place is named — and what an arc arm names is an END, because an end is on its own arc
+/// by construction. Naming a free point instead would put a coincidence between the arm and the
+/// curve that every later solve has to keep agreeing about.
+///
+/// A whole circle has no ends and so cannot be an arm at all. The thing an author wants there is a
+/// tangency, which [`Relation::Tangent`] already states, at a contact the drawing finds for itself.
+///
+/// Neither arm carries a SENSE, and neither needs to: the angle row is a sine, which repeats every
+/// half turn, so flipping an arm end for end leaves the residual exactly where it was.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AngleArm {
+    /// A straight curve, read along the direction it was drawn in.
+    Segment(SegmentId),
+    /// The direction an arc leaves at one of its own two ends — perpendicular to the radius
+    /// standing there.
+    ArcEnd { arc: ArcId, end: SpanEnd },
+}
+
+impl AngleArm {
+    /// The segment this arm reads, for the liveness checks that are about segments.
+    const fn segment(self) -> Option<SegmentId> {
+        match self {
+            Self::Segment(segment) => Some(segment),
+            Self::ArcEnd { .. } => None,
+        }
+    }
+
+    /// The curve this arm reads, whichever kind it is — what a scope has to include.
+    const fn curve(self) -> SketchCurve {
+        match self {
+            Self::Segment(segment) => SketchCurve::Segment(segment),
+            Self::ArcEnd { arc, .. } => SketchCurve::Arc(arc),
+        }
+    }
+}
+
 /// The physical kind of an intrinsic scalar. Typed results prevent an adapter from writing a
 /// solved radius through the arc-angle door, or vice versa.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -168,8 +208,8 @@ pub enum Relation {
     /// **Radians, not degrees.** Degrees are an authoring unit and stop at the adapter, the way
     /// voxels do; what crosses into the solver is what its trigonometry takes.
     Angle {
-        first: SegmentId,
-        second: SegmentId,
+        first: AngleArm,
+        second: AngleArm,
         radians: f64,
     },
     /// Two segments have the same length without asserting which length; that is different from
@@ -284,6 +324,7 @@ impl Relation {
 pub enum BuildError {
     UnknownPoint,
     UnknownSegment,
+    UnknownArc,
     UnknownParameter,
     InvalidParameter,
     InvalidTangent,
@@ -547,6 +588,26 @@ impl ProblemBuilder {
         key
     }
 
+    /// The arc half of an angle's liveness. An arc that has gone is a different absence from a
+    /// segment that has, so it is answered separately and named separately.
+    fn check_angle_arms(&self, relation: Relation) -> Result<(), BuildError> {
+        let Relation::Angle { first, second, .. } = relation else {
+            return Ok(());
+        };
+        let live = |arm: AngleArm| match arm {
+            AngleArm::Segment(_) => true,
+            AngleArm::ArcEnd { arc, .. } => self
+                .arc_centers
+                .get(arc.index)
+                .is_some_and(|held| arc.owner == self.owner && held.key == arc),
+        };
+        if live(first) && live(second) {
+            Ok(())
+        } else {
+            Err(BuildError::UnknownArc)
+        }
+    }
+
     /// # Errors
     ///
     /// Returns an error when a curve or relation references a foreign or unknown local handle.
@@ -610,14 +671,20 @@ impl ProblemBuilder {
                 | Relation::Midpoint { segment, .. } => vec![segment],
                 Relation::Parallel { first, second }
                 | Relation::Perpendicular { first, second }
-                | Relation::Angle { first, second, .. }
                 | Relation::Equal { first, second }
                 | Relation::Collinear { first, second } => vec![first, second],
+                // Only the straight arms are segments. The arc arms are checked as arcs, below,
+                // because an arc that has gone is a different absence from a segment that has.
+                Relation::Angle { first, second, .. } => [first, second]
+                    .into_iter()
+                    .filter_map(AngleArm::segment)
+                    .collect(),
                 _ => Vec::new(),
             };
             if segments.into_iter().any(|segment| !known_segment(segment)) {
                 return Err(BuildError::UnknownSegment);
             }
+            self.check_angle_arms(*relation)?;
         }
         let raw = Problem {
             owner: self.owner,
@@ -951,11 +1018,29 @@ impl Problem {
                 first,
                 second,
                 radians,
-            } => Ok(Resolved::Angle {
-                first: segment(first)?,
-                second: segment(second)?,
-                radians,
-            }),
+            } => {
+                let arm = |arm: AngleArm| match arm {
+                    AngleArm::Segment(id) => segment(id).map(ResolvedAngleArm::Segment),
+                    AngleArm::ArcEnd { arc, end } => match curve(SketchCurve::Arc(arc))? {
+                        ResolvedCurve::Arc(slots) => Ok(ResolvedAngleArm::ArcEnd {
+                            center: slots.center,
+                            end: match end {
+                                SpanEnd::Start => slots.from,
+                                SpanEnd::Finish => slots.to,
+                            },
+                        }),
+                        // Unreachable: the arm's own type says arc, and `curve` answers by kind.
+                        ResolvedCurve::Segment(_) | ResolvedCurve::Circle(_) => {
+                            Err(BuildError::UnknownArc)
+                        }
+                    },
+                };
+                Ok(Resolved::Angle {
+                    first: arm(first)?,
+                    second: arm(second)?,
+                    radians,
+                })
+            }
             Relation::Perpendicular { first, second } => Ok(Resolved::Perpendicular {
                 first: segment(first)?,
                 second: segment(second)?,
@@ -2734,6 +2819,15 @@ enum ResolvedCurve {
     Circle(CircleSlots),
 }
 
+/// An [`AngleArm`] in slots. Both cases come down to two point slots and how to read a direction
+/// from them, which is why the arc case keeps a center rather than a whole curve: the tangent at an
+/// end is perpendicular to the radius standing at it, and nothing else about the arc is involved.
+#[derive(Debug, Clone, Copy)]
+enum ResolvedAngleArm {
+    Segment(SegmentSlots),
+    ArcEnd { center: usize, end: usize },
+}
+
 #[derive(Debug, Clone, Copy)]
 struct ArcCurveSlots {
     center: usize,
@@ -2781,8 +2875,8 @@ enum Resolved {
         second: SegmentSlots,
     },
     Angle {
-        first: SegmentSlots,
-        second: SegmentSlots,
+        first: ResolvedAngleArm,
+        second: ResolvedAngleArm,
         radians: f64,
     },
     Equal {
@@ -2927,6 +3021,29 @@ fn unit_along(at: &impl Fn(usize) -> [f64; 2], segment: SegmentSlots) -> [f64; 2
         [0.0, 0.0]
     } else {
         [span[0] / length, span[1] / length]
+    }
+}
+
+/// The unit direction an [`ResolvedAngleArm`] gives, or zero where the drawing gives none.
+///
+/// An arc's tangent at an end is perpendicular to the radius standing there, which is
+/// [`super::curvature::direction_at`]'s rule for a circular curve written against the two slots
+/// this arm kept. An end sitting on its own center has no radius and so no tangent, and answers
+/// zero for the same reason a collapsed segment does — collapse validation explains the rejection,
+/// the residual does not invent a direction out of noise.
+fn unit_of_arm(at: &impl Fn(usize) -> [f64; 2], arm: ResolvedAngleArm) -> [f64; 2] {
+    match arm {
+        ResolvedAngleArm::Segment(segment) => unit_along(at, segment),
+        ResolvedAngleArm::ArcEnd { center, end } => {
+            let (center, end) = (at(center), at(end));
+            let radius = [end[0] - center[0], end[1] - center[1]];
+            let length = radius[0].hypot(radius[1]);
+            if length <= f64::EPSILON {
+                [0.0, 0.0]
+            } else {
+                [-radius[1] / length, radius[0] / length]
+            }
+        }
     }
 }
 
@@ -3356,7 +3473,7 @@ impl ResidualSystem for Residuals<'_> {
                 } => {
                     // sin(turn - asked), expanded so no arctangent has to pick a branch: the two
                     // pieces are Parallel's row and Perpendicular's row, mixed by the stated angle.
-                    let (a, b) = (unit_along(&at, first), unit_along(&at, second));
+                    let (a, b) = (unit_of_arm(&at, first), unit_of_arm(&at, second));
                     let across = a[0] * b[1] - a[1] * b[0];
                     let along = a[0] * b[0] + a[1] * b[1];
                     into[row] = across * radians.cos() - along * radians.sin();
@@ -4891,6 +5008,13 @@ impl Problem {
                     .flat_map(|curve| self.points_of_curve(curve))
                     .collect()
             }
+            // An arc arm brings the whole arc into the scope, not only the end it reads: the
+            // tangent there is measured against the center, and a scope that left the center out
+            // would be solving an arm whose direction nothing could change.
+            Relation::Angle { first, second, .. } => [first, second]
+                .into_iter()
+                .flat_map(|arm| self.points_of_curve(arm.curve()))
+                .collect(),
             Relation::Symmetry {
                 first,
                 second,
@@ -4917,9 +5041,12 @@ impl Problem {
             | Relation::Midpoint { segment, .. } => vec![segment],
             Relation::Parallel { first, second }
             | Relation::Perpendicular { first, second }
-            | Relation::Angle { first, second, .. }
             | Relation::Equal { first, second }
             | Relation::Collinear { first, second } => vec![first, second],
+            Relation::Angle { first, second, .. } => [first, second]
+                .into_iter()
+                .filter_map(AngleArm::segment)
+                .collect(),
             Relation::Tangent { first, second, .. } => [first, second]
                 .into_iter()
                 .filter_map(|curve| match curve {

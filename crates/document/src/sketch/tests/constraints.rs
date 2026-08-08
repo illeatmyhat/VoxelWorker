@@ -307,8 +307,8 @@ fn an_angle_dimension_turns_one_segment_onto_the_other() {
     sketch
         .add_constraint(
             ConstraintKind::Dimension(Dimension::Angle {
-                first: base,
-                second: arm,
+                first: AngleArm::Segment { segment: base },
+                second: AngleArm::Segment { segment: arm },
                 degrees: AngleMeasurement::from_degrees(30),
             }),
             ctx(16),
@@ -340,8 +340,8 @@ fn an_angle_dimension_turns_one_segment_onto_the_other() {
     squared
         .add_constraint(
             ConstraintKind::Dimension(Dimension::Angle {
-                first: base,
-                second: arm,
+                first: AngleArm::Segment { segment: base },
+                second: AngleArm::Segment { segment: arm },
                 degrees: AngleMeasurement::from_degrees(90),
             }),
             ctx(16),
@@ -357,8 +357,8 @@ fn an_angle_dimension_turns_one_segment_onto_the_other() {
     assert_eq!(
         squared.add_constraint(
             ConstraintKind::Dimension(Dimension::Angle {
-                first: base,
-                second: base,
+                first: AngleArm::Segment { segment: base },
+                second: AngleArm::Segment { segment: base },
                 degrees: AngleMeasurement::from_degrees(45),
             }),
             ctx(16),
