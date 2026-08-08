@@ -3161,15 +3161,18 @@ impl WindowedState {
             return;
         }
 
-        let existing = self.sketch_geometry_point_at(target, cursor_x, cursor_y);
-        let (next, clicked) = match existing {
+        // Clicks one and two are endpoints the author points at, so they go through the shared
+        // seam and are held to whatever they land on. Click three above is not: it is a coordinate
+        // the sweep is read from and then discarded, and it mints no point to hold.
+        let Some(resolved) = self.sketch_target_at(cursor_x, cursor_y) else {
+            return;
+        };
+        let Some(context) = self.sketch_evaluation_context() else {
+            return;
+        };
+        let (next, clicked) = match resolved.existing {
             Some(id) => (producer.clone(), id),
-            None => {
-                let Some(snapped) = self.sketch_snapped_point_at(cursor_x, cursor_y) else {
-                    return;
-                };
-                producer.with_point_placed(snapped)
-            }
+            None => producer.with_point_planted(resolved.at, resolved.on_curve, context),
         };
         self.sketch_arc_gesture = match self.sketch_arc_gesture {
             None => Some((clicked, None)),
