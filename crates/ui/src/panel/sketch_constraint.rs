@@ -500,11 +500,36 @@ impl ArmedConstraint {
         self.picked.contains(&candidate)
     }
 
-    /// Restart a restored gesture whose held entities are dead or no longer fit its dynamic slots.
+    /// Whether the picks this gesture holds still fill the slots it asked for, in order.
+    ///
+    /// Replayed from an empty gesture rather than checked in place, because the slot rule is
+    /// dynamic: what the second pick may be depends on what the first one was.
+    fn fills_its_own_slots(&self) -> bool {
+        let mut replayed = Self::new(self.verb);
+        for candidate in &self.picked {
+            let fits = replayed
+                .wants()
+                .or_else(|| replayed.would_also_take())
+                .is_some_and(|wanted| wanted.accepts(*candidate));
+            if !fits || replayed.picked.contains(candidate) {
+                return false;
+            }
+            replayed.picked.push(*candidate);
+        }
+        true
+    }
+
+    /// Restart a gesture whose held entities are dead or no longer fit its dynamic slots.
+    ///
+    /// It asks those two questions DIRECTLY rather than round-tripping through
+    /// [`from_parts`](Self::from_parts), which is a different job: that one rebuilds a gesture from
+    /// serialized picks and restarts a dimension outright, because the click loci that chose its
+    /// arc end cannot be serialized with them. A live gesture still has its loci, so measuring it
+    /// against a rebuild would wipe every dimension mid-gesture — and a dimension is armed across
+    /// clicks now, because one pick can leave it placing while it waits for a second.
     pub fn restart_if_invalid(&mut self, sketch: &Sketch) -> bool {
-        let restored = Self::from_parts(self.verb, self.picked.clone());
-        let invalid = restored.picked.len() != self.picked.len()
-            || restored.picked.iter().any(|entity| !holds(sketch, *entity));
+        let invalid =
+            self.picked.iter().any(|entity| !holds(sketch, *entity)) || !self.fills_its_own_slots();
         if invalid {
             *self = Self::new(self.verb);
         }
@@ -1230,6 +1255,53 @@ mod tests {
             whole.dimension_dropped_at([4.0, 20.0], &sketch, density_16()),
             dropped([4.0, 20.0])
         );
+    }
+
+    /// **A gesture survives the click that continues it.**
+    ///
+    /// The shell asks `restart_if_invalid` before resolving every click, so anything it calls
+    /// invalid mid-gesture is a gesture that can never take a second pick. It used to answer by
+    /// rebuilding through `from_parts`, which restarts a dimension on purpose — the loci cannot be
+    /// serialized — so every two-step dimension was wiped by its own second click and read as a
+    /// fresh first one.
+    #[test]
+    fn asking_whether_a_gesture_is_still_valid_does_not_end_it() {
+        let (mut sketch, from, to, first) = one_segment();
+        let up = sketch.add_free_point(SketchPoint::from_continuous(0.0, 9.0));
+        let second = sketch.connect(from, up).expect("a second line");
+
+        let mut span = ArmedConstraint::new(ConstraintVerb::Dimension);
+        assert_eq!(span.offer(SketchEntity::Point(from), &sketch), Offer::Taken);
+        assert!(
+            !span.restart_if_invalid(&sketch),
+            "the pick is live and fits"
+        );
+        assert_eq!(span.picked().len(), 1, "and it is still held");
+        assert_eq!(span.offer(SketchEntity::Point(to), &sketch), Offer::Placing);
+
+        // The same for the pick a gesture merely welcomes: one line is placeable and a second one
+        // still has to be able to land on it.
+        let mut angle = ArmedConstraint::new(ConstraintVerb::Dimension);
+        assert_eq!(
+            angle.offer(SketchEntity::Curve(SketchCurve::Segment(first)), &sketch),
+            Offer::Placing
+        );
+        assert!(!angle.restart_if_invalid(&sketch));
+        assert_eq!(
+            angle.offer(SketchEntity::Curve(SketchCurve::Segment(second)), &sketch),
+            Offer::Placing
+        );
+        assert!(matches!(
+            angle.kind_at_context(&sketch, density_16()),
+            Ok(ConstraintKind::Dimension(Dimension::Angle { .. }))
+        ));
+
+        // A pick that DIES still ends the gesture, which is what the check is for.
+        let mut dying = ArmedConstraint::new(ConstraintVerb::Dimension);
+        assert_eq!(dying.offer(SketchEntity::Point(up), &sketch), Offer::Taken);
+        sketch.delete_point_cascade(up);
+        assert!(dying.restart_if_invalid(&sketch));
+        assert!(dying.picked().is_empty());
     }
 
     /// **A completed gesture is not session state**, and the dimension is why the rule is asked of
