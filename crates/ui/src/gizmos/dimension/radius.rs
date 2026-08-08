@@ -68,7 +68,12 @@ pub fn radius(
     };
     // The arc point, on the anchor's own ray. This is the derivation the module turns on — asked
     // of the rim, because the ray says which way the curve is and only the rim says how far.
-    let touch = rim.touch(ray.y.atan2(ray.x));
+    let bearing = ray.y.atan2(ray.x);
+    let touch = rim.touch(bearing);
+    // The arrow meets the curve SQUARE, so it is aimed by the curve rather than by the ray it was
+    // reached along — the two are one direction on a circle and as far apart as the tilt on the
+    // ellipse a tilted plane draws. The leader stops at the arrow's base for the same reason.
+    let aim = rim.aim(bearing);
     // How far out the curve actually stands THERE, which is what decides inside from outside. The
     // nominal radius would flip the drawing early on one side of an ellipse and late on the other.
     let stands = (touch - center).length();
@@ -92,8 +97,8 @@ pub fn radius(
     let label = if distance < stands {
         // Leader runs center → arc with one arrow at the arc pointing OUT, and the text rides the
         // leader at its own angle rather than sitting horizontally across it.
-        pieces.push(Piece::Polyline(vec![center, touch - ray * ARROW_LENGTH]));
-        pieces.push(arrowhead(touch, ray));
+        pieces.push(Piece::Polyline(vec![center, touch - aim * ARROW_LENGTH]));
+        pieces.push(arrowhead(touch, aim));
         Label {
             at: center + (touch - center) * 0.55,
             text,
@@ -106,11 +111,11 @@ pub fn radius(
         // text. The arrow reverses to point back at the curve.
         let side = if anchor.x >= center.x { 1.0 } else { -1.0 };
         pieces.push(Piece::Polyline(vec![
-            touch + ray * ARROW_LENGTH,
+            touch + aim * ARROW_LENGTH,
             anchor,
             anchor + Vec2::X * side * (width + 2.0 * GAP),
         ]));
-        pieces.push(arrowhead(touch, -ray));
+        pieces.push(arrowhead(touch, -aim));
         Label {
             at: anchor + Vec2::X * side * GAP,
             text,

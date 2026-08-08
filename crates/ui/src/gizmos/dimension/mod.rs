@@ -263,6 +263,33 @@ impl Rim<'_> {
         (self.at)(bearing)
     }
 
+    /// Which way the curve FACES at a bearing: its outward unit normal on screen.
+    ///
+    /// A mark that has to sit SQUARE to the drawing — an arrowhead, and whatever line runs into its
+    /// base — is aimed by this rather than by the ray it was reached along. On a circle the two are
+    /// the same direction; on the ellipse a tilted plane projects to they differ by as much as the
+    /// tilt, and an arrow aimed along the ray lies across its own curve instead of meeting it.
+    #[must_use]
+    pub fn aim(self, bearing: f32) -> Vec2 {
+        // A secant, not a derivative: the rim is sampled, so asking either side of the bearing
+        // reads the drawing's own direction there rather than a curve it only approximates.
+        const NUDGE: f32 = 1e-2;
+        let along = self.touch(bearing + NUDGE) - self.touch(bearing - NUDGE);
+        let radial = Vec2::angled(bearing);
+        let out = Vec2::new(along.y, -along.x);
+        if out.length() <= f32::EPSILON {
+            return radial;
+        }
+        // Of the tangent's two perpendiculars, the one pointing away from the center — which the
+        // bearing already names, because the rim answers a bearing with a point along that ray.
+        let out = out.normalized();
+        if out.dot(radial) >= 0.0 {
+            out
+        } else {
+            -out
+        }
+    }
+
     /// The curve sampled from one bearing round to another, as screen points.
     fn between(self, from: f32, to: f32) -> Vec<Pos2> {
         // One step per few degrees: fine enough that a projected rim reads as a curve, coarse

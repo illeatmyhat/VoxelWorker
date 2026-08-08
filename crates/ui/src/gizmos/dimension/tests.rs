@@ -414,6 +414,77 @@ fn a_radius_carries_its_arc_round_to_a_leader_the_curve_does_not_reach() {
     .is_empty());
 }
 
+/// **A mark that lands on the curve is AIMED by the curve.** A rim on a plane the camera is not
+/// square to draws an ellipse, and there the ray an annotation was dragged along is not the
+/// direction the curve faces — they part by as much as the tilt. An arrowhead aimed along the ray
+/// lies ACROSS its own drawing instead of meeting it, which is what a slanted radius looked like.
+#[test]
+fn an_arrowhead_meets_a_slanted_rim_square_to_it() {
+    let center = Pos2::new(100.0, 100.0);
+    let (wide, tall) = (120.0_f32, 30.0_f32);
+    // The ellipse point ON the ray at a bearing — the convention a projected ring answers in.
+    let squashed = move |bearing: f32| {
+        let (sine, cosine) = bearing.sin_cos();
+        center + Vec2::new(cosine, sine) / (cosine / wide).hypot(sine / tall)
+    };
+    let rim = whole(&squashed);
+
+    // Along either axis the ray IS the way the curve faces, so nothing moves.
+    for square_on in [0.0, std::f32::consts::FRAC_PI_2] {
+        assert!(
+            rim.aim(square_on).dot(Vec2::angled(square_on)) > 0.999,
+            "on an axis the two directions agree"
+        );
+    }
+    // Off them they part, and the aim is the one perpendicular to the drawing.
+    let slant = std::f32::consts::FRAC_PI_4;
+    let facing = rim.aim(slant);
+    assert!(
+        facing.dot(Vec2::angled(slant)) < 0.9,
+        "the ray is not the way the curve faces here: {facing:?}"
+    );
+    let along = (squashed(slant + 0.005) - squashed(slant - 0.005)).normalized();
+    assert!(
+        facing.dot(along).abs() < 1e-2,
+        "the aim left square to the drawing: {facing:?} against {along:?}"
+    );
+
+    // The drawing uses it: the arrow is square to the rim, and the leader ends at its base rather
+    // than short of it along a ray that no longer points the same way.
+    let anchor = center + (squashed(slant) - center) * 0.5;
+    let drawing = radius(center, wide, anchor, rim, "120", Rank::Driving);
+    let head = heads(&drawing)[0];
+    assert!(
+        aim(head).dot(facing) > 0.999,
+        "the arrow left the direction the curve faces: {:?}",
+        aim(head)
+    );
+    let base = head[1] + (head[2] - head[1]) / 2.0;
+    let leader = drawing
+        .pieces
+        .iter()
+        .find_map(|piece| match piece {
+            Piece::Polyline(points) if points.first() == Some(&center) => points.last().copied(),
+            _ => None,
+        })
+        .expect("a leader out of the center");
+    assert!(
+        (leader - base).length() < 1e-3,
+        "the leader stopped somewhere other than the arrow's base"
+    );
+
+    // A diameter's two runs still MEET at the center, so it still reads as crossing it, even
+    // though its two ends now stop at arrows that are no longer opposite each other.
+    let across = diameter(center, wide, anchor, rim, "240", Rank::Driving);
+    assert!(
+        across.pieces.iter().any(|piece| matches!(
+            piece,
+            Piece::Polyline(points) if points.len() == 3 && (points[1] - center).length() < 1e-3
+        )),
+        "the through-line lost its center"
+    );
+}
+
 /// A diameter meets the rim TWICE, so an arc read across can fall short at either end or both.
 #[test]
 fn a_diameter_carries_both_of_the_ends_it_lands_on() {

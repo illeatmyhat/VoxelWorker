@@ -49,11 +49,12 @@ pub fn diameter(
         Vec2::X
     };
     let bearing = ray.y.atan2(ray.x);
-    let (near, far) = (
-        rim.touch(bearing + std::f32::consts::PI),
-        rim.touch(bearing),
-    );
+    let back = bearing + std::f32::consts::PI;
+    let (near, far) = (rim.touch(back), rim.touch(bearing));
     let across = (far - near).length();
+    // Each end's arrow is aimed by the curve it lands on, not by the ray both were reached along:
+    // on the ellipse a tilted plane draws, an arrow aimed radially lies across its own rim.
+    let (aim_near, aim_far) = (rim.aim(back), rim.aim(bearing));
 
     // A center CROSS in dimension ink — a filled dot is what a sketch point looks like, and the
     // center a diameter passes through is not one.
@@ -76,12 +77,15 @@ pub fn diameter(
     let label = if across >= 2.0 * ARROW_LENGTH + width + 2.0 * GAP {
         // Everything inside: the line stops at the arrow bases so nothing pokes past a tip, and
         // the value rides the line at its own angle rather than sitting horizontally across it.
+        // Through the CENTER, in two runs that meet there: each end stops at its own arrow's
+        // base, and the two bases are only opposite each other where the projection is.
         pieces.push(Piece::Polyline(vec![
-            near + ray * ARROW_LENGTH,
-            far - ray * ARROW_LENGTH,
+            near - aim_near * ARROW_LENGTH,
+            center,
+            far - aim_far * ARROW_LENGTH,
         ]));
-        pieces.push(arrowhead(near, -ray));
-        pieces.push(arrowhead(far, ray));
+        pieces.push(arrowhead(near, aim_near));
+        pieces.push(arrowhead(far, aim_far));
         Label {
             at: center,
             text,
@@ -101,14 +105,17 @@ pub fn diameter(
         } else {
             far
         };
-        pieces.push(Piece::Polyline(vec![near - ray * 2.0 * ARROW_LENGTH, near]));
+        pieces.push(Piece::Polyline(vec![
+            near + aim_near * 2.0 * ARROW_LENGTH,
+            near,
+        ]));
         pieces.push(Piece::Polyline(vec![
             near,
             stop,
             stop + Vec2::X * side * (width + 2.0 * GAP),
         ]));
-        pieces.push(arrowhead(near, ray));
-        pieces.push(arrowhead(far, -ray));
+        pieces.push(arrowhead(near, -aim_near));
+        pieces.push(arrowhead(far, -aim_far));
         Label {
             at: stop + Vec2::X * side * GAP,
             text,
