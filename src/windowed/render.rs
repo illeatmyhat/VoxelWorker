@@ -4309,12 +4309,7 @@ impl WindowedState {
                         substrate::geom2d::line_intersection(first.0, first.1, second.0, second.1)
                             .and_then(&to_px)?;
                     let (from, to, reach) = angle_legs(vertex, &to_px, first, second)?;
-                    // How far out the author pulled the text is how big the sweep is drawn.
-                    // Clamped at both ends: an arc inside the arrowheads reads as noise, and one
-                    // past the legs would be measuring air.
-                    let radius = placed
-                        .map_or(reach * 0.55, |placed| placed.distance(vertex))
-                        .clamp(DIMENSION_STANDOFF_PX, reach.max(DIMENSION_STANDOFF_PX));
+                    let radius = angle_arc_radius(vertex, placed, reach);
                     let value = format!("{}\u{b0}", trim_number(degrees.to_degrees_f64()));
                     ui::gizmos::dimension::angle(vertex, from, to, radius, reach, &value, rank)
                 }
@@ -7805,6 +7800,20 @@ fn default_rim_anchor(center: egui::Pos2, radius_px: f32) -> egui::Pos2 {
     center + egui::vec2(0.707, -0.707) * (radius_px + DIMENSION_STANDOFF_PX)
 }
 
+/// How big an angle's arc is struck, given where the author pulled its text and how far the legs
+/// themselves run.
+///
+/// **There is no ceiling.** An arc drawn past the ends of the legs is the ordinary case that
+/// extension lines exist for, and a label that stopped following the cursor at the end of the
+/// geometry would be the drawing refusing a placement the author is entitled to make — the same
+/// freedom a span's offset and a rim's leader already have. The floor stays: an arc inside its own
+/// arrowheads is not a smaller dimension, it is an unreadable one.
+fn angle_arc_radius(vertex: egui::Pos2, placed: Option<egui::Pos2>, reach: f32) -> f32 {
+    placed
+        .map_or(reach * 0.55, |placed| placed.distance(vertex))
+        .max(DIMENSION_STANDOFF_PX)
+}
+
 /// A number for a dimension label: no trailing zeros, and no decimal point when it is whole.
 ///
 /// An angle authored as 30 should read `30`, not `30.00`. Two places is where a sketch angle stops
@@ -7974,8 +7983,8 @@ fn curve_ink(construction: bool) -> ui::chrome::SketchCurveInk {
 #[allow(clippy::expect_used, clippy::float_cmp)]
 mod tests {
     use super::{
-        advance_circle_center_diameter_gesture, aggregate_marquee_picks, angle_legs,
-        apply_sketch_snap, circle_gesture_is_current, circle_marquee_hit, circle_ring,
+        advance_circle_center_diameter_gesture, aggregate_marquee_picks, angle_arc_radius,
+        angle_legs, apply_sketch_snap, circle_gesture_is_current, circle_marquee_hit, circle_ring,
         closest_point_on_segment, complete_circle_center_diameter, concentric_badge_anchor,
         nearest_sketch_edge_for_requirement, nearest_sketch_edge_from_candidates,
         nearest_tangent_lever, point_in_screen_polygon, point_to_segment_distance,
@@ -7983,7 +7992,7 @@ mod tests {
         reset_refused_sketch_constraint_completion, segment_touches_rect, segments_intersect,
         select_sketch_constraint_refusal_culprits, sketch_constraint_badge_at,
         sketch_curve_from_hit, sketch_profile_edit_transaction, symmetry_badge_anchor,
-        tangent_badge_anchor, trim_number, SketchEdgeHit,
+        tangent_badge_anchor, trim_number, SketchEdgeHit, DIMENSION_STANDOFF_PX,
     };
     use document::sketch::{
         ConstraintKind, LineSide, PlaneAxis, Sketch, SketchCurve, SketchLength, SketchPoint,
@@ -8043,6 +8052,32 @@ mod tests {
             "foot at (4, 0), got {foot:?}"
         );
         assert!((point_to_segment_distance(pos2(4.0, 3.0), a, b) - 3.0).abs() < 1e-4);
+    }
+
+    /// **An annotation follows the cursor however far out it goes.** The angle's arc used to be
+    /// capped at the length of the legs, so past their ends the label stopped moving and the
+    /// gesture read as jammed. The gizmo already draws extension lines out to an arc beyond the
+    /// geometry — the cap was the only thing preventing one.
+    #[test]
+    fn an_angles_arc_follows_the_cursor_past_the_ends_of_its_legs() {
+        let vertex = pos2(100.0, 100.0);
+        let reach = 60.0_f32;
+        for pulled in [70.0_f32, 200.0, 5000.0] {
+            let placed = pos2(vertex.x + pulled, vertex.y);
+            assert!(
+                (angle_arc_radius(vertex, Some(placed), reach) - pulled).abs() < 1e-4,
+                "pulled {pulled} past legs of {reach} and the arc did not follow"
+            );
+        }
+        // The floor stands: an arc inside its own arrowheads reads as noise, not as a dimension.
+        assert!(
+            (angle_arc_radius(vertex, Some(pos2(vertex.x + 2.0, vertex.y)), reach)
+                - DIMENSION_STANDOFF_PX)
+                .abs()
+                < 1e-4
+        );
+        // And a dimension authored before annotations had a place still opens inside its legs.
+        assert!((angle_arc_radius(vertex, None, reach) - 33.0).abs() < 1e-4);
     }
 
     #[test]
