@@ -4380,6 +4380,31 @@ impl Sketch {
         Ok(id)
     }
 
+    /// Move a stored annotation to `anchor`, reporting whether there was one to move.
+    ///
+    /// **The claim does not move with it.** Which quantity a dimension states was settled by the
+    /// gesture that authored it and is written down in the [`Dimension`] member — the width of a
+    /// diagonal run, the supplement rather than the angle. Re-reading the drop point here would
+    /// let a hand that only wanted the number out of the way restate it as a different number,
+    /// which is a thing the author must ASK for by dimensioning again.
+    ///
+    /// What the anchor still decides is what it always decided: which side of the geometry the
+    /// drawing lies on, and for an angle which of the two corners that state the same size the
+    /// arc occupies. Those are two views of one claim, so a drag can cross between them freely.
+    ///
+    /// Nothing is re-solved, because nothing geometric changed.
+    pub fn move_annotation(&mut self, constraint: EntityId, anchor: [f64; 2]) -> bool {
+        let Some(held) = self
+            .constraints
+            .iter_mut()
+            .find(|held| held.id == constraint)
+        else {
+            return false;
+        };
+        held.anchor = Some(anchor);
+        true
+    }
+
     /// One persisted assertion of a kind may name one entity set. This is identity policy, not a
     /// numerical redundancy rule: the stored values deliberately do not participate, so replacing
     /// a `Fix` is delete-then-add rather than two claims that fight about one point.

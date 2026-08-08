@@ -738,6 +738,84 @@ fn a_dimension_keeps_the_place_its_annotation_was_dropped() {
     );
 }
 
+/// **Moving a label is not restating a dimension.** The drop point authored the claim once; after
+/// that it is where the number sits, and dragging it anywhere at all leaves the claim alone.
+///
+/// The two cases that could go wrong are the two where the drop point said something in the first
+/// place. A run's annotation dropped above it asks for the width and beside it asks for the height,
+/// so a hand that drags the width label round to the side must not silently start stating the
+/// height. An angle's supplement is a different number from the angle, so a label dragged into a
+/// corner of the other size must not restate it either — and the drawing must not move, because a
+/// dimension the author never touched has nothing new to say to the solver.
+#[test]
+fn dragging_a_label_says_nothing_the_dimension_did_not_already_say() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let tail = sketch.add_free_point(SketchPoint::new(0, 0));
+    let head = sketch.add_free_point(SketchPoint::new(8, 6));
+    let width = sketch
+        .add_constraint_anchored(
+            ConstraintKind::Dimension(Dimension::SpanAlong {
+                from: tail,
+                to: head,
+                axis: InPlaneAxis::Across,
+                length: SketchLength::new(8),
+            }),
+            // Above the run, which is the region that asks for the width.
+            Some([4.0, 11.0]),
+            ctx(16),
+        )
+        .expect("a run eight across states its width");
+
+    // Dragged round to the LEFT of the run, which is the region a height is authored from.
+    assert!(sketch.move_annotation(width, [-9.0, 3.0]));
+    let held = sketch.constraints()[0];
+    assert_eq!(held.anchor, Some([-9.0, 3.0]), "the label went");
+    assert_eq!(
+        held.kind,
+        ConstraintKind::Dimension(Dimension::SpanAlong {
+            from: tail,
+            to: head,
+            axis: InPlaneAxis::Across,
+            length: SketchLength::new(8),
+        }),
+        "and the claim stayed exactly where it was",
+    );
+
+    // The same, for the one dimension whose stored corner the drop point chose.
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let corner = sketch.add_free_point(SketchPoint::new(0, 0));
+    let along = sketch.add_free_point(SketchPoint::new(10, 0));
+    let up = sketch.add_free_point(SketchPoint::new(0, 10));
+    let first = sketch.connect(corner, along).expect("one arm");
+    let second = sketch.connect(corner, up).expect("the other");
+    let stated = sketch
+        .add_constraint_anchored(
+            ConstraintKind::Dimension(Dimension::Angle {
+                first: AngleArm::Segment { segment: first },
+                second: AngleArm::Segment { segment: second },
+                degrees: AngleMeasurement::from_degrees(90),
+                corner: AngleCorner::Between,
+            }),
+            Some([3.0, 3.0]),
+            ctx(16),
+        )
+        .expect("two arms off one corner make a right angle");
+    let drawn = sketch.points().to_vec();
+
+    assert!(sketch.move_annotation(stated, [3.0, -3.0]));
+    assert_eq!(
+        sketch.constraints()[0].kind,
+        ConstraintKind::Dimension(Dimension::Angle {
+            first: AngleArm::Segment { segment: first },
+            second: AngleArm::Segment { segment: second },
+            degrees: AngleMeasurement::from_degrees(90),
+            corner: AngleCorner::Between,
+        }),
+        "a label in the supplement's corner is not a request for the supplement",
+    );
+    assert_eq!(sketch.points(), drawn, "and no solve was asked for");
+}
+
 /// A number the drawing cannot reach is refused, and the refusal costs the author nothing — not
 /// the geometry, and not the dimension they were editing. Poking the value in place could not
 /// promise that; releasing and re-asserting a COPY can.

@@ -621,6 +621,16 @@ enum SketchGrab {
         fit: document::sketch::EntityId,
         from: Option<document::sketch::SketchPoint>,
     },
+    /// A dimension's ANNOTATION, which goes where the cursor goes without the claim going with it.
+    ///
+    /// The one drag in the sketch that moves no geometry. It rewrites
+    /// [`Constraint::anchor`](document::sketch::Constraint::anchor) and nothing else, so the
+    /// drawing says exactly what it said before the hand touched it — see
+    /// [`Sketch::move_annotation`](document::sketch::Sketch::move_annotation) for why re-reading
+    /// the drop point here would be wrong.
+    Annotation {
+        constraint: document::sketch::EntityId,
+    },
 }
 
 impl SketchGrab {
@@ -630,7 +640,7 @@ impl SketchGrab {
             Self::Point(id) => Some(id),
             // The lever's fit point is not reported as the held handle: the overlay would draw the
             // dot in its dragged state for a gesture the author is running on the stick.
-            Self::Translate { .. } | Self::TranslateLever { .. } => None,
+            Self::Translate { .. } | Self::TranslateLever { .. } | Self::Annotation { .. } => None,
         }
     }
 }

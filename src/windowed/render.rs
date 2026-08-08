@@ -1196,6 +1196,11 @@ impl WindowedState {
                     None => Ok(false),
                 }
             }
+            // The UNSNAPPED coordinate: a label is not geometry, and rounding it onto the voxel
+            // lattice would make the number jump between grid cells while the hand moved smoothly.
+            SketchGrab::Annotation { constraint } if began => {
+                Ok(preview.sketch.move_annotation(constraint, profile_coord))
+            }
             // Absolute, not summed: the place the author pressed goes where the cursor is now.
             SketchGrab::Translate {
                 curve,
@@ -5045,6 +5050,20 @@ impl WindowedState {
             .sketch_vertex_at(cursor_x, cursor_y)
             .and_then(|index| self.sketch_point_ids.get(index).copied())
             .map(SketchGrab::Point)
+            // A dimension's number is reached for the same way a badge is and answers a different
+            // gesture: a badge takes a click and never a drag (ADR 0046) because it could sit
+            // anywhere without saying anything different, and a number cannot — where it sits is
+            // part of what the author said. So the one is draggable and the other is not, and they
+            // sit at the same height in the order for the same reason: both are small bounded
+            // marks floating clear of the geometry they name.
+            .or_else(|| {
+                sketch_dimension_value_at(
+                    &self.sketch_dimension_gizmos,
+                    egui::Pos2::new(cursor_x as f32, cursor_y as f32),
+                    self.last_pixels_per_point,
+                )
+                .map(|constraint| SketchGrab::Annotation { constraint })
+            })
             // A lever's stick moves the point it belongs to, never the spline it steers. The
             // handle rides along at the angle and length it was left at, which is exactly what a
             // fit-point drag already does — so this is that same motion, reached for by the
