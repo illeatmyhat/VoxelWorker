@@ -478,7 +478,8 @@ impl ArmedConstraint {
         self.offer_at(candidate, [0.0, 0.0], sketch)
     }
 
-    /// Offer a pick with its continuous profile locus. Non-Tangent verbs ignore the locus.
+    /// Offer a pick with its continuous profile locus. Tangent reads it to choose its branch and an
+    /// angle reads it to choose which end of an arc it is struck at; every other verb ignores it.
     pub fn offer_at(&mut self, candidate: SketchEntity, locus: [f64; 2], sketch: &Sketch) -> Offer {
         let Some(slot) = self.wants() else {
             return Offer::Refused("already complete");
