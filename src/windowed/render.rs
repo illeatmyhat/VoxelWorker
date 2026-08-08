@@ -5676,15 +5676,18 @@ impl WindowedState {
             | ui::panel::SketchTool::ChamferDistanceAngle
             | ui::panel::SketchTool::ChamferTwoDistance
             | ui::panel::SketchTool::Offset => Some(ui::gizmos::HandleState::Hover),
-            // Add-point has its own insert diamond; the drawing tools (#99, #102) target
-            // points and empty plane, never an edge.
+            // Line and the 3-point arc plant their endpoints, so an edge under the cursor is
+            // what the point will be HELD to and the author has to see it before committing.
+            ui::panel::SketchTool::Line | ui::panel::SketchTool::ThreePointArc => {
+                Some(ui::gizmos::HandleState::Hover)
+            }
+            // Add-point has its own insert diamond; the remaining drawing tools (#99, #102)
+            // target points and empty plane, never an edge.
             ui::panel::SketchTool::AddPoint
-            | ui::panel::SketchTool::Line
             | ui::panel::SketchTool::MidpointLine
             | ui::panel::SketchTool::Rectangle
             | ui::panel::SketchTool::Rectangle3Point
             | ui::panel::SketchTool::RectangleCenterCorner
-            | ui::panel::SketchTool::ThreePointArc
             | ui::panel::SketchTool::ArcCenterEndpoints
             | ui::panel::SketchTool::CircleCenterDiameter
             | ui::panel::SketchTool::Circle2Point
@@ -5731,6 +5734,17 @@ impl WindowedState {
                             | document::sketch::SketchCurve::Spline(_) => None,
                         })
                         .map(|hit| (hit, state));
+                }
+                // The one seam again: the edge lit is the edge `on_curve` will name, so a point
+                // under the cursor puts the highlight out exactly when it takes the coincidence.
+                if matches!(
+                    tool,
+                    ui::panel::SketchTool::Line | ui::panel::SketchTool::ThreePointArc
+                ) {
+                    return self
+                        .sketch_target_at(cx, cy)
+                        .and_then(|resolved| resolved.on_curve)
+                        .map(|curve| (sketch_edge_hit_from_curve(curve), state));
                 }
                 if matches!(
                     tool,
@@ -7785,6 +7799,22 @@ fn selection_target(
         ui::panel::SketchEntity::Curve(curve) => {
             ui::panel::SelectionTarget::SketchHigherCurve { sketch, curve }
         }
+    }
+}
+
+/// The hit that names `curve`, for a caller that resolved the curve first and needs to light it.
+///
+/// A higher curve carries its own identity across, the same way [`sketch_curve_from_hit`] carries
+/// it back — the two are inverses, and neither invents a kind the other cannot spell.
+const fn sketch_edge_hit_from_curve(curve: document::sketch::SketchCurve) -> SketchEdgeHit {
+    match curve {
+        document::sketch::SketchCurve::Segment(id) => SketchEdgeHit::Segment(id),
+        document::sketch::SketchCurve::Arc(id) => SketchEdgeHit::Arc(id),
+        document::sketch::SketchCurve::Circle(id) => SketchEdgeHit::Circle(id),
+        document::sketch::SketchCurve::Bezier(_)
+        | document::sketch::SketchCurve::Ellipse(_)
+        | document::sketch::SketchCurve::Conic(_)
+        | document::sketch::SketchCurve::Spline(_) => SketchEdgeHit::HigherCurve(curve),
     }
 }
 
