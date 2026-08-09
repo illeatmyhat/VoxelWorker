@@ -4,7 +4,7 @@ use document::scene::NodeId;
 use document::sketch::{RectanglePlacement, SketchPoint, SketchSolid};
 use parametric::EvaluationContext;
 
-use super::sketch_target::ResolvedSketchTarget;
+use document::sketch::SketchTarget;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct PendingRectangle {
@@ -76,11 +76,11 @@ impl ThreePointRectangleGesture {
         self,
         owner: NodeId,
         producer: &SketchSolid,
-        width_point: ResolvedSketchTarget,
+        width_point: SketchTarget,
     ) -> Option<RectanglePlacement> {
         let pending = self.pending.filter(|pending| pending.owner == owner)?;
         producer
-            .three_point_rectangle_placement(pending.first, pending.second?, width_point.at)
+            .three_point_rectangle_placement(pending.first, pending.second?, width_point.at())
             .ok()
     }
 
@@ -88,14 +88,14 @@ impl ThreePointRectangleGesture {
         &mut self,
         owner: NodeId,
         producer: &SketchSolid,
-        target: Option<ResolvedSketchTarget>,
+        target: Option<SketchTarget>,
         context: EvaluationContext,
     ) -> ThreePointRectangleEdit {
         let Some(pending) = self.pending.take() else {
             if let Some(target) = target {
                 self.pending = Some(PendingRectangle {
                     owner,
-                    first: target.at,
+                    first: target.at(),
                     second: None,
                 });
             }
@@ -108,16 +108,16 @@ impl ThreePointRectangleGesture {
             return ThreePointRectangleEdit::InteractionOnly;
         };
         let Some(second) = pending.second else {
-            if !pending.first.coincides(&target.at) {
+            if !pending.first.coincides(&target.at()) {
                 self.pending = Some(PendingRectangle {
-                    second: Some(target.at),
+                    second: Some(target.at()),
                     ..pending
                 });
             }
             return ThreePointRectangleEdit::InteractionOnly;
         };
         producer
-            .with_three_point_rectangle(pending.first, second, target.at, context)
+            .with_three_point_rectangle(pending.first, second, target.at(), context)
             .map_or(ThreePointRectangleEdit::InteractionOnly, |next| {
                 ThreePointRectangleEdit::Document(next)
             })
@@ -131,12 +131,8 @@ mod tests {
     use document::sketch::{PlaneAxis, Sketch};
     use std::num::NonZeroU32;
 
-    fn target(at: SketchPoint) -> ResolvedSketchTarget {
-        ResolvedSketchTarget {
-            at,
-            existing: None,
-            on_curve: None,
-        }
+    fn target(at: SketchPoint) -> SketchTarget {
+        SketchTarget::fresh(at)
     }
 
     fn context() -> EvaluationContext {

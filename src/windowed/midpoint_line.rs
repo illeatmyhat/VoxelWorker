@@ -2,8 +2,9 @@
 
 use document::scene::NodeId;
 use document::sketch::{MidpointLinePlacement, SketchPoint, SketchSolid};
+use parametric::EvaluationContext;
 
-use super::sketch_target::ResolvedSketchTarget;
+use document::sketch::SketchTarget;
 
 /// The construction midpoint held between clicks. Point identity is deliberately absent: a
 /// midpoint is a positional input, never authored geometry.
@@ -79,11 +80,11 @@ impl MidpointLineGesture {
         self,
         owner: NodeId,
         producer: &SketchSolid,
-        endpoint: ResolvedSketchTarget,
+        endpoint: SketchTarget,
     ) -> Option<MidpointLinePlacement> {
         let pending = self.pending.filter(|pending| pending.owner == owner)?;
         producer
-            .midpoint_line_placement_from_canonical(pending.at, endpoint.at, endpoint.existing)
+            .midpoint_line_placement_from_canonical(pending.at, endpoint)
             .ok()
     }
 
@@ -94,13 +95,14 @@ impl MidpointLineGesture {
         &mut self,
         owner: NodeId,
         producer: &SketchSolid,
-        target: Option<ResolvedSketchTarget>,
+        target: Option<SketchTarget>,
+        context: EvaluationContext,
     ) -> MidpointLineEdit {
         let Some(pending) = self.pending.take() else {
             if let Some(target) = target {
                 self.pending = Some(PendingMidpointLine {
                     owner,
-                    at: target.at,
+                    at: target.at(),
                 });
             }
             return MidpointLineEdit::SessionOnly;
@@ -109,7 +111,7 @@ impl MidpointLineGesture {
             if let Some(target) = target {
                 self.pending = Some(PendingMidpointLine {
                     owner,
-                    at: target.at,
+                    at: target.at(),
                 });
             }
             return MidpointLineEdit::SessionOnly;
@@ -118,7 +120,7 @@ impl MidpointLineGesture {
             return MidpointLineEdit::SessionOnly;
         };
         producer
-            .with_midpoint_line_from_canonical(pending.at, endpoint.at, endpoint.existing)
+            .with_midpoint_line_from_canonical(pending.at, endpoint, context)
             .map_or(MidpointLineEdit::SessionOnly, |(next, _)| {
                 MidpointLineEdit::Document(next)
             })
@@ -129,6 +131,10 @@ impl MidpointLineGesture {
 #[allow(clippy::panic, clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    fn context() -> EvaluationContext {
+        EvaluationContext::new(std::num::NonZeroU32::new(16).unwrap())
+    }
     use document::sketch::{PlaneAxis, Sketch};
     use parametric::units::Measurement;
     use voxel_core::core_geom::MaterialChoice;
@@ -137,12 +143,61 @@ mod tests {
         SketchSolid::extrude(Sketch::empty(PlaneAxis::Z), 3)
     }
 
-    fn target(at: SketchPoint) -> ResolvedSketchTarget {
-        ResolvedSketchTarget {
-            at,
-            existing: None,
-            on_curve: None,
-        }
+    fn target(at: SketchPoint) -> SketchTarget {
+        SketchTarget::fresh(at)
+    }
+
+    /// **The hold reaches every tool that mints an endpoint, not just Line.**
+    ///
+    /// Midpoint Line never mentions a curve: it hands its endpoint target to the document whole,
+    /// and the seam that turns a target into a point is the one that asserts the coincidence. This
+    /// is the test that the seam — not each tool — is what carries the rule.
+    #[test]
+    fn an_endpoint_dropped_on_a_curve_is_held_to_it() {
+        let owner = NodeId(10);
+        let (with_tail, tail) = empty().with_point_placed(SketchPoint::new(0, 0));
+        let (with_head, head) = with_tail.with_point_placed(SketchPoint::new(40, 0));
+        let (rail, segment) = with_head.with_segment_between_traced(tail, head).unwrap();
+
+        let mut gesture = MidpointLineGesture::default();
+        assert_eq!(
+            gesture.click(
+                owner,
+                &rail,
+                Some(target(SketchPoint::new(20, 10))),
+                context()
+            ),
+            MidpointLineEdit::SessionOnly
+        );
+        let MidpointLineEdit::Document(next) = gesture.click(
+            owner,
+            &rail,
+            Some(SketchTarget::Fresh {
+                at: SketchPoint::new(12, 0),
+                onto: Some(segment),
+            }),
+            context(),
+        ) else {
+            panic!("the second click completes the line")
+        };
+        let planted = next
+            .sketch
+            .points()
+            .iter()
+            .find(|point| point.at.coincides(&SketchPoint::new(12, 0)))
+            .unwrap()
+            .id;
+        assert!(
+            next.sketch.constraints().iter().any(|constraint| {
+                constraint.kind
+                    == document::sketch::ConstraintKind::Coincident {
+                        point: planted,
+                        onto: document::sketch::CoincidentTarget::Curve(segment),
+                    }
+            }),
+            "the endpoint landed on the rail, so it says so: {:?}",
+            next.sketch.constraints()
+        );
     }
 
     #[test]
@@ -151,7 +206,12 @@ mod tests {
         let source = empty();
         let mut gesture = MidpointLineGesture::default();
         assert_eq!(
-            gesture.click(owner, &source, Some(target(SketchPoint::new(5, 0)))),
+            gesture.click(
+                owner,
+                &source,
+                Some(target(SketchPoint::new(5, 0))),
+                context()
+            ),
             MidpointLineEdit::SessionOnly
         );
         assert_eq!(
@@ -161,9 +221,12 @@ mod tests {
         );
         assert_eq!(gesture.pending().unwrap().at, SketchPoint::new(5, 0));
 
-        let MidpointLineEdit::Document(made) =
-            gesture.click(owner, &source, Some(target(SketchPoint::new(8, 0))))
-        else {
+        let MidpointLineEdit::Document(made) = gesture.click(
+            owner,
+            &source,
+            Some(target(SketchPoint::new(8, 0))),
+            context(),
+        ) else {
             panic!("second click completes")
         };
         assert_eq!(made.sketch.points().len(), 2);
@@ -172,7 +235,12 @@ mod tests {
         assert_eq!(gesture.pending(), None);
 
         assert_eq!(
-            gesture.click(owner, &made, Some(target(SketchPoint::new(20, 0)))),
+            gesture.click(
+                owner,
+                &made,
+                Some(target(SketchPoint::new(20, 0))),
+                context()
+            ),
             MidpointLineEdit::SessionOnly
         );
         assert_eq!(gesture.pending().unwrap().at, SketchPoint::new(20, 0));
@@ -196,14 +264,22 @@ mod tests {
         let mut gesture = MidpointLineGesture::default();
 
         assert_eq!(
-            gesture.click(owner, &source, Some(target(SketchPoint::new(5, 0)))),
+            gesture.click(
+                owner,
+                &source,
+                Some(target(SketchPoint::new(5, 0))),
+                context()
+            ),
             MidpointLineEdit::SessionOnly
         );
         assert_eq!(core.undo_depth(), 0, "first click queues no AppCore edit");
 
-        let MidpointLineEdit::Document(made) =
-            gesture.click(owner, &source, Some(target(SketchPoint::new(8, 0))))
-        else {
+        let MidpointLineEdit::Document(made) = gesture.click(
+            owner,
+            &source,
+            Some(target(SketchPoint::new(8, 0))),
+            context(),
+        ) else {
             panic!("completion")
         };
         core.apply_transaction(
@@ -234,16 +310,21 @@ mod tests {
             Some([Measurement::from_voxels(8), Measurement::from_voxels(0)]);
         let endpoint = sketch.add_free_point(endpoint_at);
         let source = SketchSolid::extrude(sketch, 3);
-        let endpoint_target = ResolvedSketchTarget {
+        let endpoint_target = SketchTarget::Existing {
+            id: endpoint,
             at: endpoint_at,
-            existing: Some(endpoint),
-            on_curve: None,
         };
         let mut gesture = MidpointLineGesture::default();
-        gesture.click(owner, &source, Some(target(SketchPoint::new(5, 0))));
+        gesture.click(
+            owner,
+            &source,
+            Some(target(SketchPoint::new(5, 0))),
+            context(),
+        );
         let placement = gesture.placement(owner, &source, endpoint_target).unwrap();
 
-        let MidpointLineEdit::Document(made) = gesture.click(owner, &source, Some(endpoint_target))
+        let MidpointLineEdit::Document(made) =
+            gesture.click(owner, &source, Some(endpoint_target), context())
         else {
             panic!("completion")
         };
@@ -276,13 +357,13 @@ mod tests {
             offset_measurements: None,
         };
         let mut gesture = MidpointLineGesture::default();
-        gesture.click(owner, &source, Some(target(midpoint)));
+        gesture.click(owner, &source, Some(target(midpoint)), context());
         assert_eq!(gesture.pending().unwrap().at, midpoint);
         let placement = gesture.placement(owner, &source, target(endpoint)).unwrap();
         assert_eq!(placement.midpoint, midpoint);
 
         let MidpointLineEdit::Document(made) =
-            gesture.click(owner, &source, Some(target(endpoint)))
+            gesture.click(owner, &source, Some(target(endpoint)), context())
         else {
             panic!("exact split-coordinate completion")
         };
@@ -305,9 +386,14 @@ mod tests {
         let source = empty();
         for second in [Some(target(SketchPoint::new(5, 0))), None] {
             let mut gesture = MidpointLineGesture::default();
-            gesture.click(owner, &source, Some(target(SketchPoint::new(5, 0))));
+            gesture.click(
+                owner,
+                &source,
+                Some(target(SketchPoint::new(5, 0))),
+                context(),
+            );
             assert_eq!(
-                gesture.click(owner, &source, second),
+                gesture.click(owner, &source, second, context()),
                 MidpointLineEdit::SessionOnly
             );
             assert_eq!(gesture.pending(), None);
@@ -321,16 +407,21 @@ mod tests {
         let duplicate = SketchSolid::extrude(sketch, 3);
         let before = serde_json::to_string(&duplicate).unwrap();
         let mut gesture = MidpointLineGesture::default();
-        gesture.click(owner, &duplicate, Some(target(SketchPoint::new(5, 0))));
+        gesture.click(
+            owner,
+            &duplicate,
+            Some(target(SketchPoint::new(5, 0))),
+            context(),
+        );
         assert_eq!(
             gesture.click(
                 owner,
                 &duplicate,
-                Some(ResolvedSketchTarget {
-                    at: SketchPoint::new(8, 0),
-                    existing: Some(endpoint),
-                    on_curve: None,
+                Some(SketchTarget::Existing {
+                    id: endpoint,
+                    at: SketchPoint::new(8, 0)
                 }),
+                context(),
             ),
             MidpointLineEdit::SessionOnly
         );
@@ -343,7 +434,12 @@ mod tests {
         let owner = NodeId(10);
         let source = empty();
         let mut gesture = MidpointLineGesture::default();
-        gesture.click(owner, &source, Some(target(SketchPoint::new(5, 0))));
+        gesture.click(
+            owner,
+            &source,
+            Some(target(SketchPoint::new(5, 0))),
+            context(),
+        );
         assert!(gesture.blocks_enter(true, false));
         assert!(
             gesture.pending().is_some(),
@@ -358,7 +454,12 @@ mod tests {
             (true, false, Some(NodeId(11))),
             (true, false, None),
         ] {
-            gesture.click(owner, &source, Some(target(SketchPoint::new(5, 0))));
+            gesture.click(
+                owner,
+                &source,
+                Some(target(SketchPoint::new(5, 0))),
+                context(),
+            );
             gesture.retain_for_context(armed, constrained, active_owner);
             assert_eq!(gesture.pending(), None);
         }

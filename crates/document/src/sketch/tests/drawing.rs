@@ -6,9 +6,17 @@
 use super::ctx;
 use crate::sketch::{
     CenterArcRefusal, ConstraintKind, MidpointLineRefusal, PlaneAxis, Sketch, SketchCurve,
-    SketchLength, SketchPoint, SketchPointConstructionError, SketchSolid, TangentArcRefusal,
+    SketchLength, SketchPoint, SketchPointConstructionError, SketchSolid, SketchTarget,
+    TangentArcRefusal,
 };
 use parametric::units::{AngleMeasurement, Measurement};
+
+fn target_point(at: SketchPoint, existing: Option<crate::sketch::EntityId>) -> SketchTarget {
+    match existing {
+        Some(id) => SketchTarget::Existing { id, at },
+        None => SketchTarget::fresh(at),
+    }
+}
 
 fn empty_solid() -> SketchSolid {
     SketchSolid::extrude(Sketch::new(PlaneAxis::Z, vec![]), 3)
@@ -87,8 +95,7 @@ fn center_arc_projects_the_end_direction_and_keeps_the_center_derived() {
     let placement = solid
         .center_arc_placement(
             center,
-            start,
-            None,
+            SketchTarget::fresh(start),
             direction,
             parametric::sketch::ArcTurn::CounterClockwise,
         )
@@ -100,10 +107,10 @@ fn center_arc_projects_the_end_direction_and_keeps_the_center_derived() {
     let (made, arc_id) = solid
         .with_center_arc(
             center,
-            start,
-            None,
+            SketchTarget::fresh(start),
             direction,
             parametric::sketch::ArcTurn::CounterClockwise,
+            ctx(16),
         )
         .unwrap();
     assert_eq!(
@@ -141,10 +148,10 @@ fn center_arc_reuses_a_stored_start_and_refuses_without_mutating() {
     let (made, arc_id) = solid
         .with_center_arc(
             SketchPoint::new(0, 0),
-            SketchPoint::new(999, 999),
-            Some(start),
+            target_point(SketchPoint::new(999, 999), Some(start)),
             SketchPoint::new(0, -8),
             parametric::sketch::ArcTurn::CounterClockwise,
+            ctx(16),
         )
         .unwrap();
     assert_eq!(
@@ -162,10 +169,10 @@ fn center_arc_reuses_a_stored_start_and_refuses_without_mutating() {
     assert_eq!(
         solid.with_center_arc(
             SketchPoint::new(0, 0),
-            SketchPoint::new(0, 0),
-            None,
+            SketchTarget::fresh(SketchPoint::new(0, 0)),
             SketchPoint::new(1, 0),
             parametric::sketch::ArcTurn::CounterClockwise,
+            ctx(16)
         ),
         Err(CenterArcRefusal::Candidate(
             parametric::sketch::CenterArcCandidateError::CollapsedRadius
@@ -180,8 +187,7 @@ fn center_arc_preview_matches_persisted_geometry_after_endpoint_narrowing() {
     let placement = solid
         .center_arc_placement(
             SketchPoint::from_continuous(0.25, -0.5),
-            SketchPoint::from_continuous(4.125, 0.75),
-            None,
+            SketchTarget::fresh(SketchPoint::from_continuous(4.125, 0.75)),
             SketchPoint::from_continuous(2.7, 8.9),
             parametric::sketch::ArcTurn::CounterClockwise,
         )
@@ -189,10 +195,10 @@ fn center_arc_preview_matches_persisted_geometry_after_endpoint_narrowing() {
     let (made, arc) = solid
         .with_center_arc(
             SketchPoint::from_continuous(0.25, -0.5),
-            SketchPoint::from_continuous(4.125, 0.75),
-            None,
+            SketchTarget::fresh(SketchPoint::from_continuous(4.125, 0.75)),
             SketchPoint::from_continuous(2.7, 8.9),
             parametric::sketch::ArcTurn::CounterClockwise,
+            ctx(16),
         )
         .unwrap();
     let parametric::sketch::CurveGeometry::Circular(persisted) = made
@@ -348,7 +354,7 @@ fn midpoint_line_preview_is_the_exact_document_geometry_that_commit_stores() {
         .midpoint_line_placement([5.25, -1.5], [8.75, 3.125], None)
         .unwrap();
     let (made, segment_id) = empty
-        .with_midpoint_line([5.25, -1.5], [8.75, 3.125], None)
+        .with_midpoint_line([5.25, -1.5], [8.75, 3.125], None, ctx(16))
         .unwrap();
     let segment = made
         .sketch
@@ -383,7 +389,7 @@ fn midpoint_line_reuses_clicked_reflected_and_both_endpoint_ids() {
     let clicked = clicked_sketch.add_free_point(clicked_at);
     let clicked_solid = SketchSolid::extrude(clicked_sketch, 3);
     let (clicked_reused, segment) = clicked_solid
-        .with_midpoint_line(midpoint, [999.0, 999.0], Some(clicked))
+        .with_midpoint_line(midpoint, [999.0, 999.0], Some(clicked), ctx(16))
         .unwrap();
     assert_eq!(clicked_reused.sketch.segments()[0].id, segment);
     assert_eq!(clicked_reused.sketch.segments()[0].from, clicked);
@@ -393,7 +399,7 @@ fn midpoint_line_reuses_clicked_reflected_and_both_endpoint_ids() {
     let reflected = reflected_sketch.add_free_point(reflected_at);
     let reflected_solid = SketchSolid::extrude(reflected_sketch, 3);
     let (reflected_reused, _) = reflected_solid
-        .with_midpoint_line(midpoint, clicked_at.in_plane(), None)
+        .with_midpoint_line(midpoint, clicked_at.in_plane(), None, ctx(16))
         .unwrap();
     assert_eq!(reflected_reused.sketch.segments()[0].to, reflected);
     assert_eq!(reflected_reused.sketch.points().len(), 2);
@@ -403,7 +409,7 @@ fn midpoint_line_reuses_clicked_reflected_and_both_endpoint_ids() {
     let reflected = both_sketch.add_free_point(reflected_at);
     let both_solid = SketchSolid::extrude(both_sketch, 3);
     let (both_reused, _) = both_solid
-        .with_midpoint_line(midpoint, clicked_at.in_plane(), Some(clicked))
+        .with_midpoint_line(midpoint, clicked_at.in_plane(), Some(clicked), ctx(16))
         .unwrap();
     assert_eq!(both_reused.sketch.points().len(), 2, "no coordinate twins");
     assert_eq!(both_reused.sketch.segments()[0].from, clicked);
@@ -413,7 +419,7 @@ fn midpoint_line_reuses_clicked_reflected_and_both_endpoint_ids() {
     let clicked = coordinate_sketch.add_free_point(clicked_at);
     let coordinate_solid = SketchSolid::extrude(coordinate_sketch, 3);
     let (coordinate_reused, _) = coordinate_solid
-        .with_midpoint_line(midpoint, clicked_at.in_plane(), None)
+        .with_midpoint_line(midpoint, clicked_at.in_plane(), None, ctx(16))
         .unwrap();
     assert_eq!(coordinate_reused.sketch.segments()[0].from, clicked);
     assert_eq!(coordinate_reused.sketch.points().len(), 2);
@@ -438,7 +444,7 @@ fn midpoint_line_preview_matches_a_reused_reflected_position_not_its_provenance(
     );
 
     let (made, segment_id) = source
-        .with_midpoint_line([5.0, 0.0], [8.0, 0.0], None)
+        .with_midpoint_line([5.0, 0.0], [8.0, 0.0], None, ctx(16))
         .unwrap();
     let segment = made
         .sketch
@@ -467,7 +473,7 @@ fn midpoint_line_accepts_extreme_finite_canonical_coordinates() {
     let midpoint = [upper - 4096.0, -4096.0];
     let endpoint = [upper - 3072.0, -3072.0];
     let (made, segment) = empty_solid()
-        .with_midpoint_line(midpoint, endpoint, None)
+        .with_midpoint_line(midpoint, endpoint, None, ctx(16))
         .unwrap();
     assert_eq!(made.sketch.segments()[0].id, segment);
     assert_eq!(made.sketch.points().len(), 2);
@@ -518,7 +524,7 @@ fn midpoint_line_preserves_an_authoritative_large_split_endpoint() {
         .is_exact_midpoint_of(&placement.endpoint, &placement.reflected));
 
     let (made, segment) = source
-        .with_midpoint_line([1.0, -1.0], [f64::NAN, f64::NAN], Some(endpoint))
+        .with_midpoint_line([1.0, -1.0], [f64::NAN, f64::NAN], Some(endpoint), ctx(16))
         .unwrap();
     assert_eq!(made.sketch.segments()[0].id, segment);
     assert_eq!(made.sketch.segments()[0].from, endpoint);
@@ -577,7 +583,7 @@ fn midpoint_line_refuses_a_fractional_reflection_that_f32_cannot_store_exactly()
     let source = SketchSolid::extrude(sketch, 3);
 
     assert_eq!(
-        source.with_midpoint_line([0.5, 0.0], [0.0, 0.0], Some(endpoint)),
+        source.with_midpoint_line([0.5, 0.0], [0.0, 0.0], Some(endpoint), ctx(16)),
         Err(MidpointLineRefusal::CanonicalCollapse)
     );
 }
@@ -589,7 +595,7 @@ fn a_preexisting_midpoint_remains_independent_geometry_not_an_authored_input() {
     let midpoint_id = sketch.add_free_point(midpoint_at);
     let source = SketchSolid::extrude(sketch, 3);
     let (made, segment_id) = source
-        .with_midpoint_line(midpoint_at.in_plane(), [8.0, 0.0], None)
+        .with_midpoint_line(midpoint_at.in_plane(), [8.0, 0.0], None, ctx(16))
         .unwrap();
 
     let segment = made
@@ -645,8 +651,8 @@ fn midpoint_line_refuses_stale_duplicate_and_canonical_collapse_atomically() {
     assert!(parametric::sketch::midpoint_line_candidate(raw_midpoint, raw_endpoint).is_ok());
 
     for refusal in [
-        empty.with_midpoint_line([5.0, 0.0], [8.0, 0.0], Some(9999)),
-        empty.with_midpoint_line(raw_midpoint, raw_endpoint, None),
+        empty.with_midpoint_line([5.0, 0.0], [8.0, 0.0], Some(9999), ctx(16)),
+        empty.with_midpoint_line(raw_midpoint, raw_endpoint, None, ctx(16)),
     ] {
         assert!(matches!(
             refusal,
@@ -661,7 +667,7 @@ fn midpoint_line_refuses_stale_duplicate_and_canonical_collapse_atomically() {
     let duplicate = SketchSolid::extrude(sketch, 3);
     let before = serde_json::to_string(&duplicate).unwrap();
     assert_eq!(
-        duplicate.with_midpoint_line([5.0, 0.0], [8.0, 0.0], Some(endpoint)),
+        duplicate.with_midpoint_line([5.0, 0.0], [8.0, 0.0], Some(endpoint), ctx(16)),
         Err(MidpointLineRefusal::DuplicateSegment)
     );
     assert_eq!(serde_json::to_string(&duplicate).unwrap(), before);
@@ -679,33 +685,33 @@ fn every_midpoint_line_refusal_preserves_bytes_and_the_next_id() {
     let upper = -(i64::MIN as f64);
     let cases = [
         (
-            source.with_midpoint_line([0.0, 0.0], [0.0, 0.0], None),
+            source.with_midpoint_line([0.0, 0.0], [0.0, 0.0], None, ctx(16)),
             MidpointLineRefusal::Candidate(
                 parametric::sketch::MidpointLineCandidateError::Collapsed,
             ),
         ),
         (
-            source.with_midpoint_line([f64::NAN, 0.0], [1.0, 0.0], None),
+            source.with_midpoint_line([f64::NAN, 0.0], [1.0, 0.0], None, ctx(16)),
             MidpointLineRefusal::Candidate(
                 parametric::sketch::MidpointLineCandidateError::NonFinite,
             ),
         ),
         (
-            source.with_midpoint_line([f64::MAX, 0.0], [-f64::MAX, 1.0], None),
+            source.with_midpoint_line([f64::MAX, 0.0], [-f64::MAX, 1.0], None, ctx(16)),
             MidpointLineRefusal::Candidate(
                 parametric::sketch::MidpointLineCandidateError::Overflow,
             ),
         ),
         (
-            source.with_midpoint_line([upper, 0.0], [0.0, 1.0], None),
+            source.with_midpoint_line([upper, 0.0], [0.0, 1.0], None, ctx(16)),
             MidpointLineRefusal::Point(SketchPointConstructionError::OutOfCanonicalRange),
         ),
         (
-            source.with_midpoint_line([5.0, 0.0], [8.0, 0.0], Some(7777)),
+            source.with_midpoint_line([5.0, 0.0], [8.0, 0.0], Some(7777), ctx(16)),
             MidpointLineRefusal::UnknownEndpoint,
         ),
         (
-            source.with_midpoint_line([0.25 + 1.0e-10, 0.0], [0.25, 0.0], None),
+            source.with_midpoint_line([0.25 + 1.0e-10, 0.0], [0.25, 0.0], None, ctx(16)),
             MidpointLineRefusal::CanonicalCollapse,
         ),
     ];
@@ -933,13 +939,13 @@ fn standalone_tangent_arc_preview_and_commit_share_the_canonical_destination() {
         .expect("incoming");
     let endpoint = SketchPoint::from_continuous(10.25, 7.5);
     let placement = solid
-        .tangent_arc_placement_to(incoming, seam, endpoint, None, ctx(16))
+        .tangent_arc_placement_to(incoming, seam, SketchTarget::fresh(endpoint), ctx(16))
         .unwrap();
     assert!(placement.candidate.radius.is_finite());
     assert!(placement.candidate.radius > 0.0);
 
     let (made, arc) = solid
-        .with_tangent_arc_to(incoming, seam, endpoint, None, ctx(16))
+        .with_tangent_arc_to(incoming, seam, SketchTarget::fresh(endpoint), ctx(16))
         .unwrap();
     let arc = made
         .sketch
@@ -970,8 +976,7 @@ fn standalone_tangent_arc_reuses_an_authoritative_endpoint_and_refuses_atomicall
         .with_tangent_arc_to(
             incoming,
             seam,
-            SketchPoint::new(999, 999),
-            Some(endpoint),
+            target_point(SketchPoint::new(999, 999), Some(endpoint)),
             ctx(16),
         )
         .unwrap();
@@ -988,7 +993,12 @@ fn standalone_tangent_arc_reuses_an_authoritative_endpoint_and_refuses_atomicall
 
     let before = serde_json::to_string(&solid).unwrap();
     assert!(solid
-        .with_tangent_arc_to(incoming, seam, SketchPoint::new(20, 0), None, ctx(16),)
+        .with_tangent_arc_to(
+            incoming,
+            seam,
+            SketchTarget::fresh(SketchPoint::new(20, 0)),
+            ctx(16)
+        )
         .is_err());
     assert_eq!(serde_json::to_string(&solid).unwrap(), before);
 }

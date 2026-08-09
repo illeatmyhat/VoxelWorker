@@ -2560,7 +2560,7 @@ impl WindowedState {
         &self,
         cursor_x: f64,
         cursor_y: f64,
-    ) -> Option<sketch_target::ResolvedSketchTarget> {
+    ) -> Option<document::sketch::SketchTarget> {
         let target = self.panel_state.sketch_mode?;
         let (producer, _) = self.sketch_node_state(target)?;
         let existing = self.sketch_geometry_point_at(target, cursor_x, cursor_y);
@@ -2894,10 +2894,14 @@ impl WindowedState {
             self.midpoint_line_gesture.reset();
             return;
         };
+        let Some(context) = self.sketch_evaluation_context() else {
+            self.midpoint_line_gesture.reset();
+            return;
+        };
         let resolved = self.sketch_target_at(cursor_x, cursor_y);
         if let midpoint_line::MidpointLineEdit::Document(next) = self
             .midpoint_line_gesture
-            .click(target, &producer, resolved)
+            .click(target, &producer, resolved, context)
         {
             self.commit_sketch_profile_edit(target, next);
         }
@@ -2914,9 +2918,14 @@ impl WindowedState {
             self.center_arc_gesture.reset();
             return;
         };
+        let Some(context) = self.sketch_evaluation_context() else {
+            self.center_arc_gesture.reset();
+            return;
+        };
         let resolved = self.sketch_target_at(cursor_x, cursor_y);
-        if let center_arc::CenterArcEdit::Document(next) =
-            self.center_arc_gesture.click(target, &producer, resolved)
+        if let center_arc::CenterArcEdit::Document(next) = self
+            .center_arc_gesture
+            .click(target, &producer, resolved, context)
         {
             self.commit_sketch_profile_edit(target, next);
         }
@@ -3170,9 +3179,9 @@ impl WindowedState {
         let Some(context) = self.sketch_evaluation_context() else {
             return;
         };
-        let (next, clicked) = match resolved.existing {
+        let (next, clicked) = match resolved.existing() {
             Some(id) => (producer.clone(), id),
-            None => producer.with_point_planted(resolved.at, resolved.on_curve, context),
+            None => producer.with_target_point(resolved, context),
         };
         self.sketch_arc_gesture = match self.sketch_arc_gesture {
             None => Some((clicked, None)),
@@ -5741,7 +5750,7 @@ impl WindowedState {
                 ) {
                     return self
                         .sketch_target_at(cx, cy)
-                        .and_then(|resolved| resolved.on_curve)
+                        .and_then(document::sketch::SketchTarget::onto)
                         .map(|curve| (sketch_edge_hit_from_curve(curve), state));
                 }
                 if matches!(
@@ -6231,7 +6240,7 @@ impl WindowedState {
                         profile_of(chain.end),
                         self.sketch_target_at(cursor_x, cursor_y),
                     ) {
-                        let to = point.at.in_plane();
+                        let to = point.at().in_plane();
                         let profile = if self.line_gesture.arc_is_latched() {
                             chain.incoming.and_then(|_| {
                                 let (producer, _) = self.sketch_node_state(target)?;
@@ -6326,7 +6335,7 @@ impl WindowedState {
                             // is said AT the cursor because moving the cursor is the fix.
                             Some(Err(refusal)) if refusal.is_about_the_cursor() => {
                                 if let Some(at) = endpoint
-                                    .and_then(|endpoint| snapped_screen(endpoint.at.in_plane()))
+                                    .and_then(|endpoint| snapped_screen(endpoint.at().in_plane()))
                                 {
                                     self.sketch_draw_preview =
                                         vec![ui::chrome::SketchPreviewMark::Refused { at }];
@@ -6348,7 +6357,7 @@ impl WindowedState {
                         if self.center_arc_gesture.start(target).is_some() {
                             // Which way round the arc goes is in the ROUTE the cursor took, so the
                             // reading has to be folded in before the preview asks for a direction.
-                            self.center_arc_gesture.track_cursor(target, direction.at);
+                            self.center_arc_gesture.track_cursor(target, direction.at());
                             if let Some(placement) = self
                                 .center_arc_gesture
                                 .placement(target, &producer, direction)
@@ -6371,7 +6380,7 @@ impl WindowedState {
                                 }
                             }
                         } else {
-                            let profile = [center.in_plane(), direction.at.in_plane()];
+                            let profile = [center.in_plane(), direction.at().in_plane()];
                             let projected: Vec<egui::Pos2> =
                                 profile.iter().copied().filter_map(snapped_screen).collect();
                             if projected.len() == profile.len() {
@@ -6433,7 +6442,7 @@ impl WindowedState {
                             |(first, second)| {
                                 second.is_none().then_some(vec![
                                     first.in_plane(),
-                                    self.sketch_target_at(cursor_x, cursor_y)?.at.in_plane(),
+                                    self.sketch_target_at(cursor_x, cursor_y)?.at().in_plane(),
                                 ])
                             },
                         )
@@ -6621,7 +6630,7 @@ impl WindowedState {
                                 .and_then(|(first, second)| {
                                     second
                                         .is_none()
-                                        .then_some(vec![first.in_plane(), cursor.at.in_plane()])
+                                        .then_some(vec![first.in_plane(), cursor.at().in_plane()])
                                 })
                         });
                     if let Some(ring) = ring {
@@ -6661,11 +6670,11 @@ impl WindowedState {
                     // Which way round a center-arc spine goes is in the ROUTE the cursor took, so
                     // the reading has to be folded in before the preview asks for a direction.
                     if let Some(cursor) = cursor {
-                        self.slot_gesture.track_cursor(target, kind, cursor.at);
+                        self.slot_gesture.track_cursor(target, kind, cursor.at());
                     }
                     // An arc slot's CENTERLINE, from the moment its picks settle an arc.
                     let spine = cursor
-                        .and_then(|cursor| self.slot_gesture.spine(target, kind, cursor.at))
+                        .and_then(|cursor| self.slot_gesture.spine(target, kind, cursor.at()))
                         .map(|spine| arc_spine_points(&spine));
                     let ring = cursor.and_then(|cursor| {
                         self.slot_gesture
@@ -6680,7 +6689,7 @@ impl WindowedState {
                                     return None;
                                 }
                                 self.slot_gesture.guide(target, kind).map(|mut guide| {
-                                    guide.push(cursor.at);
+                                    guide.push(cursor.at());
                                     guide.into_iter().map(|point| point.in_plane()).collect()
                                 })
                             })

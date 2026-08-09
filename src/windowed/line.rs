@@ -1,7 +1,7 @@
 //! Session-only state for the connected Line command.
 
-use super::sketch_target::ResolvedSketchTarget;
 use document::scene::NodeId;
+use document::sketch::SketchTarget;
 use document::sketch::{EntityId, SketchCurve, SketchSolid, TangentArcRefusal};
 use parametric::EvaluationContext;
 
@@ -159,20 +159,17 @@ impl LineGesture {
     /// the click landed on.
     fn placed_point(
         producer: &SketchSolid,
-        target: ResolvedSketchTarget,
+        target: SketchTarget,
         context: EvaluationContext,
     ) -> (SketchSolid, EntityId) {
-        target.existing.map_or_else(
-            || producer.with_point_planted(target.at, target.on_curve, context),
-            |id| (producer.clone(), id),
-        )
+        producer.with_target_point(target, context)
     }
 
     pub fn click(
         &mut self,
         owner: NodeId,
         producer: &SketchSolid,
-        target: ResolvedSketchTarget,
+        target: SketchTarget,
         context: EvaluationContext,
     ) -> LineEdit {
         let (with_point, clicked) = Self::placed_point(producer, target, context);
@@ -222,7 +219,7 @@ impl LineGesture {
     pub fn append_tangent_arc(
         &mut self,
         producer: &SketchSolid,
-        target: ResolvedSketchTarget,
+        target: SketchTarget,
         context: EvaluationContext,
     ) -> Result<SketchSolid, TangentArcRefusal> {
         let Some(chain) = self.chain else {
@@ -270,29 +267,20 @@ mod tests {
     }
 
     /// A click on empty plane: nothing under it to be held to.
-    const fn plain(at: SketchPoint) -> ResolvedSketchTarget {
-        ResolvedSketchTarget {
-            at,
-            existing: None,
-            on_curve: None,
-        }
+    const fn plain(at: SketchPoint) -> SketchTarget {
+        SketchTarget::fresh(at)
     }
 
     /// A click on a point that is already there.
-    const fn at_existing(at: SketchPoint, existing: EntityId) -> ResolvedSketchTarget {
-        ResolvedSketchTarget {
-            at,
-            existing: Some(existing),
-            on_curve: None,
-        }
+    const fn at_existing(at: SketchPoint, existing: EntityId) -> SketchTarget {
+        SketchTarget::Existing { id: existing, at }
     }
 
     /// A click on empty plane that landed on `curve` — the case the planting rule is for.
-    const fn on_curve(at: SketchPoint, curve: SketchCurve) -> ResolvedSketchTarget {
-        ResolvedSketchTarget {
+    const fn on_curve(at: SketchPoint, curve: SketchCurve) -> SketchTarget {
+        SketchTarget::Fresh {
             at,
-            existing: None,
-            on_curve: Some(curve),
+            onto: Some(curve),
         }
     }
 
@@ -724,8 +712,8 @@ mod tests {
             None,
         )
         .unwrap();
-        assert_eq!(resolved.existing, Some(grabbed));
-        assert_eq!(resolved.at.in_plane(), [3.25, 4.75]);
+        assert_eq!(resolved.existing(), Some(grabbed));
+        assert_eq!(resolved.at().in_plane(), [3.25, 4.75]);
     }
 
     #[test]

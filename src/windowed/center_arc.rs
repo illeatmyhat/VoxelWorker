@@ -2,14 +2,15 @@
 
 use document::scene::NodeId;
 use document::sketch::{CenterArcPlacement, EntityId, SketchPoint, SketchSolid};
+use parametric::EvaluationContext;
 
-use super::sketch_target::ResolvedSketchTarget;
+use document::sketch::SketchTarget;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct PendingCenterArc {
     owner: NodeId,
     center: SketchPoint,
-    start: Option<ResolvedSketchTarget>,
+    start: Option<SketchTarget>,
     /// Which way the cursor has been going about the center since the start point landed.
     ///
     /// The arc's direction is a property of the PATH the cursor took, not of where it currently
@@ -41,7 +42,7 @@ impl CenterArcGesture {
             .iter()
             .filter(|pending| pending.owner == owner)
             .flat_map(|pending| {
-                std::iter::once(pending.center).chain(pending.start.map(|start| start.at))
+                std::iter::once(pending.center).chain(pending.start.map(|start| start.at()))
             })
             .collect()
     }
@@ -58,7 +59,7 @@ impl CenterArcGesture {
         }
     }
 
-    pub fn start(self, owner: NodeId) -> Option<ResolvedSketchTarget> {
+    pub fn start(self, owner: NodeId) -> Option<SketchTarget> {
         match self.pending {
             Some(PendingCenterArc {
                 owner: pending_owner,
@@ -87,7 +88,7 @@ impl CenterArcGesture {
                 && producer.is_some()
                 && pending
                     .start
-                    .and_then(|start| start.existing)
+                    .and_then(|start| start.existing())
                     .is_none_or(|id| producer.is_some_and(|solid| point_exists(solid, id)))
         });
         if !valid {
@@ -115,23 +116,22 @@ impl CenterArcGesture {
         let Some(start) = pending.start else {
             return;
         };
-        super::arc_winding::track(&mut pending.winding, pending.center, start.at, cursor);
+        super::arc_winding::track(&mut pending.winding, pending.center, start.at(), cursor);
     }
 
     pub fn placement(
         self,
         owner: NodeId,
         producer: &SketchSolid,
-        direction: ResolvedSketchTarget,
+        direction: SketchTarget,
     ) -> Option<CenterArcPlacement> {
         let pending = self.pending.filter(|pending| pending.owner == owner)?;
         let start = pending.start?;
         producer
             .center_arc_placement(
                 pending.center,
-                start.at,
-                start.existing,
-                direction.at,
+                start,
+                direction.at(),
                 super::arc_winding::turn(pending.winding),
             )
             .ok()
@@ -143,13 +143,14 @@ impl CenterArcGesture {
         &mut self,
         owner: NodeId,
         producer: &SketchSolid,
-        target: Option<ResolvedSketchTarget>,
+        target: Option<SketchTarget>,
+        context: EvaluationContext,
     ) -> CenterArcEdit {
         let Some(pending) = self.pending.take() else {
             if let Some(target) = target {
                 self.pending = Some(PendingCenterArc {
                     owner,
-                    center: target.at,
+                    center: target.at(),
                     start: None,
                     winding: None,
                 });
@@ -160,7 +161,7 @@ impl CenterArcGesture {
             if let Some(target) = target {
                 self.pending = Some(PendingCenterArc {
                     owner,
-                    center: target.at,
+                    center: target.at(),
                     start: None,
                     winding: None,
                 });
@@ -171,7 +172,7 @@ impl CenterArcGesture {
             return CenterArcEdit::InteractionOnly;
         };
         let Some(start) = pending.start else {
-            if !pending.center.coincides(&target.at) {
+            if !pending.center.coincides(&target.at()) {
                 self.pending = Some(PendingCenterArc {
                     start: Some(target),
                     ..pending
@@ -182,14 +183,14 @@ impl CenterArcGesture {
         // The click's own position is the last reading, so a commit and the preview it replaces
         // cannot disagree about the direction even if no frame rendered in between.
         let mut winding = pending.winding;
-        super::arc_winding::track(&mut winding, pending.center, start.at, target.at);
+        super::arc_winding::track(&mut winding, pending.center, start.at(), target.at());
         producer
             .with_center_arc(
                 pending.center,
-                start.at,
-                start.existing,
-                target.at,
+                start,
+                target.at(),
                 super::arc_winding::turn(winding),
+                context,
             )
             .map_or(CenterArcEdit::InteractionOnly, |(next, _)| {
                 CenterArcEdit::Document(next)
@@ -205,6 +206,10 @@ fn point_exists(producer: &SketchSolid, id: EntityId) -> bool {
 #[allow(clippy::panic, clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    fn context() -> EvaluationContext {
+        EvaluationContext::new(std::num::NonZeroU32::new(16).unwrap())
+    }
     use document::sketch::{PlaneAxis, Sketch};
     use voxel_core::core_geom::MaterialChoice;
 
@@ -212,12 +217,8 @@ mod tests {
         SketchSolid::extrude(Sketch::empty(PlaneAxis::Z), 3)
     }
 
-    fn target(at: SketchPoint) -> ResolvedSketchTarget {
-        ResolvedSketchTarget {
-            at,
-            existing: None,
-            on_curve: None,
-        }
+    fn target(at: SketchPoint) -> SketchTarget {
+        SketchTarget::fresh(at)
     }
 
     #[test]
@@ -226,11 +227,21 @@ mod tests {
         let source = empty();
         let mut gesture = CenterArcGesture::default();
         assert_eq!(
-            gesture.click(owner, &source, Some(target(SketchPoint::new(0, 0)))),
+            gesture.click(
+                owner,
+                &source,
+                Some(target(SketchPoint::new(0, 0))),
+                context()
+            ),
             CenterArcEdit::InteractionOnly
         );
         assert_eq!(
-            gesture.click(owner, &source, Some(target(SketchPoint::new(4, 0)))),
+            gesture.click(
+                owner,
+                &source,
+                Some(target(SketchPoint::new(4, 0))),
+                context()
+            ),
             CenterArcEdit::InteractionOnly
         );
         assert!(source.sketch.points().is_empty());
@@ -238,9 +249,12 @@ mod tests {
             .placement(owner, &source, target(SketchPoint::new(0, 9)))
             .unwrap();
 
-        let CenterArcEdit::Document(made) =
-            gesture.click(owner, &source, Some(target(SketchPoint::new(0, 9))))
-        else {
+        let CenterArcEdit::Document(made) = gesture.click(
+            owner,
+            &source,
+            Some(target(SketchPoint::new(0, 9))),
+            context(),
+        ) else {
             panic!("third click completes")
         };
         assert!(!gesture.is_pending());
@@ -270,8 +284,8 @@ mod tests {
             (CenterArcGesture::default(), -1.0_f64),
         ];
         for (gesture, sign) in &mut sweeps {
-            gesture.click(owner, &source, Some(target(center)));
-            gesture.click(owner, &source, Some(target(start)));
+            gesture.click(owner, &source, Some(target(center)), context());
+            gesture.click(owner, &source, Some(target(start)), context());
             for step in 1..=8 {
                 let angle = *sign * f64::from(step) / 8.0 * std::f64::consts::PI;
                 let cursor =
@@ -301,12 +315,22 @@ mod tests {
         let owner = NodeId(7);
         let source = empty();
         let mut gesture = CenterArcGesture::default();
-        gesture.click(owner, &source, Some(target(SketchPoint::new(0, 0))));
+        gesture.click(
+            owner,
+            &source,
+            Some(target(SketchPoint::new(0, 0))),
+            context(),
+        );
         assert!(gesture.blocks_enter(true, false));
         assert!(gesture.cancel_for_escape(true, false));
         assert!(!gesture.is_pending());
 
-        gesture.click(owner, &source, Some(target(SketchPoint::new(0, 0))));
+        gesture.click(
+            owner,
+            &source,
+            Some(target(SketchPoint::new(0, 0))),
+            context(),
+        );
         gesture.retain_for_context(true, false, Some(NodeId(8)), Some(&source));
         assert!(!gesture.is_pending());
     }
@@ -328,12 +352,25 @@ mod tests {
         let mut selection = ui::panel::Selection::default();
         let mut gesture = CenterArcGesture::default();
 
-        gesture.click(owner, &source, Some(target(SketchPoint::new(0, 0))));
-        gesture.click(owner, &source, Some(target(SketchPoint::new(4, 0))));
+        gesture.click(
+            owner,
+            &source,
+            Some(target(SketchPoint::new(0, 0))),
+            context(),
+        );
+        gesture.click(
+            owner,
+            &source,
+            Some(target(SketchPoint::new(4, 0))),
+            context(),
+        );
         assert_eq!(core.undo_depth(), 0);
-        let CenterArcEdit::Document(made) =
-            gesture.click(owner, &source, Some(target(SketchPoint::new(0, 4))))
-        else {
+        let CenterArcEdit::Document(made) = gesture.click(
+            owner,
+            &source,
+            Some(target(SketchPoint::new(0, 4))),
+            context(),
+        ) else {
             panic!("completion")
         };
         core.apply_transaction(

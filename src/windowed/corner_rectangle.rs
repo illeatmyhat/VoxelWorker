@@ -4,7 +4,7 @@ use document::scene::NodeId;
 use document::sketch::{RectanglePlacement, SketchPoint, SketchSolid};
 use parametric::EvaluationContext;
 
-use super::sketch_target::ResolvedSketchTarget;
+use document::sketch::SketchTarget;
 
 /// Which corner grammar the first click opened. Held in the pending record rather than read
 /// from the live tool at commit time: switching tools mid-gesture would otherwise reinterpret
@@ -89,17 +89,17 @@ impl CornerRectangleGesture {
         owner: NodeId,
         kind: CornerRectangleKind,
         producer: &SketchSolid,
-        cursor: ResolvedSketchTarget,
+        cursor: SketchTarget,
     ) -> Option<RectanglePlacement> {
         let pending = self
             .pending
             .filter(|pending| pending.owner == owner && pending.kind == kind)?;
         match kind {
             CornerRectangleKind::TwoPoint => producer
-                .corner_rectangle_placement(pending.first, cursor.at)
+                .corner_rectangle_placement(pending.first, cursor.at())
                 .ok(),
             CornerRectangleKind::CenterCorner => producer
-                .center_rectangle_placement(pending.first, cursor.at)
+                .center_rectangle_placement(pending.first, cursor.at())
                 .ok(),
         }
     }
@@ -109,7 +109,7 @@ impl CornerRectangleGesture {
         owner: NodeId,
         kind: CornerRectangleKind,
         producer: &SketchSolid,
-        target: Option<ResolvedSketchTarget>,
+        target: Option<SketchTarget>,
         context: EvaluationContext,
     ) -> CornerRectangleEdit {
         let Some(pending) = self.pending.take() else {
@@ -117,7 +117,7 @@ impl CornerRectangleGesture {
                 self.pending = Some(PendingCornerRectangle {
                     owner,
                     kind,
-                    first: target.at,
+                    first: target.at(),
                 });
             }
             return CornerRectangleEdit::InteractionOnly;
@@ -129,7 +129,7 @@ impl CornerRectangleGesture {
                 self.pending = Some(PendingCornerRectangle {
                     owner,
                     kind,
-                    first: target.at,
+                    first: target.at(),
                 });
             }
             return CornerRectangleEdit::InteractionOnly;
@@ -139,10 +139,10 @@ impl CornerRectangleGesture {
         };
         let made = match kind {
             CornerRectangleKind::TwoPoint => {
-                producer.with_rectangle(pending.first, target.at, context)
+                producer.with_rectangle(pending.first, target.at(), context)
             }
             CornerRectangleKind::CenterCorner => {
-                producer.with_center_rectangle(pending.first, target.at, context)
+                producer.with_center_rectangle(pending.first, target.at(), context)
             }
         };
         made.map_or(CornerRectangleEdit::InteractionOnly, |next| {
@@ -158,12 +158,8 @@ mod tests {
     use document::sketch::{PlaneAxis, Sketch};
     use std::num::NonZeroU32;
 
-    fn target(at: SketchPoint) -> ResolvedSketchTarget {
-        ResolvedSketchTarget {
-            at,
-            existing: None,
-            on_curve: None,
-        }
+    fn target(at: SketchPoint) -> SketchTarget {
+        SketchTarget::fresh(at)
     }
 
     fn context() -> EvaluationContext {

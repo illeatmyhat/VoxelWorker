@@ -3,7 +3,7 @@
 use document::scene::NodeId;
 use document::sketch::{PolygonPlacement, SketchPoint, SketchSolid};
 
-use super::sketch_target::ResolvedSketchTarget;
+use document::sketch::SketchTarget;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum PolygonKind {
@@ -95,7 +95,7 @@ impl PolygonGesture {
         owner: NodeId,
         kind: PolygonKind,
         producer: &SketchSolid,
-        cursor: ResolvedSketchTarget,
+        cursor: SketchTarget,
         sides: u16,
     ) -> Option<PolygonPlacement> {
         let pending = self
@@ -103,13 +103,13 @@ impl PolygonGesture {
             .filter(|pending| pending.owner == owner && pending.kind == kind)?;
         match (kind, pending.second) {
             (PolygonKind::Inscribed, None) => producer
-                .inscribed_polygon_placement(pending.first, cursor.at, sides)
+                .inscribed_polygon_placement(pending.first, cursor.at(), sides)
                 .ok(),
             (PolygonKind::Circumscribed, None) => producer
-                .circumscribed_polygon_placement(pending.first, cursor.at, sides)
+                .circumscribed_polygon_placement(pending.first, cursor.at(), sides)
                 .ok(),
             (PolygonKind::Edge, Some(second)) => producer
-                .edge_polygon_placement(pending.first, second, cursor.at, sides)
+                .edge_polygon_placement(pending.first, second, cursor.at(), sides)
                 .ok(),
             (PolygonKind::Edge, None)
             | (PolygonKind::Inscribed | PolygonKind::Circumscribed, Some(_)) => None,
@@ -121,7 +121,7 @@ impl PolygonGesture {
         owner: NodeId,
         kind: PolygonKind,
         producer: &SketchSolid,
-        target: Option<ResolvedSketchTarget>,
+        target: Option<SketchTarget>,
         sides: u16,
     ) -> PolygonEdit {
         let Some(pending) = self.pending.take() else {
@@ -129,7 +129,7 @@ impl PolygonGesture {
                 self.pending = Some(PendingPolygon {
                     owner,
                     kind,
-                    first: target.at,
+                    first: target.at(),
                     second: None,
                 });
             }
@@ -140,7 +140,7 @@ impl PolygonGesture {
                 self.pending = Some(PendingPolygon {
                     owner,
                     kind,
-                    first: target.at,
+                    first: target.at(),
                     second: None,
                 });
             }
@@ -151,22 +151,22 @@ impl PolygonGesture {
         };
         match (kind, pending.second) {
             (PolygonKind::Inscribed, None) => producer
-                .with_inscribed_polygon(pending.first, target.at, sides)
+                .with_inscribed_polygon(pending.first, target.at(), sides)
                 .map_or(PolygonEdit::InteractionOnly, PolygonEdit::Document),
             (PolygonKind::Circumscribed, None) => producer
-                .with_circumscribed_polygon(pending.first, target.at, sides)
+                .with_circumscribed_polygon(pending.first, target.at(), sides)
                 .map_or(PolygonEdit::InteractionOnly, PolygonEdit::Document),
             (PolygonKind::Edge, None) => {
-                if !pending.first.coincides(&target.at) {
+                if !pending.first.coincides(&target.at()) {
                     self.pending = Some(PendingPolygon {
-                        second: Some(target.at),
+                        second: Some(target.at()),
                         ..pending
                     });
                 }
                 PolygonEdit::InteractionOnly
             }
             (PolygonKind::Edge, Some(second)) => producer
-                .with_edge_polygon(pending.first, second, target.at, sides)
+                .with_edge_polygon(pending.first, second, target.at(), sides)
                 .map_or(PolygonEdit::InteractionOnly, PolygonEdit::Document),
             (PolygonKind::Inscribed | PolygonKind::Circumscribed, Some(_)) => {
                 PolygonEdit::InteractionOnly
@@ -181,12 +181,8 @@ mod tests {
     use super::*;
     use document::sketch::{PlaneAxis, Sketch};
 
-    fn target(at: SketchPoint) -> ResolvedSketchTarget {
-        ResolvedSketchTarget {
-            at,
-            existing: None,
-            on_curve: None,
-        }
+    fn target(at: SketchPoint) -> SketchTarget {
+        SketchTarget::fresh(at)
     }
 
     #[test]

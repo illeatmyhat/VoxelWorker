@@ -58,6 +58,7 @@ mod pattern;
 mod produce;
 mod region_memo;
 mod solid;
+mod target;
 #[cfg(test)]
 mod tests;
 mod transform;
@@ -80,6 +81,7 @@ pub use pattern::{
 };
 pub use solid::SketchSolid;
 pub use substrate::geom2d::LoopRole;
+pub use target::SketchTarget;
 pub use transform::{SketchTransformEntity, SketchTransformRefusal};
 
 use parametric::sketch::{HandRole, KeptQuantity};

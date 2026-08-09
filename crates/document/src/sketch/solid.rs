@@ -28,6 +28,45 @@ use rayon::prelude::*;
 use std::sync::Arc;
 use voxel_core::voxel::{Voxel, VoxelGrid, MAX_GRID_VOXELS, SURFACE_ISOLEVEL};
 
+/// Mint the point a target names into `sketch`, holding a fresh one to the curve the pointer was
+/// over. The in-place twin of [`SketchSolid::with_target_point`], for the builders that are
+/// already working on a trial clone.
+///
+/// Landing on a coordinate a point already occupies answers with THAT point and holds nothing:
+/// the author was pointing at the point, and re-holding it to a curve is an edit they did not ask
+/// for. A refused hold is dropped rather than reported — the curve came from a hover highlight, so
+/// what is left refusing is a hold that cannot exist at all, and the point still belongs where it
+/// was planted.
+fn plant_target(sketch: &mut Sketch, target: SketchTarget, context: EvaluationContext) -> EntityId {
+    match target {
+        SketchTarget::Existing { id, .. } => id,
+        SketchTarget::Fresh { at, onto } => {
+            if let Some(existing) = sketch.point_at(at) {
+                return existing;
+            }
+            let id = sketch.add_free_point(at);
+            if let Some(curve) = onto {
+                drop(sketch.add_constraint(
+                    ConstraintKind::Coincident {
+                        point: id,
+                        onto: CoincidentTarget::Curve(curve),
+                    },
+                    context,
+                ));
+            }
+            id
+        }
+    }
+}
+
+/// The target an older `(position, optional identity)` pair was spelling out.
+fn target_at(existing: Option<EntityId>, at: SketchPoint) -> SketchTarget {
+    match existing {
+        Some(id) => SketchTarget::Existing { id, at },
+        None => SketchTarget::fresh(at),
+    }
+}
+
 /// The revolve field, with every per-solid constant hoisted out of the per-voxel loop.
 ///
 /// **This type exists so there is exactly ONE evaluation of the revolve field.** The
@@ -526,18 +565,38 @@ impl SketchSolid {
         onto: Option<SketchCurve>,
         context: EvaluationContext,
     ) -> (SketchSolid, EntityId) {
-        let minted = self.sketch.point_at(at).is_none();
-        let (mut next, id) = self.with_point_placed(at);
-        if let (true, Some(curve)) = (minted, onto) {
-            drop(next.sketch.add_constraint(
-                ConstraintKind::Coincident {
-                    point: id,
-                    onto: CoincidentTarget::Curve(curve),
-                },
-                context,
-            ));
-        }
+        self.with_target_point(SketchTarget::Fresh { at, onto }, context)
+    }
+
+    /// The point a pointer target names: the one it already names, or a fresh one planted where it
+    /// landed and held to whatever it landed on.
+    ///
+    /// **Every drawing tool resolves its click through here**, which is what makes the hold
+    /// universal rather than something each tool has to remember separately. A tool that wants
+    /// only a position reads [`SketchTarget::at`] and never reaches this.
+    #[must_use]
+    pub fn with_target_point(
+        &self,
+        target: SketchTarget,
+        context: EvaluationContext,
+    ) -> (SketchSolid, EntityId) {
+        let mut next = self.clone();
+        let id = plant_target(&mut next.sketch, target, context);
         (next, id)
+    }
+
+    /// Where a target stands in the stored drawing, or `None` when it names a point the sketch no
+    /// longer holds. A fresh target stands where it landed and can never be unknown.
+    fn stored_position(&self, target: SketchTarget) -> Option<SketchPoint> {
+        match target {
+            SketchTarget::Existing { id, .. } => self
+                .sketch
+                .points()
+                .iter()
+                .find(|point| point.id == id)
+                .map(|point| point.at),
+            SketchTarget::Fresh { at, .. } => Some(at),
+        }
     }
 
     /// This producer with a segment joining the existing points `from → to` (the Line tool).
@@ -587,7 +646,10 @@ impl SketchSolid {
         } else {
             canonical(endpoint)?
         };
-        self.midpoint_line_placement_from_canonical(midpoint, endpoint, endpoint_existing)
+        self.midpoint_line_placement_from_canonical(
+            midpoint,
+            target_at(endpoint_existing, endpoint),
+        )
     }
 
     /// Resolve already-canonical midpoint-line input without composing either split-coordinate
@@ -596,19 +658,11 @@ impl SketchSolid {
     pub fn midpoint_line_placement_from_canonical(
         &self,
         midpoint: SketchPoint,
-        endpoint: SketchPoint,
-        endpoint_existing: Option<EntityId>,
+        endpoint: SketchTarget,
     ) -> Result<MidpointLinePlacement, MidpointLineRefusal> {
-        let endpoint = if let Some(id) = endpoint_existing {
-            self.sketch
-                .points()
-                .iter()
-                .find(|point| point.id == id)
-                .map(|point| point.at)
-                .ok_or(MidpointLineRefusal::UnknownEndpoint)?
-        } else {
-            endpoint
-        };
+        let endpoint = self
+            .stored_position(endpoint)
+            .ok_or(MidpointLineRefusal::UnknownEndpoint)?;
         let reflected = midpoint
             .exact_reflection_of(&endpoint)
             .map_err(MidpointLineRefusal::Point)?
@@ -636,9 +690,14 @@ impl SketchSolid {
         midpoint: [f64; 2],
         endpoint: [f64; 2],
         endpoint_existing: Option<EntityId>,
+        context: EvaluationContext,
     ) -> Result<(SketchSolid, EntityId), MidpointLineRefusal> {
         let placement = self.midpoint_line_placement(midpoint, endpoint, endpoint_existing)?;
-        self.with_midpoint_line_placement(&placement, endpoint_existing)
+        self.with_midpoint_line_placement(
+            &placement,
+            target_at(endpoint_existing, placement.endpoint),
+            context,
+        )
     }
 
     /// Append a segment from already-canonical midpoint and endpoint inputs. See
@@ -646,25 +705,21 @@ impl SketchSolid {
     pub fn with_midpoint_line_from_canonical(
         &self,
         midpoint: SketchPoint,
-        endpoint: SketchPoint,
-        endpoint_existing: Option<EntityId>,
+        endpoint: SketchTarget,
+        context: EvaluationContext,
     ) -> Result<(SketchSolid, EntityId), MidpointLineRefusal> {
-        let placement =
-            self.midpoint_line_placement_from_canonical(midpoint, endpoint, endpoint_existing)?;
-        self.with_midpoint_line_placement(&placement, endpoint_existing)
+        let placement = self.midpoint_line_placement_from_canonical(midpoint, endpoint)?;
+        self.with_midpoint_line_placement(&placement, endpoint, context)
     }
 
     fn with_midpoint_line_placement(
         &self,
         placement: &MidpointLinePlacement,
-        endpoint_existing: Option<EntityId>,
+        endpoint: SketchTarget,
+        context: EvaluationContext,
     ) -> Result<(SketchSolid, EntityId), MidpointLineRefusal> {
         let mut next = self.clone();
-        let endpoint_id = endpoint_existing.unwrap_or_else(|| {
-            next.sketch
-                .point_at(placement.endpoint)
-                .unwrap_or_else(|| next.sketch.add_free_point(placement.endpoint))
-        });
+        let endpoint_id = plant_target(&mut next.sketch, endpoint, context);
         let reflected_id = next
             .sketch
             .point_at(placement.reflected)
@@ -1203,19 +1258,13 @@ impl SketchSolid {
     pub fn center_arc_placement(
         &self,
         center: SketchPoint,
-        start: SketchPoint,
-        start_existing: Option<EntityId>,
+        start: SketchTarget,
         end_direction: SketchPoint,
         turn: parametric::sketch::ArcTurn,
     ) -> Result<CenterArcPlacement, CenterArcRefusal> {
-        let start = start_existing.map_or(Ok(start), |id| {
-            self.sketch
-                .points()
-                .iter()
-                .find(|point| point.id == id)
-                .map(|point| point.at)
-                .ok_or(CenterArcRefusal::UnknownStart)
-        })?;
+        let start = self
+            .stored_position(start)
+            .ok_or(CenterArcRefusal::UnknownStart)?;
         let raw_candidate = parametric::sketch::center_arc_candidate(
             center.in_plane(),
             start.in_plane(),
@@ -1272,23 +1321,18 @@ impl SketchSolid {
     pub fn with_center_arc(
         &self,
         center: SketchPoint,
-        start: SketchPoint,
-        start_existing: Option<EntityId>,
+        start: SketchTarget,
         end_direction: SketchPoint,
         turn: parametric::sketch::ArcTurn,
+        context: EvaluationContext,
     ) -> Result<(SketchSolid, EntityId), CenterArcRefusal> {
-        let placement =
-            self.center_arc_placement(center, start, start_existing, end_direction, turn)?;
+        let placement = self.center_arc_placement(center, start, end_direction, turn)?;
         let sweep = parametric::units::AngleMeasurement::try_from_degrees_f64(
             placement.candidate.sweep_radians.to_degrees(),
         )
         .map_err(|_| CenterArcRefusal::Unrepresentable)?;
         let mut next = self.clone();
-        let start_id = start_existing.unwrap_or_else(|| {
-            next.sketch
-                .point_at(placement.start)
-                .unwrap_or_else(|| next.sketch.add_free_point(placement.start))
-        });
+        let start_id = plant_target(&mut next.sketch, start, context);
         let endpoint_id = next
             .sketch
             .point_at(placement.endpoint)
@@ -1357,21 +1401,19 @@ impl SketchSolid {
         &self,
         incoming: SketchCurve,
         seam: EntityId,
-        endpoint: SketchPoint,
-        endpoint_existing: Option<EntityId>,
+        endpoint: SketchTarget,
         context: EvaluationContext,
     ) -> Result<TangentArcPlacement, TangentArcRefusal> {
-        let point = |id| {
-            self.sketch
-                .points()
-                .iter()
-                .find(|point| point.id == id)
-                .map(|point| point.at)
-        };
-        let seam_at = point(seam).ok_or(TangentArcRefusal::UnknownEndpoint)?;
-        let endpoint = endpoint_existing.map_or(Ok(endpoint), |id| {
-            point(id).ok_or(TangentArcRefusal::UnknownEndpoint)
-        })?;
+        let seam_at = self
+            .sketch
+            .points()
+            .iter()
+            .find(|point| point.id == seam)
+            .map(|point| point.at)
+            .ok_or(TangentArcRefusal::UnknownEndpoint)?;
+        let endpoint = self
+            .stored_position(endpoint)
+            .ok_or(TangentArcRefusal::UnknownEndpoint)?;
         let candidate =
             self.sketch
                 .tangent_arc_candidate(incoming, seam, endpoint.in_plane(), context)?;
@@ -1388,19 +1430,14 @@ impl SketchSolid {
         &self,
         incoming: SketchCurve,
         seam: EntityId,
-        endpoint: SketchPoint,
-        endpoint_existing: Option<EntityId>,
+        endpoint: SketchTarget,
         context: EvaluationContext,
     ) -> Result<(SketchSolid, SketchCurve), TangentArcRefusal> {
-        let placement =
-            self.tangent_arc_placement_to(incoming, seam, endpoint, endpoint_existing, context)?;
+        // Resolved for its refusals: the endpoint the trial plants is the target's own, so the
+        // placement is a gate here rather than a source of coordinates.
+        self.tangent_arc_placement_to(incoming, seam, endpoint, context)?;
         let mut trial = self.clone();
-        let endpoint_id = endpoint_existing.unwrap_or_else(|| {
-            trial
-                .sketch
-                .point_at(placement.endpoint)
-                .unwrap_or_else(|| trial.sketch.add_free_point(placement.endpoint))
-        });
+        let endpoint_id = plant_target(&mut trial.sketch, endpoint, context);
         trial.with_tangent_arc_between(incoming, seam, endpoint_id, context)
     }
 

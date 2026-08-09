@@ -6,7 +6,7 @@ use document::sketch::{
 };
 use parametric::EvaluationContext;
 
-use super::sketch_target::ResolvedSketchTarget;
+use document::sketch::SketchTarget;
 
 /// A supported incoming curve and the endpoint where the tangent arc must leave it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -105,20 +105,14 @@ impl TangentArcGesture {
         &self,
         owner: NodeId,
         producer: &SketchSolid,
-        endpoint: ResolvedSketchTarget,
+        endpoint: SketchTarget,
         context: EvaluationContext,
     ) -> Result<TangentArcPlacement, TangentArcRefusal> {
         let (_, source) = self
             .pending
             .filter(|(pending_owner, _)| *pending_owner == owner)
             .ok_or(TangentArcRefusal::UnknownIncoming)?;
-        producer.tangent_arc_placement_to(
-            source.curve,
-            source.seam,
-            endpoint.at,
-            endpoint.existing,
-            context,
-        )
+        producer.tangent_arc_placement_to(source.curve, source.seam, endpoint, context)
     }
 
     /// Consume the held source before attempting completion. A miss or refusal therefore leaves
@@ -127,7 +121,7 @@ impl TangentArcGesture {
         &mut self,
         owner: NodeId,
         producer: &SketchSolid,
-        endpoint: Option<ResolvedSketchTarget>,
+        endpoint: Option<SketchTarget>,
         context: EvaluationContext,
     ) -> TangentArcEdit {
         let Some((pending_owner, source)) = self.pending.take() else {
@@ -140,13 +134,7 @@ impl TangentArcGesture {
             return TangentArcEdit::InteractionOnly;
         };
         producer
-            .with_tangent_arc_to(
-                source.curve,
-                source.seam,
-                endpoint.at,
-                endpoint.existing,
-                context,
-            )
+            .with_tangent_arc_to(source.curve, source.seam, endpoint, context)
             .map_or(TangentArcEdit::InteractionOnly, |(next, _)| {
                 TangentArcEdit::Document(next)
             })
@@ -175,12 +163,8 @@ mod tests {
         (solid, source)
     }
 
-    fn target(at: SketchPoint) -> ResolvedSketchTarget {
-        ResolvedSketchTarget {
-            at,
-            existing: None,
-            on_curve: None,
-        }
+    fn target(at: SketchPoint) -> SketchTarget {
+        SketchTarget::fresh(at)
     }
 
     #[test]

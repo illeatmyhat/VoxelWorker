@@ -7,7 +7,7 @@ use document::scene::NodeId;
 use document::sketch::{SketchPoint, SketchSolid};
 use substrate::rational_bezier::RationalBezier;
 
-use super::sketch_target::ResolvedSketchTarget;
+use document::sketch::SketchTarget;
 
 /// How many conic picks are banked once the shoulder step begins: two anchors and the control
 /// point. The step after them cannot fail, so it is the one step exempt from the gates that
@@ -94,7 +94,7 @@ impl HigherCurveGesture {
         owner: NodeId,
         kind: HigherCurveKind,
         producer: &SketchSolid,
-        target: Option<ResolvedSketchTarget>,
+        target: Option<SketchTarget>,
     ) -> HigherCurveEdit {
         let Some(target) = target else {
             return HigherCurveEdit::InteractionOnly;
@@ -107,7 +107,7 @@ impl HigherCurveGesture {
             self.pending = Some(PendingHigherCurve {
                 owner,
                 kind,
-                points: vec![target.at],
+                points: vec![target.at()],
             });
             return HigherCurveEdit::InteractionOnly;
         }
@@ -115,7 +115,7 @@ impl HigherCurveGesture {
         // sits on its own chord would bank a gesture that can never commit, and the author would
         // have to guess that Escape is the way out. This is the same question the preview's
         // refusal mark asks, so what the cursor warned about is what the click declines.
-        if self.refuses_cursor(owner, kind, target.at) {
+        if self.refuses_cursor(owner, kind, target.at()) {
             return HigherCurveEdit::InteractionOnly;
         }
         let Some(pending) = self.pending.as_mut() else {
@@ -131,17 +131,17 @@ impl HigherCurveGesture {
             && pending
                 .points
                 .last()
-                .is_some_and(|point| point.coincides(&target.at))
+                .is_some_and(|point| point.coincides(&target.at()))
         {
             return HigherCurveEdit::InteractionOnly;
         }
         if kind == HigherCurveKind::FitPointSpline
             && pending.points.len() >= 3
-            && pending.points[0].coincides(&target.at)
+            && pending.points[0].coincides(&target.at())
         {
             return self.finish_with(producer, true);
         }
-        pending.points.push(target.at);
+        pending.points.push(target.at());
         // The conic takes a FOURTH pick the ellipse does not. Two anchors and a control point fix
         // a whole FAMILY of curves, not one: how hard the control point pulls is still free, and
         // that freedom is the difference between an elliptic, parabolic and hyperbolic curve
@@ -384,12 +384,8 @@ mod tests {
     use super::*;
     use document::sketch::{PlaneAxis, Sketch};
 
-    fn target(x: i64, y: i64) -> ResolvedSketchTarget {
-        ResolvedSketchTarget {
-            at: SketchPoint::new(x, y),
-            existing: None,
-            on_curve: None,
-        }
+    fn target(x: i64, y: i64) -> SketchTarget {
+        SketchTarget::fresh(SketchPoint::new(x, y))
     }
 
     /// An ellipse is settled by three picks; a conic is not, because rho is still free.
@@ -430,7 +426,7 @@ mod tests {
         let source = SketchSolid::extrude(Sketch::empty(PlaneAxis::Z), 3);
         // Anchors (0, 0) and (8, 0) put the chord midpoint at (4, 0); the control point at (4, 8)
         // makes the track a clean eight voxels of straight up.
-        let rho_for = |shoulder: ResolvedSketchTarget| {
+        let rho_for = |shoulder: SketchTarget| {
             let mut gesture = HigherCurveGesture::default();
             for point in [target(0, 0), target(8, 0), target(4, 8)] {
                 gesture.click(owner, HigherCurveKind::Conic, &source, Some(point));

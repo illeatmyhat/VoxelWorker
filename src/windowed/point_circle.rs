@@ -3,7 +3,7 @@
 use document::scene::NodeId;
 use document::sketch::{PointCirclePlacement, SketchPoint, SketchSolid};
 
-use super::sketch_target::ResolvedSketchTarget;
+use document::sketch::SketchTarget;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum PointCircleKind {
@@ -84,17 +84,17 @@ impl PointCircleGesture {
         owner: NodeId,
         kind: PointCircleKind,
         producer: &SketchSolid,
-        cursor: ResolvedSketchTarget,
+        cursor: SketchTarget,
     ) -> Option<PointCirclePlacement> {
         let pending = self
             .pending
             .filter(|pending| pending.owner == owner && pending.kind == kind)?;
         match (kind, pending.second) {
             (PointCircleKind::TwoPoint, None) => producer
-                .two_point_circle_placement(pending.first, cursor.at)
+                .two_point_circle_placement(pending.first, cursor.at())
                 .ok(),
             (PointCircleKind::ThreePoint, Some(second)) => producer
-                .three_point_circle_placement(pending.first, second, cursor.at)
+                .three_point_circle_placement(pending.first, second, cursor.at())
                 .ok(),
             (PointCircleKind::TwoPoint, Some(_)) | (PointCircleKind::ThreePoint, None) => None,
         }
@@ -105,14 +105,14 @@ impl PointCircleGesture {
         owner: NodeId,
         kind: PointCircleKind,
         producer: &SketchSolid,
-        target: Option<ResolvedSketchTarget>,
+        target: Option<SketchTarget>,
     ) -> PointCircleEdit {
         let Some(pending) = self.pending.take() else {
             if let Some(target) = target {
                 self.pending = Some(PendingPointCircle {
                     owner,
                     kind,
-                    first: target.at,
+                    first: target.at(),
                     second: None,
                 });
             }
@@ -123,7 +123,7 @@ impl PointCircleGesture {
                 self.pending = Some(PendingPointCircle {
                     owner,
                     kind,
-                    first: target.at,
+                    first: target.at(),
                     second: None,
                 });
             }
@@ -134,21 +134,21 @@ impl PointCircleGesture {
         };
         match (kind, pending.second) {
             (PointCircleKind::TwoPoint, None) => producer
-                .with_two_point_circle(pending.first, target.at)
+                .with_two_point_circle(pending.first, target.at())
                 .map_or(PointCircleEdit::InteractionOnly, |(next, _)| {
                     PointCircleEdit::Document(next)
                 }),
             (PointCircleKind::ThreePoint, None) => {
-                if !pending.first.coincides(&target.at) {
+                if !pending.first.coincides(&target.at()) {
                     self.pending = Some(PendingPointCircle {
-                        second: Some(target.at),
+                        second: Some(target.at()),
                         ..pending
                     });
                 }
                 PointCircleEdit::InteractionOnly
             }
             (PointCircleKind::ThreePoint, Some(second)) => producer
-                .with_three_point_circle(pending.first, second, target.at)
+                .with_three_point_circle(pending.first, second, target.at())
                 .map_or(PointCircleEdit::InteractionOnly, |(next, _)| {
                     PointCircleEdit::Document(next)
                 }),
@@ -163,12 +163,8 @@ mod tests {
     use super::*;
     use document::sketch::{PlaneAxis, Sketch};
 
-    fn target(at: SketchPoint) -> ResolvedSketchTarget {
-        ResolvedSketchTarget {
-            at,
-            existing: None,
-            on_curve: None,
-        }
+    fn target(at: SketchPoint) -> SketchTarget {
+        SketchTarget::fresh(at)
     }
 
     #[test]

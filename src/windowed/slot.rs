@@ -4,7 +4,7 @@ use document::scene::NodeId;
 use document::sketch::{SketchPoint, SketchSolid, SlotPlacement};
 use parametric::EvaluationContext;
 
-use super::sketch_target::ResolvedSketchTarget;
+use document::sketch::SketchTarget;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum SlotKind {
@@ -196,7 +196,7 @@ impl SlotGesture {
         owner: NodeId,
         kind: SlotKind,
         producer: &SketchSolid,
-        cursor: ResolvedSketchTarget,
+        cursor: SketchTarget,
     ) -> Option<SlotPlacement> {
         let pending = self
             .pending
@@ -207,7 +207,7 @@ impl SlotGesture {
             producer,
             &pending.picks,
             super::arc_winding::turn(pending.winding),
-            cursor.at,
+            cursor.at(),
         )
     }
 
@@ -216,7 +216,7 @@ impl SlotGesture {
         owner: NodeId,
         kind: SlotKind,
         producer: &SketchSolid,
-        target: Option<ResolvedSketchTarget>,
+        target: Option<SketchTarget>,
         context: EvaluationContext,
     ) -> SlotEdit {
         let Some(target) = target else {
@@ -232,11 +232,11 @@ impl SlotGesture {
         // replaces it cannot disagree about the direction even if no frame rendered in between.
         if pending.picks.len() == 2 {
             if let Some((center, start)) = pending.center_arc_spine() {
-                super::arc_winding::track(&mut pending.winding, center, start, target.at);
+                super::arc_winding::track(&mut pending.winding, center, start, target.at());
             }
         }
         if pending.picks.len() + 1 < kind.pick_count() {
-            pending.picks.push(target.at);
+            pending.picks.push(target.at());
             return SlotEdit::InteractionOnly;
         }
         let (picks, winding) = self
@@ -249,7 +249,7 @@ impl SlotGesture {
             producer,
             &picks,
             super::arc_winding::turn(winding),
-            target.at,
+            target.at(),
             context,
         )
         .map_or(SlotEdit::InteractionOnly, SlotEdit::Document)
@@ -351,12 +351,8 @@ mod tests {
     use document::sketch::{PlaneAxis, Sketch};
     use std::num::NonZeroU32;
 
-    fn target(at: SketchPoint) -> ResolvedSketchTarget {
-        ResolvedSketchTarget {
-            at,
-            existing: None,
-            on_curve: None,
-        }
+    fn target(at: SketchPoint) -> SketchTarget {
+        SketchTarget::fresh(at)
     }
 
     fn context() -> EvaluationContext {

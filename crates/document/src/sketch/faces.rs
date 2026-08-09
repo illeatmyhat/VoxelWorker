@@ -489,10 +489,7 @@ fn face_from_cycle(half_edges: &[HalfEdge], cycle: &[usize]) -> Option<Face> {
         .map(|&index| half_edges[index].geometry)
         .collect();
     let area = signed_area(&boundary);
-    (area > AREA_EPSILON).then_some(Face {
-        boundary,
-        area: area,
-    })
+    (area > AREA_EPSILON).then_some(Face { boundary, area })
 }
 
 /// Below this a traced cycle encloses nothing worth resolving — a whisker walked out and back, or
