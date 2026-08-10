@@ -3970,6 +3970,73 @@ fn a_curve_kind_can_hold_a_point_exactly_when_the_drawing_accepts_the_coincidenc
     }
 }
 
+/// **A chord whose ends are HELD to a curve cuts it on every frame of a drag, not most of them.**
+///
+/// Reported from the app: "the face flickers in and out when I drag the line." The drawing was a
+/// spline with a line joining two places on it; the witness here is a circle, because the failure
+/// has nothing to do with splines and a circle states it in four entities.
+///
+/// A held end sits ON the curve to within the solve's residual — about `1e-8` — and which SIDE of
+/// the curve that residual lands on is not a fact about the drawing. The arrangement asks the
+/// other question: it looks for a crossing strictly inside the chord's parameter range, and at an
+/// end the crossing is at the range's boundary, so a residual to the inside puts the root just
+/// past `0` and the curve is never cut there. Uncut, the chord's end is a dangling vertex, the
+/// loop does not close, and the face is simply absent that frame. Measured before the fix: the
+/// count alternated across 64 runs in 161 frames, and the frames that had the face were exactly
+/// the frames where both ends rounded to the OUTSIDE of the circle.
+///
+/// What is asserted is that the count never changes, rather than that it is two. A drag of an end
+/// along the curve cannot create or destroy a region — the chord still joins two places on the
+/// same circle — so any frame that disagrees with its neighbours is the arrangement changing its
+/// mind about geometry that did not change.
+#[test]
+fn a_chord_held_to_a_curve_cuts_it_on_every_frame_of_a_drag() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let circle = sketch
+        .add_circle(SketchPoint::new(0, 0), SketchLength::new(40))
+        .expect("a circle");
+    let head = sketch.add_free_point(SketchPoint::from_continuous(-30.0, 26.0));
+    let tail = sketch.add_free_point(SketchPoint::from_continuous(30.0, 26.0));
+    sketch.connect(head, tail).expect("a chord");
+    for point in [head, tail] {
+        sketch
+            .add_constraint(
+                ConstraintKind::Coincident {
+                    point,
+                    onto: CoincidentTarget::Curve(SketchCurve::Circle(circle)),
+                },
+                ctx(16),
+            )
+            .expect("an end can stand on the circle");
+    }
+    let opened = sketch.faces(ctx(16)).len();
+    assert_eq!(opened, 2, "a chord of a circle cuts the disc in two");
+
+    let from = position(&sketch, head);
+    for tick in 0..=160 {
+        let cursor = [
+            from[0] + f64::from(tick) * 0.1,
+            from[1] - f64::from(tick) * 0.05,
+        ];
+        let mut frame = sketch.clone();
+        // The drag is allowed to decline; a frame it declined is a frame the drawing did not
+        // change, and it says nothing either way about the arrangement.
+        let Ok(true) = frame.move_point(
+            head,
+            SketchPoint::from_continuous(cursor[0], cursor[1]),
+            ctx(16),
+        ) else {
+            continue;
+        };
+        let held = position(&frame, head);
+        assert_eq!(
+            frame.faces(ctx(16)).len(),
+            opened,
+            "frame {tick} put the held end at {held:?} and lost the face"
+        );
+    }
+}
+
 /// **A line held to a spline stays on it — when the spline is moved, and when it is reshaped.**
 ///
 /// Reported from the app: "I can connect a line to a spline but dragging the spline does nothing

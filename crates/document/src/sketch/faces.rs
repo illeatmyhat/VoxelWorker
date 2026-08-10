@@ -408,7 +408,7 @@ fn append_higher_curves(sketch: &Sketch, curves: &mut Vec<(EntityId, PlanarCurve
 /// that point differ by rounding; they have to weld or the graph tears at every crossing. It is
 /// well above [`substrate::curve_intersection::CROSSING_EPSILON`] and far below anything an author
 /// can draw, so it never welds two points that were meant to be distinct.
-const VERTEX_WELD_TOLERANCE: f64 = 1.0e-6;
+const VERTEX_WELD_TOLERANCE: f64 = substrate::curve_intersection::VERTEX_WELD_EPSILON;
 
 /// The index of the arrangement vertex at `point`, appending one if nothing is already there.
 fn weld(vertices: &mut Vec<[f64; 2]>, point: [f64; 2]) -> usize {

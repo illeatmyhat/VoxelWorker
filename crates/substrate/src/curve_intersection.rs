@@ -45,6 +45,24 @@ pub const CROSSING_EPSILON: f64 = 1.0e-9;
 /// lands exactly on an endpoint must count, and floating point will not put it there exactly.
 const ANGULAR_EPSILON: f64 = 1.0e-9;
 
+/// How near a curve a point has to be before the arrangement calls it the SAME PLACE, in the
+/// curve's own units.
+///
+/// This is the arrangement's spatial resolution, and it is one number rather than two on purpose:
+/// the face walk welds piece ends into vertices at exactly this distance, and
+/// [`cut_at_crossings`] cuts a curve under a foreign endpoint at exactly this distance. The two
+/// have to agree, and the direction of the requirement is not symmetric. A cut placed FURTHER
+/// than the weld distance from the endpoint that asked for it does not weld to that endpoint, so
+/// it manufactures a pair of vertices a hair apart where the author put one thing — strictly
+/// worse than not cutting. So the cut tolerance can never exceed the weld tolerance; making them
+/// equal is what leaves no band in between where two things are one vertex but no cut was made.
+///
+/// It is safe because the two populations are nowhere near it. A point a solve has been asked to
+/// hold on a curve lands about `1e-8` off, ten thousand times inside; two things an author drew
+/// separately are apart by something they could see, which is millions of times outside. Nothing
+/// legitimate lives near the threshold, which is why a tolerance is honest here at all.
+pub const VERTEX_WELD_EPSILON: f64 = 1.0e-6;
+
 /// One planar curve: a straight span, or a circular arc — including a whole circle, which is the
 /// arc that sweeps a full turn.
 ///
@@ -653,6 +671,17 @@ fn bounds_size(bounds: ([f64; 2], [f64; 2])) -> f64 {
 /// those endpoints up into vertices and tracing the faces — belongs to whoever owns the graph,
 /// because that is where identity lives.
 ///
+/// # Why a crossing solve alone does not deliver that
+///
+/// A curve that ENDS on another one meets it at the very boundary of its own parameter range, and
+/// a root solved to be at zero is as likely to come back a hair below it as a hair above. Below,
+/// there is no crossing to report, the other curve is never cut, and the endpoint is left sitting
+/// in the middle of a piece — which is precisely the postcondition above, failing. It is not a
+/// rare case: it is what every T-junction is, and what every point a solve holds ON a curve is,
+/// and the side the residual falls on is not a fact about the drawing. So the ends are asked
+/// separately, in DISTANCE, which is the quantity that actually decides whether two things are in
+/// the same place; see [`VERTEX_WELD_EPSILON`].
+///
 /// Quadratic in the number of curves. A sketch is drawn by hand, so the count is small and the
 /// constant matters more than the exponent; a sweep-line would be the answer if that ever stopped
 /// being true.
@@ -676,11 +705,63 @@ pub fn cut_at_crossings(curves: &[PlanarCurve]) -> Vec<Vec<PlanarCurve>> {
             }
         }
     }
+    cut_under_foreign_endpoints(curves, &mut cuts);
     curves
         .iter()
         .zip(cuts)
         .map(|(curve, parameters)| curve.split_at(&parameters))
         .collect()
+}
+
+/// Cut every curve wherever another curve's END lands on it, which a crossing solve will not do
+/// reliably at a parameter boundary.
+///
+/// Only the curve being LANDED ON is cut. The other one already has a vertex there — that is what
+/// being its endpoint means — and [`PlanarCurve::split_at`] discards a cut at the end of an open
+/// curve anyway.
+///
+/// Closed curves are skipped as askers. A circle's `start` is its seam, an arbitrary place with no
+/// meaning to the drawing, and cutting a neighbour under it would seat a vertex the author cannot
+/// see or account for. A closed curve is still cut BY other curves' ends, which is the direction
+/// that carries meaning.
+///
+/// The dedup is not tidiness. On the frames where the crossing solve does find the root, this pass
+/// finds the same place again about a nanometre away, and `split_at`'s own slack is far too fine
+/// to merge them — so the curve would come back with a sliver piece between two vertices that the
+/// face walk then welds into one, leaving a self-loop where there should be nothing at all. An
+/// existing cut within welding distance ALONG the curve already says what this one would say.
+fn cut_under_foreign_endpoints(curves: &[PlanarCurve], cuts: &mut [Vec<f64>]) {
+    for (index, curve) in curves.iter().enumerate() {
+        if curve.is_closed() {
+            continue;
+        }
+        for endpoint in [curve.start(), curve.end()] {
+            for (landed_on, (other, found)) in curves.iter().zip(cuts.iter_mut()).enumerate() {
+                if landed_on == index {
+                    continue;
+                }
+                let parameter = other.nearest_parameter(endpoint);
+                if squared_distance(other.point_at(parameter), endpoint)
+                    > VERTEX_WELD_EPSILON * VERTEX_WELD_EPSILON
+                {
+                    continue;
+                }
+                let length = other.length();
+                let already = found.iter().any(|had| {
+                    let gap = (had - parameter).abs();
+                    let gap = if other.is_closed() {
+                        gap.min(1.0 - gap)
+                    } else {
+                        gap
+                    };
+                    gap * length <= VERTEX_WELD_EPSILON
+                });
+                if !already {
+                    found.push(parameter);
+                }
+            }
+        }
+    }
 }
 
 /// One place two curves meet, located on both of them.
@@ -1314,6 +1395,65 @@ mod tests {
         assert_eq!(crossings.len(), 2);
         assert_near(crossings[0].point, [-4.0, 0.0]);
         assert_near(crossings[1].point, [4.0, 0.0]);
+    }
+
+    /// A curve that ENDS on another one cuts it there, whichever side the rounding falls on.
+    ///
+    /// A chord of the circle, with the touching end a hair inside, exactly on, and a hair outside
+    /// — the band a solved coincidence actually lands in. The three are not equivalent to a
+    /// crossing solve: from just outside the chord enters the disc and the root is interior to the
+    /// segment, from just inside the whole segment is interior and there is no root to find at
+    /// all. Before the endpoint pass those answered differently, and which one a drag produced was
+    /// decided by the last digit of the solver's residual.
+    ///
+    /// A closed curve cut once stays closed — `split_at` re-seams it rather than opening it — so
+    /// what says it was cut is WHERE the seam now is. Under the endpoint, not at bearing zero.
+    #[test]
+    fn a_curve_ending_on_another_cuts_it_whichever_side_the_rounding_falls_on() {
+        for reach in [3.999_999_99, 4.0, 4.000_000_01] {
+            let curves = [
+                PlanarCurve::circle([0.0, 0.0], 4.0),
+                segment([0.0, reach], [0.0, -3.0]),
+            ];
+            let circle = cut_at_crossings(&curves).swap_remove(0);
+            assert_eq!(
+                circle.len(),
+                1,
+                "reach {reach} cut the circle more than once"
+            );
+            let seam = circle[0].start();
+            assert!(
+                (seam[0] - 0.0).abs() < 1.0e-6 && (seam[1] - 4.0).abs() < 1.0e-6,
+                "reach {reach} left the circle seamed at {seam:?}, not under the end on it"
+            );
+        }
+    }
+
+    /// The endpoint pass does not cut a second time where the crossing solve already cut.
+    ///
+    /// From just outside, the chord enters the disc and the solve finds a genuine crossing a
+    /// nanometre along it; the endpoint pass then finds the same place independently. The two cuts
+    /// land on the circle about a nanometre apart, which is far too close for `split_at` to merge
+    /// and far too far for it to ignore — so without the pass's own dedup the circle comes back in
+    /// two pieces, one of them a sliver whose ends the face walk welds into a single vertex: a
+    /// self-loop bounding nothing, handed on as though it were geometry.
+    ///
+    /// The chord leaves at an ANGLE to the radius on purpose. Aimed straight at the centre the two
+    /// cuts coincide to the last bit — the crossing and the foot of the perpendicular are the same
+    /// place — and `split_at` merges them on its own, so a radial witness would report the dedup
+    /// working when it had done nothing.
+    #[test]
+    fn an_end_the_crossing_solve_already_found_is_not_cut_again() {
+        let curves = [
+            PlanarCurve::circle([0.0, 0.0], 4.0),
+            segment([0.0, 4.000_000_01], [2.0, -3.0]),
+        ];
+        let circle = cut_at_crossings(&curves).swap_remove(0);
+        assert_eq!(
+            circle.len(),
+            1,
+            "the circle was cut twice for one place two curves meet"
+        );
     }
 
     #[test]
