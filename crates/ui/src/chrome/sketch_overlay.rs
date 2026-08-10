@@ -36,6 +36,14 @@ pub const SKETCH_SEGMENT_GRAB_PAD: f32 = 7.0;
 pub const SKETCH_SNAP_REACH: f32 = 90.0;
 /// The half-extent (egui points) of the add-point insert-preview diamond.
 pub const SKETCH_INSERT_MARKER_HALF: f32 = 4.0;
+/// Where the snapping mark's arms start and end (egui points from the pick).
+///
+/// The same ring a snapped vertex handle wears, measured from the same half-extent, so the mark is
+/// one size wherever it appears — over a handle already on the page, or over a pick that is not a
+/// point yet.
+pub const SKETCH_SNAP_MARKER_INNER: f32 = SKETCH_HANDLE_HALF + 2.5;
+/// The outer end of the snapping mark's arms. See [`SKETCH_SNAP_MARKER_INNER`].
+pub const SKETCH_SNAP_MARKER_OUTER: f32 = SKETCH_HANDLE_HALF + 7.0;
 /// The side (egui points) of a constraint badge's glyph box. Constant on screen, like every
 /// other sketch mark: a badge says *what is asserted*, and a claim does not get smaller with
 /// distance.
@@ -126,6 +134,26 @@ pub fn sketch_insert_marker(ui: &egui::Ui, center: Pos2) {
         Id::new("sketch_insert_marker"),
     ));
     gizmos::diamond(&painter, center, SKETCH_INSERT_MARKER_HALF);
+}
+
+/// Draw the **snapping mark** at `center` (already projected): the pick standing on a curve rather
+/// than on the grid.
+///
+/// The tick-cross a dragged handle wears when it engages the lattice, on its own here because
+/// there is nothing under it yet to decorate — a drawing tool's pick is not a point until the
+/// click. Passive like the insert diamond, so the click passes straight through.
+pub fn sketch_snap_marker(ui: &egui::Ui, center: Pos2) {
+    let painter = ui.ctx().layer_painter(LayerId::new(
+        Order::Foreground,
+        Id::new("sketch_snap_marker"),
+    ));
+    gizmos::snap_ticks(
+        &painter,
+        center,
+        SKETCH_SNAP_MARKER_INNER,
+        SKETCH_SNAP_MARKER_OUTER,
+        theme::ACCENT,
+    );
 }
 
 /// The half-extent (egui points) of the diamond standing on a point a gesture has already taken.
@@ -650,5 +678,46 @@ mod tests {
             strength: 1.0,
         }]);
         assert!(as_outline > 0 && as_guide > 0);
+    }
+
+    /// **The standalone snapping mark is the same ring a snapped handle wears.**
+    ///
+    /// One vocabulary across both call sites: an author who has watched a dragged handle engage
+    /// the lattice has already been taught what this mark means, and a ring a few points wider
+    /// would be a second thing to learn for the same fact. The two sizes are stated separately —
+    /// the gizmo derives its ring from the `half` it is handed, the chrome from a constant — so
+    /// this is what keeps them from drifting.
+    #[test]
+    fn the_snapping_mark_is_the_ring_a_snapped_handle_wears() {
+        let arms = |draw: &dyn Fn(&egui::Ui)| -> Vec<[Pos2; 2]> {
+            Context::default()
+                .run_ui(
+                    RawInput {
+                        screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::splat(64.0))),
+                        ..Default::default()
+                    },
+                    |ui| draw(ui),
+                )
+                .shapes
+                .into_iter()
+                .filter_map(|clipped| match clipped.shape {
+                    egui::Shape::LineSegment { points, .. } => Some(points),
+                    _ => None,
+                })
+                .collect()
+        };
+        let center = pos2(32.0, 32.0);
+        let standalone = arms(&|ui| super::sketch_snap_marker(ui, center));
+        let on_a_handle = arms(&|ui| {
+            crate::gizmos::vertex_handle(
+                ui.painter(),
+                center,
+                super::SKETCH_HANDLE_HALF,
+                crate::gizmos::HandleState::Snapped,
+                true,
+            );
+        });
+        assert_eq!(standalone.len(), 4, "four arms: {standalone:?}");
+        assert_eq!(standalone, on_a_handle);
     }
 }

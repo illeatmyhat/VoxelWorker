@@ -228,6 +228,9 @@ impl WindowedState {
                 // question that decides whether the menu offers to mint one.
                 // The add-point insert preview, projected last frame.
                 self.sketch_insert_preview,
+                // The snapping mark, projected last frame: where a drawing tool's pick will land
+                // when it lands on a curve.
+                self.sketch_snap_marker,
                 // #99: the drawing tools' dashed preview, projected last frame.
                 &self.sketch_draw_preview,
                 // Slice 3: the marquee rubber band, computed last frame.
@@ -5304,6 +5307,7 @@ impl WindowedState {
         self.sketch_constraint_badges.clear();
         self.sketch_dimension_gizmos.clear();
         self.sketch_insert_preview = None;
+        self.sketch_snap_marker = None;
         self.sketch_draw_preview.clear();
         self.sketch_marquee_band = None;
 
@@ -5671,6 +5675,14 @@ impl WindowedState {
                 .map(|curve| curve.entity)
                 .collect();
 
+        // The pick a drawing tool would take right now, resolved once. The lit curve below and the
+        // snap mark are two readings of the same answer, and working them out separately is how
+        // they get to disagree.
+        let picked_target = (tool.curve_under_pointer() == ui::panel::CurveUnderPointer::PickedOn)
+            .then_some(self.last_cursor_position)
+            .flatten()
+            .and_then(|(cursor_x, cursor_y)| self.sketch_target_at(cursor_x, cursor_y));
+
         // The segment under the cursor and the state it should draw in. A vertex under the cursor
         // takes priority — it already answers with its own handle state — so a segment lights up
         // only when no vertex is hit, the SAME decision the vertex-grab makes. Reusing that
@@ -5715,8 +5727,7 @@ impl WindowedState {
                 // it takes the pick — the author never sees a curve lit for a click that will
                 // land on a vertex instead.
                 if tool.curve_under_pointer() == ui::panel::CurveUnderPointer::PickedOn {
-                    return self
-                        .sketch_target_at(cx, cy)
+                    return picked_target
                         .and_then(document::sketch::SketchTarget::onto)
                         .map(|curve| (sketch_edge_hit_from_curve(curve), state));
                 }
@@ -5761,6 +5772,16 @@ impl WindowedState {
                 }
             })
         });
+
+        // The snapping mark, standing where the pick will actually land. The lit curve says which
+        // curve is under the pointer; this says the pick has left the grid and is riding that
+        // curve, which is the part a lit curve on its own leaves the author to guess at. It is the
+        // tick-cross the dragged handle wears for the same reason — "engaged", in the one
+        // vocabulary the chrome already has for it.
+        self.sketch_snap_marker = picked_target
+            .filter(|pick| pick.onto().is_some())
+            .and_then(|pick| to_viewport_px(pick.at().in_plane()))
+            .map(|px| egui::Pos2::new(px.x / pixels_per_point, px.y / pixels_per_point));
 
         // Now the dots. The curve under the cursor shows the points it stands on, which is the
         // last thing `revealed` was waiting for — hovering a line has to bring up the corners it

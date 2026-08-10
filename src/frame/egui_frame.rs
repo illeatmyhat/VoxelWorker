@@ -255,6 +255,7 @@ pub fn run_egui_frame(
     // `None` when the add-point tool is idle / no edge is hovered. Drawn as a diamond on the
     // hovered profile edge. Always `None` on the headless `shot` path.
     sketch_insert_preview: Option<egui::Pos2>,
+    sketch_snap_marker: Option<egui::Pos2>,
     // #99: the drawing tools' dashed preview polyline (egui points) — the polyline rubber
     // line to the snapped cursor, or the rectangle ghost's five closing corners. Empty when
     // no drawing gesture is live, and always empty on the headless `shot` path.
@@ -755,6 +756,11 @@ pub fn run_egui_frame(
             // chrome (a passive marker), so a click passes through to the stationary-release insert.
             if let Some(center) = sketch_insert_preview {
                 ui::chrome::sketch_insert_marker(ui, center);
+            }
+            // The snapping mark — the engaged tick-cross where a drawing tool's pick has left the
+            // grid for a curve. Passive like the insert diamond.
+            if let Some(center) = sketch_snap_marker {
+                ui::chrome::sketch_snap_marker(ui, center);
             }
             // #99: the drawing tools' dashed preview — the uncommitted polyline rubber line /
             // rectangle ghost. Passive like the insert marker.

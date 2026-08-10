@@ -1176,6 +1176,8 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         None,
         // likewise no add-point insert preview in the headless goldens.
         None,
+        // nor a snapping mark — it stands where a live pointer is, and there is none here.
+        None,
         // #99: nor a drawing-tool preview — drawing is a windowed-only gesture.
         &[],
         // Slice 3: nor a marquee band — box-select is a windowed-only gesture.

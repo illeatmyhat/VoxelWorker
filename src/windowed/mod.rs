@@ -452,6 +452,10 @@ struct WindowedState {
     /// cursor), or `None` when the add-point tool is idle / no segment is under the cursor.
     /// Refreshed alongside the handles; drawn as a diamond on the next frame.
     sketch_insert_preview: Option<egui::Pos2>,
+    /// The snapping mark for THIS frame (egui points): where a drawing tool's pick will land when
+    /// it lands on a curve rather than on the grid, or `None` when nothing is under the pointer.
+    /// Refreshed alongside the handles; drawn as the engaged tick-cross on the next frame.
+    sketch_snap_marker: Option<egui::Pos2>,
     /// The drawing tools' preview MARKS for THIS frame (egui points), drawn on the next (#99):
     /// the outline the click is about to author, any guide it rests on, the points the gesture has
     /// already taken, and a refusal when the tool cannot complete from here. Empty when no drawing
@@ -999,6 +1003,7 @@ impl WindowedState {
             sketch_face_polygons: Vec::new(),
             sketch_menu_face: None,
             sketch_insert_preview: None,
+            sketch_snap_marker: None,
             sketch_draw_preview: Vec::new(),
             sketch_snap_ghost: None,
             orbit_center_overlay: None,
@@ -1175,6 +1180,7 @@ impl WindowedState {
             sketch_face_polygons: _,
             sketch_menu_face: _,
             sketch_insert_preview: _,
+            sketch_snap_marker: _,
             sketch_draw_preview: _,
             sketch_snap_ghost: _,
             orbit_center_overlay: _,
