@@ -46,6 +46,10 @@ fn plant_target(sketch: &mut Sketch, target: SketchTarget, context: EvaluationCo
             }
             let id = sketch.add_free_point(at);
             if let Some(curve) = onto {
+                // Refused for an aggregate, which has no support the relations can hold to. The
+                // point still stands where it landed — the landing is geometry and does not need
+                // the relation — so a pick on a spline is where the author put it and simply says
+                // nothing about staying there.
                 drop(sketch.add_constraint(
                     ConstraintKind::Coincident {
                         point: id,

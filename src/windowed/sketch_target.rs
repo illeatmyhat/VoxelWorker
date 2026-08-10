@@ -165,4 +165,50 @@ mod tests {
             "with no curve under it the pick keeps the position the grid gave it"
         );
     }
+
+    /// **Every curve kind answers, aggregates included.**
+    ///
+    /// A spline carries no relation geometry — it has no one center, radius or direction for a
+    /// relation to be about — and the drawing turns a Tangent or a point-on-curve on one away for
+    /// exactly that reason. None of it is a statement about where the pointer is standing. Landing
+    /// a pick asks only for a position, and a spline has one everywhere along it, so the kinds a
+    /// relation refuses still snap.
+    #[test]
+    fn a_pick_lands_on_a_spline_even_though_no_relation_can_hold_it_there() {
+        let mut drawing = Sketch::empty(PlaneAxis::Z);
+        let spline = drawing
+            .add_fit_point_spline(
+                &[
+                    SketchPoint::new(0, 0),
+                    SketchPoint::new(10, 10),
+                    SketchPoint::new(20, 0),
+                ],
+                false,
+            )
+            .unwrap();
+        let producer = SketchSolid::extrude(drawing, 3);
+        let curve = SketchCurve::Spline(spline);
+        assert!(
+            !curve.carries_relation_geometry(),
+            "the premise: no relation can be held to this"
+        );
+
+        let beside = SketchPoint::new(10, 20);
+        let landed = resolve_target(&producer, None, Some(beside), Some(curve), context())
+            .unwrap()
+            .at();
+        assert_ne!(landed.in_plane(), beside.in_plane(), "it moved");
+
+        // Landing twice lands in the same place, which is what says the first landing reached the
+        // curve rather than merely stepping toward it.
+        let again = producer
+            .sketch
+            .point_on_curve(curve, landed, context())
+            .unwrap();
+        let (settled, once) = (again.in_plane(), landed.in_plane());
+        assert!(
+            (settled[0] - once[0]).hypot(settled[1] - once[1]) < 1.0e-6,
+            "{settled:?} vs {once:?}"
+        );
+    }
 }

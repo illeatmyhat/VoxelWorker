@@ -38,12 +38,18 @@ pub const SKETCH_SNAP_REACH: f32 = 90.0;
 pub const SKETCH_INSERT_MARKER_HALF: f32 = 4.0;
 /// Where the snapping mark's arms start and end (egui points from the pick).
 ///
-/// The same ring a snapped vertex handle wears, measured from the same half-extent, so the mark is
-/// one size wherever it appears — over a handle already on the page, or over a pick that is not a
-/// point yet.
-pub const SKETCH_SNAP_MARKER_INNER: f32 = SKETCH_HANDLE_HALF + 2.5;
+/// Wider than the ring a snapped vertex handle wears, and deliberately: a handle's ring surrounds
+/// a filled thumb that has already caught the eye, while this one has to catch it alone, in the
+/// one place the author is not looking — under their own cursor. The gap has to clear the pointer
+/// too, which is why the arms start out here rather than at the pick.
+pub const SKETCH_SNAP_MARKER_INNER: f32 = SKETCH_HANDLE_HALF + 4.0;
 /// The outer end of the snapping mark's arms. See [`SKETCH_SNAP_MARKER_INNER`].
-pub const SKETCH_SNAP_MARKER_OUTER: f32 = SKETCH_HANDLE_HALF + 7.0;
+pub const SKETCH_SNAP_MARKER_OUTER: f32 = SKETCH_HANDLE_HALF + 13.0;
+/// The snapping mark's own stroke weight (egui points) — heavier than the guide weight the
+/// handle's decoration takes, because this one is read against a lit curve rather than a thumb.
+pub const SKETCH_SNAP_MARKER_STROKE: f32 = 2.0;
+/// How far (egui points) the dark backing extends past the mark's stroke on each side.
+pub const SKETCH_SNAP_MARKER_HALO: f32 = 2.5;
 /// The side (egui points) of a constraint badge's glyph box. Constant on screen, like every
 /// other sketch mark: a badge says *what is asserted*, and a claim does not get smaller with
 /// distance.
@@ -142,17 +148,44 @@ pub fn sketch_insert_marker(ui: &egui::Ui, center: Pos2) {
 /// The tick-cross a dragged handle wears when it engages the lattice, on its own here because
 /// there is nothing under it yet to decorate — a drawing tool's pick is not a point until the
 /// click. Passive like the insert diamond, so the click passes straight through.
+///
+/// Drawn heavier than the handle's, and over a dark halo, because it has to survive what it stands
+/// on: it appears exactly when a curve under it is lit, and an accent hairline on a lit accent
+/// curve is invisible. The halo is what separates the mark from the curve; the weight is what
+/// separates it from the guide lines it crosses. A ring at the center closes it, so the mark reads
+/// as pointing at a place rather than as four loose strokes.
 pub fn sketch_snap_marker(ui: &egui::Ui, center: Pos2) {
     let painter = ui.ctx().layer_painter(LayerId::new(
         Order::Foreground,
         Id::new("sketch_snap_marker"),
     ));
-    gizmos::snap_ticks(
-        &painter,
+    let arms = |color, width| {
+        gizmos::snap_ticks_weighted(
+            &painter,
+            center,
+            SKETCH_SNAP_MARKER_INNER,
+            SKETCH_SNAP_MARKER_OUTER,
+            color,
+            width,
+        );
+    };
+    arms(
+        theme::BG,
+        SKETCH_SNAP_MARKER_STROKE + SKETCH_SNAP_MARKER_HALO,
+    );
+    painter.circle_stroke(
         center,
         SKETCH_SNAP_MARKER_INNER,
-        SKETCH_SNAP_MARKER_OUTER,
-        theme::ACCENT,
+        Stroke::new(
+            SKETCH_SNAP_MARKER_STROKE + SKETCH_SNAP_MARKER_HALO,
+            theme::BG,
+        ),
+    );
+    arms(theme::ACCENT, SKETCH_SNAP_MARKER_STROKE);
+    painter.circle_stroke(
+        center,
+        SKETCH_SNAP_MARKER_INNER,
+        Stroke::new(SKETCH_SNAP_MARKER_STROKE, theme::ACCENT),
     );
 }
 
@@ -680,16 +713,16 @@ mod tests {
         assert!(as_outline > 0 && as_guide > 0);
     }
 
-    /// **The standalone snapping mark is the same ring a snapped handle wears.**
+    /// **The snapping mark is the handle's tick-cross, drawn to be seen on its own.**
     ///
-    /// One vocabulary across both call sites: an author who has watched a dragged handle engage
-    /// the lattice has already been taught what this mark means, and a ring a few points wider
-    /// would be a second thing to learn for the same fact. The two sizes are stated separately —
-    /// the gizmo derives its ring from the `half` it is handed, the chrome from a constant — so
-    /// this is what keeps them from drifting.
+    /// Same four arms on the same four bearings — the vocabulary an author has already learned
+    /// from a dragged handle — but reaching further and backed, because this one appears under the
+    /// cursor over a curve that is lit at the very color it is drawn in. Every arm is painted
+    /// twice, dark then accent, and the halo is the wider of the two; without that the mark and
+    /// the curve it stands on are the same stroke.
     #[test]
-    fn the_snapping_mark_is_the_ring_a_snapped_handle_wears() {
-        let arms = |draw: &dyn Fn(&egui::Ui)| -> Vec<[Pos2; 2]> {
+    fn the_snapping_mark_is_the_handle_ring_drawn_to_be_seen() {
+        let strokes = |draw: &dyn Fn(&egui::Ui)| -> Vec<([Pos2; 2], f32)> {
             Context::default()
                 .run_ui(
                     RawInput {
@@ -701,14 +734,14 @@ mod tests {
                 .shapes
                 .into_iter()
                 .filter_map(|clipped| match clipped.shape {
-                    egui::Shape::LineSegment { points, .. } => Some(points),
+                    egui::Shape::LineSegment { points, stroke } => Some((points, stroke.width)),
                     _ => None,
                 })
                 .collect()
         };
         let center = pos2(32.0, 32.0);
-        let standalone = arms(&|ui| super::sketch_snap_marker(ui, center));
-        let on_a_handle = arms(&|ui| {
+        let mark = strokes(&|ui| super::sketch_snap_marker(ui, center));
+        let on_a_handle = strokes(&|ui| {
             crate::gizmos::vertex_handle(
                 ui.painter(),
                 center,
@@ -717,7 +750,42 @@ mod tests {
                 true,
             );
         });
-        assert_eq!(standalone.len(), 4, "four arms: {standalone:?}");
-        assert_eq!(standalone, on_a_handle);
+        assert_eq!(mark.len(), 8, "four arms, each haloed: {mark:?}");
+        assert_eq!(on_a_handle.len(), 4);
+
+        let bearing = |([from, to], _): &([Pos2; 2], f32)| {
+            let span = *to - *from;
+            (span.x.signum() as i32, span.y.signum() as i32)
+        };
+        let bearings = |set: &[([Pos2; 2], f32)]| {
+            set.iter()
+                .map(bearing)
+                .collect::<std::collections::BTreeSet<_>>()
+        };
+        assert_eq!(
+            bearings(&mark),
+            bearings(&on_a_handle),
+            "the same four arms, whatever they are drawn at"
+        );
+
+        let reach = |([from, to], _): &([Pos2; 2], f32)| {
+            (*to - center).length().max((*from - center).length())
+        };
+        let furthest = |set: &[([Pos2; 2], f32)]| set.iter().map(reach).fold(0.0_f32, f32::max);
+        assert!(
+            furthest(&mark) > furthest(&on_a_handle),
+            "the standalone mark reaches further: {} vs {}",
+            furthest(&mark),
+            furthest(&on_a_handle)
+        );
+
+        let widths: Vec<f32> = mark.iter().map(|(_, width)| *width).collect();
+        let thinnest = widths.iter().copied().fold(f32::MAX, f32::min);
+        let widest = widths.iter().copied().fold(0.0_f32, f32::max);
+        assert!(widest > thinnest, "the halo is wider than the ink it backs");
+        assert!(
+            thinnest > on_a_handle[0].1,
+            "and even the ink is heavier than the handle's decoration"
+        );
     }
 }

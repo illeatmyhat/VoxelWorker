@@ -1932,8 +1932,10 @@ impl Sketch {
     /// that true of both, and it also means a planted point starts where its own constraint
     /// already wants it instead of being dragged there by the first solve.
     ///
-    /// `None` when the curve is gone, or is an aggregate with no single resolved geometry — the
-    /// caller keeps the position it had.
+    /// Every curve kind answers, aggregates included. A spline has no one center or direction to
+    /// hold a relation to, which is a statement about relations; where the pointer is standing on
+    /// it is not in doubt, and the nearest of its spans says so. `None` only when the curve is
+    /// gone — the caller keeps the position it had.
     #[must_use]
     pub fn point_on_curve(
         &self,
@@ -1941,8 +1943,15 @@ impl Sketch {
         at: SketchPoint,
         context: parametric::EvaluationContext,
     ) -> Option<SketchPoint> {
-        let geometry = self.planar_curve(curve, context)?;
-        let landed = geometry.point_at(geometry.nearest_parameter(at.in_plane()));
+        let in_plane = at.in_plane();
+        let landed = self
+            .curve_spans(curve, context)
+            .into_iter()
+            .map(|span| span.point_at(span.nearest_parameter(in_plane)))
+            .min_by(|left, right| {
+                let away = |from: &[f64; 2]| (from[0] - in_plane[0]).hypot(from[1] - in_plane[1]);
+                away(left).total_cmp(&away(right))
+            })?;
         Some(SketchPoint::from_continuous(landed[0], landed[1]))
     }
 

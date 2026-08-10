@@ -2557,8 +2557,7 @@ impl WindowedState {
     /// vertex wins over snap policy, so an off-grid target cannot drift on release.
     ///
     /// The hovered curve comes from the same nearest-edge resolution the overlay highlights, so a
-    /// point planted on an edge is held to the edge the author was looking at. A higher curve is
-    /// not offered: it has no support the kernel models, so the hold would only be refused.
+    /// point planted on an edge is held to the edge the author was looking at.
     fn sketch_target_at(
         &self,
         cursor_x: f64,
@@ -2567,17 +2566,12 @@ impl WindowedState {
         let target = self.panel_state.sketch_mode?;
         let (producer, _) = self.sketch_node_state(target)?;
         let existing = self.sketch_geometry_point_at(target, cursor_x, cursor_y);
+        // Every kind travels, aggregates included. A pick can land on a spline even though no
+        // relation can be held to one: the hold is attempted and refused at the seam that plants,
+        // and the landing does not depend on it.
         let hovered = self
             .nearest_sketch_edge(cursor_x, cursor_y)
-            .map(sketch_curve_from_hit)
-            .filter(|curve| {
-                matches!(
-                    curve,
-                    document::sketch::SketchCurve::Segment(_)
-                        | document::sketch::SketchCurve::Arc(_)
-                        | document::sketch::SketchCurve::Circle(_)
-                )
-            });
+            .map(sketch_curve_from_hit);
         sketch_target::resolve_target(
             &producer,
             existing,

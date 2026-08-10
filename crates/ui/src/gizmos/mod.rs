@@ -484,7 +484,7 @@ pub use segment::{
     roled_curve, roled_segment, segment, styled_segment, tangent_lever, undrawn_reach, warn_cross,
     warn_cross_sized, warn_segment,
 };
-pub use snap_ticks::snap_ticks;
+pub use snap_ticks::{snap_ticks, snap_ticks_weighted};
 pub use vertex_handle::{tangent_arm_handle, vertex_handle, HandleState};
 
 /// The spatial axis a snap guide follows — its color is the constraint it stands in for

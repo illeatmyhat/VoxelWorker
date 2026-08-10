@@ -588,6 +588,53 @@ impl Sketch {
         }
     }
 
+    /// Every span of one persisted curve, as substrate pieces.
+    ///
+    /// A native curve is one span; an aggregate is the several the drawing resolves it into. This
+    /// is deliberately wider than
+    /// [`carries_relation_geometry`](SketchCurve::carries_relation_geometry): a relation needs a
+    /// single center, radius or direction and an aggregate has none, but a POSITION on one is
+    /// perfectly well defined, and a position is all that landing a pick asks for.
+    pub(super) fn curve_spans(
+        &self,
+        curve: SketchCurve,
+        context: parametric::EvaluationContext,
+    ) -> Vec<PlanarCurve> {
+        match curve {
+            SketchCurve::Segment(_)
+            | SketchCurve::Arc(_)
+            | SketchCurve::Circle(_)
+            | SketchCurve::Bezier(_) => self.planar_curve(curve, context).into_iter().collect(),
+            SketchCurve::Ellipse(id) => self
+                .ellipses
+                .iter()
+                .find(|ellipse| ellipse.id == id)
+                .and_then(|ellipse| self.ellipse_candidate(*ellipse))
+                .map(|candidate| candidate.quarters.map(PlanarCurve::RationalBezier).to_vec())
+                .unwrap_or_default(),
+            SketchCurve::Conic(id) => self
+                .conics
+                .iter()
+                .find(|conic| conic.id == id)
+                .and_then(|conic| self.conic_candidate(*conic))
+                .map(|candidate| vec![PlanarCurve::RationalBezier(candidate.curve)])
+                .unwrap_or_default(),
+            SketchCurve::Spline(id) => self
+                .splines
+                .iter()
+                .find(|spline| spline.id == id)
+                .and_then(|spline| self.spline_candidate(spline))
+                .map(|candidate| {
+                    candidate
+                        .pieces
+                        .into_iter()
+                        .map(PlanarCurve::RationalBezier)
+                        .collect()
+                })
+                .unwrap_or_default(),
+        }
+    }
+
     fn apply_break(&mut self, placement: &BreakPlacement) -> Result<(), BreakRefusal> {
         if placement.pieces.len() <= 1 {
             return Err(BreakRefusal::NoInteriorIntersection);
