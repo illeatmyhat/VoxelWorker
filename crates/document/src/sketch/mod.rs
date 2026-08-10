@@ -3266,7 +3266,7 @@ impl Sketch {
         // like any other point (ADR 0038), so a translation that left it behind would not be a
         // translation.
         let hands: Vec<_> = self
-            .points_a_translation_carries(curve)
+            .every_point_of(curve)
             .into_iter()
             .filter_map(|point| {
                 let stood = self.point_in_plane(point)?;
@@ -3293,15 +3293,19 @@ impl Sketch {
         .map(|answered| answered.moved)
     }
 
-    /// Every point a translation of `curve` has to carry with it.
+    /// Every point `curve` is made of: the ones it stands on, and the ones that shape it.
     ///
-    /// Not [`points_of`](Self::points_of), which answers for the curves a drag walks THROUGH and so
-    /// stops at the three forms relation mathematics sees. A translation has to name the whole
-    /// curve or it will leave part of it standing: a higher curve carries its shape in its points,
-    /// and a spline's tangent handles are points too — a handle left behind would re-aim its
-    /// tangent by exactly the distance the spline moved, which is the one thing a rigid translation
-    /// must not do.
-    fn points_a_translation_carries(&self, curve: SketchCurve) -> Vec<EntityId> {
+    /// Wider than [`points_of`](Self::points_of) by exactly the points that steer a curve without
+    /// being on it, and two callers need the wider answer for the same underlying reason — a curve
+    /// cannot move unless all of them do.
+    ///
+    /// A TRANSLATION has to name the whole curve or it will leave part of it standing: a higher
+    /// curve carries its shape in its points, and a spline's tangent handles are points too, so a
+    /// handle left behind would re-aim its tangent by exactly the distance the spline moved, which
+    /// is the one thing a rigid translation must not do. A DRAG SCOPE has to name the whole curve
+    /// or the solve cannot redraw it, and a spline it cannot redraw is one it will not put in the
+    /// problem at all — which silently drops every relation held to that spline.
+    fn every_point_of(&self, curve: SketchCurve) -> Vec<EntityId> {
         match curve {
             SketchCurve::Segment(_) | SketchCurve::Arc(_) | SketchCurve::Circle(_) => {
                 self.points_of(curve)
@@ -3800,6 +3804,13 @@ impl Sketch {
     ///
     /// Public for the overlay: a curve the author is touching shows the points it stands on, even
     /// the ones [`point_draws_at_rest`](Self::point_draws_at_rest) keeps quiet.
+    ///
+    /// A spline answers with the points it is drawn THROUGH and not with their tangent arms, which
+    /// is the same line the other kinds draw: an arm steers the curve from beside it rather than
+    /// standing on it, and nothing here wants a handle revealed by touching the curve it shapes.
+    /// A caller that needs the whole curve — every point that has to move for it to move — wants
+    /// [`every_point_of`](Self::every_point_of) instead. The remaining higher curves answer empty
+    /// because the solver models no place along them, so nothing walks through one.
     pub fn points_of(&self, curve: SketchCurve) -> Vec<EntityId> {
         match curve {
             SketchCurve::Arc(id) => self
@@ -3820,10 +3831,13 @@ impl Sketch {
                 .find(|circle| circle.id == id)
                 .map(|circle| vec![circle.center])
                 .unwrap_or_default(),
-            SketchCurve::Bezier(_)
-            | SketchCurve::Ellipse(_)
-            | SketchCurve::Conic(_)
-            | SketchCurve::Spline(_) => Vec::new(),
+            SketchCurve::Spline(id) => self
+                .splines
+                .iter()
+                .find(|spline| spline.id == id)
+                .map(|spline| spline.points.clone())
+                .unwrap_or_default(),
+            SketchCurve::Bezier(_) | SketchCurve::Ellipse(_) | SketchCurve::Conic(_) => Vec::new(),
         }
     }
 
@@ -3884,9 +3898,10 @@ impl Sketch {
     /// Every point a drag of these could possibly move, the held ones included.
     ///
     /// Closed under two rules, applied until nothing new arrives. A CURVE standing on a reached
-    /// point brings its other ends, because the solver holds every drawn edge's span and half a
-    /// curve in the problem is a different problem. A RELATION naming anything reached brings
-    /// everything else it names, which is the ordinary sense in which two shapes are one shape.
+    /// point brings the rest of ITSELF — its other ends, and for a spline the tangent arms as well
+    /// — because the solver holds every drawn edge's span, and half a curve in the problem is a
+    /// different problem than the whole one. A RELATION naming anything reached brings everything
+    /// else it names, which is the ordinary sense in which two shapes are one shape.
     ///
     /// Anything left out is unreachable in the strict sense — no relation and no edge connects it
     /// — so no solve could have moved it and leaving it out changes nothing but the price.
@@ -3895,7 +3910,7 @@ impl Sketch {
         loop {
             let known = reached.len();
             for curve in self.curves_standing_on_any(&reached) {
-                for point in self.points_of(curve) {
+                for point in self.every_point_of(curve) {
                     if !reached.contains(&point) {
                         reached.push(point);
                     }
@@ -3918,10 +3933,18 @@ impl Sketch {
         }
     }
 
-    /// Every curve standing on any of these points.
+    /// Every curve any of these points belongs to.
+    ///
+    /// Asked with [`every_point_of`](Self::every_point_of), so a hand on a tangent ARM finds the
+    /// spline that arm steers. A hand there reshapes the curve as surely as a hand on a fit point
+    /// does, and anything held to the curve has to be in the same problem to hear about it.
+    ///
+    /// The stores asked are the ones a walk can cross. The remaining higher curves are left out
+    /// because the solver names no place along them, so nothing is ever held to one and reaching
+    /// one would widen the problem to say nothing.
     fn curves_standing_on_any(&self, points: &[EntityId]) -> Vec<SketchCurve> {
         let stands = |curve: SketchCurve| {
-            self.points_of(curve)
+            self.every_point_of(curve)
                 .iter()
                 .any(|point| points.contains(point))
         };
@@ -3933,6 +3956,11 @@ impl Sketch {
                 self.circles
                     .iter()
                     .map(|circle| SketchCurve::Circle(circle.id)),
+            )
+            .chain(
+                self.splines
+                    .iter()
+                    .map(|spline| SketchCurve::Spline(spline.id)),
             )
             .filter(|curve| stands(*curve))
             .collect()
@@ -3981,10 +4009,10 @@ impl Sketch {
 
     /// The curve this id names, if any curve store holds it.
     ///
-    /// Asks every store, higher curves included. [`points_of`](Self::points_of) answers empty for
-    /// those, so a caller that walks from a curve to its points sees no change from the three
-    /// stores this used to ask; a caller that only wants to know WHAT the id is now gets a true
-    /// answer instead of `None`.
+    /// Asks every store, higher curves included. [`points_of`](Self::points_of) answers for a
+    /// spline and empty for the rest of them, so a caller that walks from a curve to its points
+    /// reaches exactly the curves the solver can hold something to; a caller that only wants to
+    /// know WHAT the id is gets a true answer for all of them instead of `None`.
     fn curve_named(&self, entity: EntityId) -> Option<SketchCurve> {
         if self.segments.iter().any(|segment| segment.id == entity) {
             Some(SketchCurve::Segment(entity))
@@ -6051,13 +6079,20 @@ impl Sketch {
     ///
     /// A point in here is the solver's to place, so anything that moves points on its own
     /// authority ([`carry_authored_handles`](Self::carry_authored_handles)) has to leave it alone.
+    ///
+    /// Asked with [`every_point_of`](Self::every_point_of) rather than
+    /// [`points_of`](Self::points_of), because a relation held to a curve is held to the SHAPE of
+    /// it. A spline's tangent arms are ordinarily the drawing's to carry — a handle means its
+    /// offset, so it rides its fit point — but the moment something stands on that spline the arms
+    /// are load-bearing, and carrying them after the solve would redraw the curve out from under
+    /// the very point the solve had just put on it.
     fn constrained_points(&self) -> Vec<EntityId> {
         let mut named = Vec::new();
         for constraint in &self.constraints {
             named.extend(constraint.kind.points());
             named.extend(self.span_points_derived_by(constraint.kind));
             for curve in constraint.kind.curves() {
-                named.extend(self.points_of(curve));
+                named.extend(self.every_point_of(curve));
             }
             // A relation's segment slot can hold an arc or a circle id too (Equal compares radii),
             // and `points_of` finds nothing for a kind the id does not belong to, so asking all

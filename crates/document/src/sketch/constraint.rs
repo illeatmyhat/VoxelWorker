@@ -1047,6 +1047,11 @@ impl ConstraintKind {
     }
 
     /// Every curve id named by a generic curve relation, for cascade/repair.
+    ///
+    /// A coincidence answers here when it holds a point to a CURVE, and not when it holds one to
+    /// another point. Standing on a curve is naming it in every sense the callers care about: the
+    /// curve's geometry is what the residual reads, so deleting it has to take the relation with
+    /// it, and the shape is the solver's to place rather than the drawing's to carry.
     pub(super) fn curves(&self) -> Vec<SketchCurve> {
         match *self {
             Self::Tangent { first, second, .. } | Self::Concentric { first, second } => {
@@ -1054,6 +1059,10 @@ impl ConstraintKind {
             }
             Self::Symmetry { first, second, .. } => vec![first, second],
             Self::Curvature { against, .. } => vec![against],
+            Self::Coincident {
+                onto: CoincidentTarget::Curve(curve),
+                ..
+            } => vec![curve],
             _ => Vec::new(),
         }
     }

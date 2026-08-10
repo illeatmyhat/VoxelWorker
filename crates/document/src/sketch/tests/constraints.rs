@@ -3970,6 +3970,167 @@ fn a_curve_kind_can_hold_a_point_exactly_when_the_drawing_accepts_the_coincidenc
     }
 }
 
+/// **A line held to a spline stays on it — when the spline is moved, and when it is reshaped.**
+///
+/// Reported from the app: "I can connect a line to a spline but dragging the spline does nothing
+/// and breaks the line away." Holding at the solver was never in question; being in the same
+/// PROBLEM was. A drag builds its scope by walking out from what the hand holds, and the walk
+/// crosses a curve by asking for the points it stands on — which answered empty for a spline, so
+/// the walk stopped dead at the curve and the coincidence, naming nothing else in scope, was left
+/// out of the problem the drag actually solved.
+///
+/// Both halves of the report are here because they fail for the one reason and could be fixed for
+/// only one of them: moving the body starts the walk at all of the spline's points, reshaping
+/// starts it at a single one, and neither reaches the line unless the walk sees through the curve.
+///
+/// What is asserted is that the end is STILL on the curve afterwards, rather than that it moved
+/// some particular distance. Which end of a coincidence gives way is the solve's to choose and
+/// nothing here pins it; that the two stay together is the whole content of the constraint.
+#[test]
+fn a_line_held_to_a_spline_stays_on_it_when_the_spline_moves_and_when_it_is_reshaped() {
+    let held_to_a_spline = || {
+        let mut sketch = Sketch::empty(PlaneAxis::Z);
+        let spline = sketch
+            .add_fit_point_spline(
+                &[
+                    SketchPoint::new(0, 0),
+                    SketchPoint::new(10, 6),
+                    SketchPoint::new(20, 0),
+                ],
+                false,
+            )
+            .expect("a spline");
+        let on_it = sketch.add_free_point(SketchPoint::from_continuous(10.0, 4.5));
+        let away = sketch.add_free_point(SketchPoint::from_continuous(10.0, -8.0));
+        sketch.connect(on_it, away).expect("a line");
+        sketch
+            .add_constraint(
+                ConstraintKind::Coincident {
+                    point: on_it,
+                    onto: CoincidentTarget::Curve(SketchCurve::Spline(spline)),
+                },
+                ctx(16),
+            )
+            .expect("a line end can stand on a spline");
+        let landed = position(&sketch, on_it);
+        assert!(
+            off_the_spline(&sketch, spline, landed) < 1.0e-6,
+            "the hold did not settle in the first place: {landed:?}"
+        );
+        (sketch, spline, on_it)
+    };
+
+    // Moving the whole spline. Seven units is further than the drawing is tall, so an end that
+    // stayed where it was could not still be on the curve.
+    let (mut sketch, spline, on_it) = held_to_a_spline();
+    let before = position(&sketch, on_it);
+    assert!(
+        sketch
+            .translate_curve(SketchCurve::Spline(spline), [0.0, 7.0], ctx(16))
+            .expect("the spline can be moved"),
+        "the drag moved nothing"
+    );
+    let after = position(&sketch, on_it);
+    assert!(
+        off_the_spline(&sketch, spline, after) < 1.0e-6,
+        "{before:?} to {after:?} came off the spline it is held to"
+    );
+
+    // Reshaping it. One fit point is pulled ten units up, which moves the curve everywhere, and
+    // the line end has to find the new curve rather than keep standing where the old one was.
+    let (mut sketch, spline, on_it) = held_to_a_spline();
+    let crest = sketch
+        .splines
+        .iter()
+        .find(|held| held.id == spline)
+        .expect("the spline")
+        .points[1];
+    let before = position(&sketch, on_it);
+    assert!(
+        sketch
+            .move_point(crest, SketchPoint::from_continuous(10.0, 16.0), ctx(16))
+            .expect("a fit point can be dragged"),
+        "the reshape moved nothing"
+    );
+    let after = position(&sketch, on_it);
+    assert!(
+        off_the_spline(&sketch, spline, after) < 1.0e-6,
+        "{before:?} to {after:?} came off the reshaped spline"
+    );
+
+    // Re-aiming it by a tangent handle. A handle is not a point the curve stands on, so this is
+    // the leg that would still break if the walk only crossed a spline by the points it is drawn
+    // through — a hand here reshapes the curve without ever touching one of them.
+    let (mut sketch, spline, on_it) = held_to_a_spline();
+    let arm = sketch
+        .splines
+        .iter()
+        .find(|held| held.id == spline)
+        .expect("the spline")
+        .tangents
+        .values()
+        .next()
+        .expect("a minted handle")
+        .forward;
+    let swung = {
+        let at = position(&sketch, arm);
+        SketchPoint::from_continuous(at[0], at[1] - 6.0)
+    };
+    let before = position(&sketch, on_it);
+    assert!(
+        sketch
+            .move_point(arm, swung, ctx(16))
+            .expect("a handle can be dragged"),
+        "the handle drag moved nothing"
+    );
+    let after = position(&sketch, on_it);
+    assert!(
+        off_the_spline(&sketch, spline, after) < 1.0e-6,
+        "{before:?} to {after:?} came off the re-aimed spline"
+    );
+}
+
+/// How far `witness` stands off the curve `spline` currently draws.
+///
+/// Read off the DRAWING's own fit rather than off the solver's, so a hold that reported success
+/// against a curve nobody can see would still be caught. Coarse scan for the piece and the
+/// neighbourhood, then a ternary search inside it, because a tolerance loose enough to absorb
+/// sampling error is also loose enough to miss a point that has come off a gentle curve.
+fn off_the_spline(sketch: &Sketch, spline: EntityId, witness: [f64; 2]) -> f64 {
+    let held = sketch
+        .splines
+        .iter()
+        .find(|held| held.id == spline)
+        .expect("the spline");
+    let candidate = sketch.spline_candidate(held).expect("a curve");
+    let steps = 200;
+    candidate
+        .pieces
+        .iter()
+        .map(|piece| {
+            let away = |at: f64| {
+                let on = piece.point_at(at);
+                (on[0] - witness[0]).hypot(on[1] - witness[1])
+            };
+            let coarse = (0..=steps)
+                .map(|step| f64::from(step) / f64::from(steps))
+                .min_by(|first, second| away(*first).total_cmp(&away(*second)))
+                .unwrap_or(0.0);
+            let reach = 1.0 / f64::from(steps);
+            let (mut low, mut high) = ((coarse - reach).max(0.0), (coarse + reach).min(1.0));
+            for _ in 0..80 {
+                let third = (high - low) / 3.0;
+                if away(low + third) < away(high - third) {
+                    high -= third;
+                } else {
+                    low += third;
+                }
+            }
+            away((low + high) / 2.0)
+        })
+        .fold(f64::INFINITY, f64::min)
+}
+
 /// **The refused self-reference can be spelled in two steps, and the composed system behaves.**
 ///
 /// A point that shapes a spline is turned away from standing on it, and that refusal is UX rather

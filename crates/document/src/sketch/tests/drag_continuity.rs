@@ -1039,16 +1039,27 @@ fn the_snap_ring_is_inked_from_the_room_left_in_the_cone() {
 /// coordinate the drawing pins down least shows up as a single frame that swings hundreds of
 /// times the cursor step, not as a drift.
 ///
-/// **Measured: a worst gain of `1.0000014` over all 841 frames.** The drawing moves what the
-/// cursor moves and no more, at both knots and across the twenty-to-one change of scale between
+/// **Measured: a worst gain of `1.043` over all 841 frames.** The drawing moves what the cursor
+/// moves and very little more, at both knots and across the twenty-to-one change of scale between
 /// them. The price the constant unit was supposed to charge does not show up at this ratio, which
 /// is what says the deviation from a per-piece normalization cost nothing and bought the C1 join.
 /// The ceiling is the 0043 one rather than anything tighter, so the test states the property
 /// rather than pinning the number.
 ///
-/// The fit points are pinned, so the only thing free to answer is the held point and its station.
-/// That is the point: an unpinned spline would let the curve deform and mix two causes into one
-/// number.
+/// Every point that SHAPES the curve is pinned — the fit points and their forward arms — so the
+/// only thing left free to answer is the held point and its station. Pinning the fit points alone
+/// is not enough and the first version of this gauge did exactly that: a curve pinned only where
+/// it passes through is still free to bend between, and the walk then measured the arms swinging
+/// to drag the curve up to a cursor a whole unit above it, which is a different number about a
+/// different thing. Read on the unpinned drawing that gain reaches thirty thousand; here it is
+/// one, and the difference between the two is the whole reason the shaping points are pinned.
+///
+/// The per-frame check that the hold is still holding is not decoration. This gauge ran green at
+/// `1.0000014` for as long as the relation was being dropped from the scoped problem before the
+/// walk ever reached it — a free point tracking a cursor moves exactly what the cursor moves, and
+/// answers every frame while doing it, so neither the gain nor the answered-frame count could
+/// tell the difference. See
+/// `a_line_held_to_a_spline_stays_on_it_when_the_spline_moves_and_when_it_is_reshaped`.
 #[test]
 fn sliding_a_held_point_along_an_uneven_spline_is_smooth_across_its_knots() {
     let mut sketch = Sketch::empty(PlaneAxis::Z);
@@ -1067,7 +1078,21 @@ fn sliding_a_held_point_along_an_uneven_spline_is_smooth_across_its_knots() {
         .expect("the spline")
         .points
         .clone();
-    for (point, at) in drawn.iter().zip(places) {
+    let arms: Vec<EntityId> = sketch
+        .splines
+        .iter()
+        .find(|held| held.id == spline)
+        .expect("the spline")
+        .tangents
+        .values()
+        .map(|handle| handle.forward)
+        .collect();
+    // The arms as well as the fit points. A pinned fit point still leaves the curve free to bend
+    // through it, and a gauge that let the curve bend would be measuring the SHAPE giving way
+    // rather than the station sliding — which is the one thing it is here to isolate. The forward
+    // arm only: the back one is its mirror and refuses to be pinned in its own right.
+    for point in drawn.iter().chain(&arms) {
+        let at = sketch.point_in_plane(*point).expect("a placed point");
         sketch
             .add_constraint(
                 ConstraintKind::Fix {
@@ -1076,7 +1101,7 @@ fn sliding_a_held_point_along_an_uneven_spline_is_smooth_across_its_knots() {
                 },
                 ctx(16),
             )
-            .expect("a fit point can be pinned");
+            .expect("a shaping point can be pinned");
     }
     let standing = sketch.add_free_point(SketchPoint::from_continuous(1.0, 1.5));
     sketch
@@ -1111,13 +1136,22 @@ fn sliding_a_held_point_along_an_uneven_spline_is_smooth_across_its_knots() {
             .iter()
             .flat_map(|point| point.at.in_plane())
             .collect();
+        let landed = frame.point_in_plane(standing).expect("the held point");
+        // The cursor rides a unit above a curve that never leaves y = 0.5, so a held point that
+        // came back at the cursor's own height is a point nothing is holding. Checked per frame
+        // rather than once, because a hold that lets go halfway is the failure worth catching.
+        assert!(
+            landed[1] < 1.0,
+            "frame {tick} answered {landed:?} for a cursor at {cursor:?}, so the hold let go"
+        );
         if let Some(was) = last.as_ref() {
             worst = worst.max(spread(was, &now) / step);
         }
         last = Some(now);
     }
     // A walk that answered nothing would report a gain of zero and pass without measuring, so
-    // the count of answered frames is asserted beside the gain.
+    // the count of answered frames is asserted beside the gain. The per-frame check above covers
+    // the other way to measure nothing — answering every frame with the constraint absent.
     assert!(
         measured > 800,
         "only {measured} of 841 frames answered the cursor"
