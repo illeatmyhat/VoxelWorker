@@ -3986,6 +3986,12 @@ fn a_curve_kind_can_hold_a_point_exactly_when_the_drawing_accepts_the_coincidenc
 /// What is asserted is that the end is STILL on the curve afterwards, rather than that it moved
 /// some particular distance. Which end of a coincidence gives way is the solve's to choose and
 /// nothing here pins it; that the two stay together is the whole content of the constraint.
+///
+/// **Seen red on each of the three mechanisms it covers**, separately: emptying `points_of` for a
+/// spline, dropping splines from the stores `curves_standing_on_any` enumerates, and taking the
+/// coincidence's curve back out of `ConstraintKind::curves()` — the last one only here, because
+/// it is about the handle carry redrawing the curve after the solve and the 0043 gauge pins the
+/// arms so it has nothing to carry.
 #[test]
 fn a_line_held_to_a_spline_stays_on_it_when_the_spline_moves_and_when_it_is_reshaped() {
     let held_to_a_spline = || {

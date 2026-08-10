@@ -1060,6 +1060,13 @@ fn the_snap_ring_is_inked_from_the_room_left_in_the_cone() {
 /// answers every frame while doing it, so neither the gain nor the answered-frame count could
 /// tell the difference. See
 /// `a_line_held_to_a_spline_stays_on_it_when_the_spline_moves_and_when_it_is_reshaped`.
+///
+/// **Seen red**, which is the only thing that makes any of the above evidence. Emptying
+/// [`points_of`](super::Sketch::points_of) for a spline, and separately dropping splines from the
+/// stores [`curves_standing_on_any`](super::Sketch::curves_standing_on_any) enumerates, each fail
+/// it on frame 0 with `the hold let go`. A least-norm solve reports a MISSING constraint as the
+/// smoothest drawing there is, so a gauge that only asks for a small number reads healthiest
+/// exactly when it is measuring nothing.
 #[test]
 fn sliding_a_held_point_along_an_uneven_spline_is_smooth_across_its_knots() {
     let mut sketch = Sketch::empty(PlaneAxis::Z);
