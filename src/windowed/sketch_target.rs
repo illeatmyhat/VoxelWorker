@@ -169,12 +169,13 @@ mod tests {
     /// **Every curve kind answers, aggregates included.**
     ///
     /// A spline carries no relation geometry — it has no one center, radius or direction for a
-    /// relation to be about — and the drawing turns a Tangent or a point-on-curve on one away for
-    /// exactly that reason. None of it is a statement about where the pointer is standing. Landing
-    /// a pick asks only for a position, and a spline has one everywhere along it, so the kinds a
-    /// relation refuses still snap.
+    /// relation to be ABOUT — and the drawing turns a Tangent on one away for exactly that reason.
+    /// None of it is a statement about where the pointer is standing. Landing a pick asks only for
+    /// a position, and a spline has one everywhere along it, so the kinds a shape relation refuses
+    /// still snap. (A coincidence is the one verb that does not read the shape, and so is offered
+    /// here too — see `SketchCurve::can_hold_a_point`.)
     #[test]
-    fn a_pick_lands_on_a_spline_even_though_no_relation_can_hold_it_there() {
+    fn a_pick_lands_on_a_spline_that_carries_no_relation_geometry() {
         let mut drawing = Sketch::empty(PlaneAxis::Z);
         let spline = drawing
             .add_fit_point_spline(

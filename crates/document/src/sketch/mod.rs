@@ -4358,15 +4358,14 @@ impl Sketch {
         self.check_names_live_geometry(kind, context)?;
         self.check_names_no_mirrored_arm(kind)?;
         self.check_is_not_already_asserted(kind)?;
-        let prepared = constraint::prepare(self, &self.constraints, Some(context)).map_err(
-            |error| match error {
+        let prepared = constraint::prepare_expecting(self, &self.constraints, Some(context), kind)
+            .map_err(|error| match error {
                 constraint::PrepareError::MissingEvaluationContext => {
                     ConstraintRefusal::MissingEvaluationContext
                 }
                 constraint::PrepareError::InvalidDocumentGeometry
                 | constraint::PrepareError::InvalidLocalProblem(_) => ConstraintRefusal::Impossible,
-            },
-        )?;
+            })?;
         let trial = prepared.trial_add(kind).map_err(|error| match error {
             constraint::TrialMapError::UnmappedGeometry
             | constraint::TrialMapError::Request(
@@ -4375,6 +4374,7 @@ impl Sketch {
                     parametric::sketch::BuildError::UnknownPoint
                     | parametric::sketch::BuildError::UnknownSegment
                     | parametric::sketch::BuildError::UnknownArc
+                    | parametric::sketch::BuildError::UnknownSpline
                     | parametric::sketch::BuildError::UnknownParameter,
                 ),
             ) => ConstraintRefusal::UnknownEntity,
@@ -4824,15 +4824,32 @@ impl Sketch {
                         .is_some_and(|segment| segment.from != segment.to),
                     SketchCurve::Arc(id) => self.arcs.iter().any(|arc| arc.id == id),
                     SketchCurve::Circle(id) => self.circles.iter().any(|circle| circle.id == id),
-                    // The higher curves have no support the kernel models — a rational Bézier is
-                    // neither a line nor a circle — so there is nothing to put the point on.
-                    SketchCurve::Bezier(_)
-                    | SketchCurve::Ellipse(_)
-                    | SketchCurve::Conic(_)
-                    | SketchCurve::Spline(_) => false,
+                    // A spline has no support to read a distance from, and does not need one: the
+                    // kernel holds a point to it by solving for WHERE along it the point stands.
+                    SketchCurve::Spline(id) => self.splines.iter().any(|spline| spline.id == id),
+                    // The rest have no support the kernel models — a rational Bézier is neither a
+                    // line nor a circle — and no station either, so there is nothing to stand on.
+                    SketchCurve::Bezier(_) | SketchCurve::Ellipse(_) | SketchCurve::Conic(_) => {
+                        false
+                    }
                 };
                 if !live {
                     return Err(ConstraintRefusal::UnknownEntity);
+                }
+                // A point that SHAPES a spline cannot also be held to it. A fit point already lies
+                // on the curve it draws, so the claim has no content; a control point standing on
+                // the curve is the point pulling against itself.
+                if let SketchCurve::Spline(id) = curve {
+                    if self.splines.iter().any(|spline| {
+                        spline.id == id
+                            && (spline.points.contains(&point)
+                                || spline
+                                    .tangents
+                                    .values()
+                                    .any(|handle| handle.arms().contains(&point)))
+                    }) {
+                        return Err(ConstraintRefusal::Impossible);
+                    }
                 }
                 // An endpoint is already on its own segment's line, so the assertion is vacuous
                 // and would only add a row that can never be violated.

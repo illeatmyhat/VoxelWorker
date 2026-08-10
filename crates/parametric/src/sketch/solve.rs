@@ -24,6 +24,7 @@ use super::curve::{
     SATISFACTION_TOLERANCE as SATISFIED_RESIDUAL,
 };
 use super::model::{SolveOutcome, SolveReport};
+use super::spline::{control_point_spline, fit_point_spline, station_length, SplineCandidate};
 use super::symmetry::{
     residuals as symmetry_residuals, symmetry_witness, SymmetryBranch, SymmetryError,
     SymmetryWitness,
@@ -87,6 +88,17 @@ pub struct CircleId {
     index: usize,
 }
 
+/// A local spline: the points that shape it, and how they do.
+///
+/// The solver stores no curve for it. A spline's shape is a FUNCTION of points it already holds,
+/// so it is refit from their live coordinates on every residual pass — which is what makes a
+/// finite-difference column through a fit point reach the curve at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SplineId {
+    owner: u64,
+    index: usize,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ConstraintId {
     owner: u64,
@@ -145,12 +157,17 @@ impl AngleArm {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParameterKind {
     PositiveRadius,
+    /// Where along a spline a point standing on it stands, measured in units of that spline's
+    /// [`station_length`] so a step along the curve costs about what a step
+    /// across the drawing costs.
+    SplineStation,
 }
 
 /// A solved intrinsic scalar paired with its kind.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ParameterValue {
     Radius(f64),
+    Station(f64),
 }
 
 /// A continuous author relation over local handles.
@@ -289,6 +306,20 @@ pub enum Relation {
     /// piece stops, and the optimizer would be walking a cliff. Whether the author meant a point
     /// past the end of an arc is an authoring question, answered before the relation is asserted.
     PointOnCurve { point: PointId, curve: SketchCurve },
+    /// A point stands ON a spline. Two rows saying the point IS the curve at `station`, against
+    /// the one solver-owned column that says where along it that is.
+    ///
+    /// The station is the whole reason this is not [`Relation::PointOnCurve`] with a wider curve.
+    /// A line or a circle answers "how far off is this point" without being asked where along;
+    /// a spline cannot, and the only other way to ask is to search it for the nearest place —
+    /// which jumps as soon as two places tie, and hands the finite-difference Jacobian a column
+    /// of noise. Naming the place as a coordinate spends one column to buy two smooth rows, and
+    /// still removes exactly the one freedom a point-on-curve should.
+    PointOnSpline {
+        point: PointId,
+        spline: SplineId,
+        station: ParameterId,
+    },
     /// Two curves touch at the persisted branch. The branch is fixed during a solve; it must never
     /// be inferred from a transient contact or switched by the optimizer.
     Tangent {
@@ -358,9 +389,11 @@ impl Relation {
             | Self::Midpoint { .. }
             | Self::Collinear { .. }
             | Self::Concentric { .. }
-            // Two rows here are a direction and a curvature rather than an x and a y, but a stride
-            // is a stride and clippy will not let the distinction have its own arm.
-            | Self::Curvature { .. } => 2,
+            // Two rows here are a direction and a curvature rather than an x and a y, and two
+            // there are a point meeting a curve at a station it also solves for. A stride is a
+            // stride and clippy will not let either distinction have its own arm.
+            | Self::Curvature { .. }
+            | Self::PointOnSpline { .. } => 2,
             Self::Horizontal { .. }
             | Self::Vertical { .. }
             | Self::Distance { .. }
@@ -389,6 +422,7 @@ pub enum BuildError {
     UnknownPoint,
     UnknownSegment,
     UnknownArc,
+    UnknownSpline,
     UnknownParameter,
     InvalidParameter,
     InvalidTangent,
@@ -450,6 +484,27 @@ struct Circle {
     radius: ParameterId,
 }
 
+/// How a spline's points shape it.
+#[derive(Debug, Clone, PartialEq)]
+enum SplineForm {
+    /// The curve passes THROUGH each point, steered where an arm stands beside one.
+    FitPoint { arms: Vec<Option<PointId>> },
+    /// The points stand off the curve and pull it.
+    ControlPoint,
+}
+
+/// A spline as the solver holds it: the points it is made of, and nothing else.
+///
+/// Deliberately not a curve. Storing the fitted pieces would freeze a shape the fit points are
+/// still free to move, and every residual would then read a curve one iteration out of date.
+#[derive(Debug, Clone)]
+struct SplineShape {
+    key: SplineId,
+    points: Vec<PointId>,
+    form: SplineForm,
+    closed: bool,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct ConstraintEntry {
     key: ConstraintId,
@@ -470,6 +525,7 @@ pub struct ProblemBuilder {
     arc_centers: Vec<ArcCenter>,
     parameters: Vec<Parameter>,
     circles: Vec<Circle>,
+    splines: Vec<SplineShape>,
     constraints: Vec<(ConstraintId, Relation)>,
 }
 
@@ -483,6 +539,7 @@ impl Default for ProblemBuilder {
             arc_centers: Vec::new(),
             parameters: Vec::new(),
             circles: Vec::new(),
+            splines: Vec::new(),
             constraints: Vec::new(),
         }
     }
@@ -528,6 +585,41 @@ impl ProblemBuilder {
         id
     }
 
+    /// A spline the curve passes THROUGH, with an optional steering arm beside each point.
+    ///
+    /// `arms` is index-aligned with `points`; a `None` leaves that point's tangent to the fit.
+    /// Extra or missing arms are padded to `points`, because a caller that has fewer arms than
+    /// points means the rest are unsteered rather than that the spline is malformed.
+    pub fn add_fit_point_spline(
+        &mut self,
+        points: Vec<PointId>,
+        arms: Vec<Option<PointId>>,
+        closed: bool,
+    ) -> SplineId {
+        let mut arms = arms;
+        arms.resize(points.len(), None);
+        self.push_spline(points, SplineForm::FitPoint { arms }, closed)
+    }
+
+    /// A spline its points stand OFF and pull, rather than lie on.
+    pub fn add_control_point_spline(&mut self, points: Vec<PointId>) -> SplineId {
+        self.push_spline(points, SplineForm::ControlPoint, false)
+    }
+
+    fn push_spline(&mut self, points: Vec<PointId>, form: SplineForm, closed: bool) -> SplineId {
+        let key = SplineId {
+            owner: self.owner,
+            index: self.splines.len(),
+        };
+        self.splines.push(SplineShape {
+            key,
+            points,
+            form,
+            closed,
+        });
+        key
+    }
+
     /// Add a solver-writable strictly-positive radius.
     ///
     /// # Errors
@@ -546,6 +638,96 @@ impl ProblemBuilder {
         self.add_parameter(ParameterKind::PositiveRadius, radius, false)
     }
 
+    /// Add the solver-owned station of a point standing on a spline.
+    ///
+    /// Internal in the way an arc's radius column is internal: seeded from the place the author's
+    /// own pick already landed on, written freely by the solve, never persisted. `seed` is in the
+    /// curve's [`station_length`] units, measured from its start.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BuildError::InvalidParameter`] when `seed` is not finite.
+    pub fn add_free_spline_station(&mut self, seed: f64) -> Result<ParameterId, BuildError> {
+        self.add_parameter(ParameterKind::SplineStation, seed, true)
+    }
+
+    /// Every point, segment and arc a constraint names is one this problem holds.
+    fn check_constraint_handles(&self) -> Result<(), BuildError> {
+        let known_point =
+            |point: PointId| point.owner == self.owner && point.index < self.points.len();
+        let known_segment =
+            |segment: SegmentId| segment.owner == self.owner && segment.index < self.segments.len();
+        for (_, relation) in &self.constraints {
+            let points = match *relation {
+                Relation::Fix { point, .. }
+                | Relation::Midpoint { point, .. }
+                | Relation::PointLineDistance { point, .. }
+                | Relation::PointOnCurve { point, .. }
+                | Relation::PointOnSpline { point, .. } => vec![point],
+                Relation::Distance { from, to, .. } | Relation::AxisDistance { from, to, .. } => {
+                    vec![from, to]
+                }
+                Relation::Coincident { first, second } => vec![first, second],
+                Relation::TangentDirection {
+                    joint, joint_arm, ..
+                } => vec![joint, joint_arm],
+                Relation::Curvature {
+                    joint,
+                    joint_arm,
+                    neighbor,
+                    neighbor_arm,
+                    ..
+                } => vec![joint, joint_arm, neighbor, neighbor_arm],
+                _ => Vec::new(),
+            };
+            if points.into_iter().any(|point| !known_point(point)) {
+                return Err(BuildError::UnknownPoint);
+            }
+            let segments = match *relation {
+                Relation::Horizontal { segment }
+                | Relation::Vertical { segment }
+                | Relation::PointLineDistance { line: segment, .. }
+                | Relation::Midpoint { segment, .. } => vec![segment],
+                Relation::Parallel { first, second }
+                | Relation::Perpendicular { first, second }
+                | Relation::Equal { first, second }
+                | Relation::Collinear { first, second } => vec![first, second],
+                // Only the straight arms are segments. The arc arms are checked as arcs, below,
+                // because an arc that has gone is a different absence from a segment that has.
+                Relation::Angle { first, second, .. } => [first, second]
+                    .into_iter()
+                    .filter_map(AngleArm::segment)
+                    .collect(),
+                _ => Vec::new(),
+            };
+            if segments.into_iter().any(|segment| !known_segment(segment)) {
+                return Err(BuildError::UnknownSegment);
+            }
+            self.check_angle_arms(*relation)?;
+        }
+        Ok(())
+    }
+
+    /// Every point a spline is made of, arms included, is a point this problem holds.
+    fn check_spline_points(&self) -> Result<(), BuildError> {
+        for spline in &self.splines {
+            let arms = match &spline.form {
+                SplineForm::FitPoint { arms } => arms.clone(),
+                SplineForm::ControlPoint => Vec::new(),
+            };
+            if spline
+                .points
+                .iter()
+                .copied()
+                .chain(arms.into_iter().flatten())
+                .any(|point| point.owner != self.owner || self.points.get(point.index).is_none())
+            {
+                return Err(BuildError::UnknownPoint);
+            }
+        }
+        Ok(())
+    }
+
     fn add_parameter(
         &mut self,
         kind: ParameterKind,
@@ -560,6 +742,11 @@ impl ProblemBuilder {
             ParameterKind::PositiveRadius => {
                 stored.is_finite() && stored > 0.0 && ResolvedLength::try_from_f64(stored).is_ok()
             }
+            // Every finite station is a place, negative ones included: a station short of zero is
+            // off the near end of an open spline, which is somewhere the solve is allowed to look
+            // and then be told it has gone too far. It is never written back, so it owes the
+            // exact-rational store nothing.
+            ParameterKind::SplineStation => stored.is_finite(),
         };
         let valid = source_valid
             && (!free
@@ -567,6 +754,7 @@ impl ProblemBuilder {
                     ParameterKind::PositiveRadius => {
                         stored >= min_exact_positive() && stored <= max_exact_positive()
                     }
+                    ParameterKind::SplineStation => true,
                 });
         if !valid {
             return Err(BuildError::InvalidParameter);
@@ -678,8 +866,6 @@ impl ProblemBuilder {
     pub fn finish(self) -> Result<Problem, BuildError> {
         let known_point =
             |point: PointId| point.owner == self.owner && point.index < self.points.len();
-        let known_segment =
-            |segment: SegmentId| segment.owner == self.owner && segment.index < self.segments.len();
         let known_parameter = |parameter: ParameterId| {
             parameter.owner == self.owner && parameter.index < self.parameters.len()
         };
@@ -707,53 +893,8 @@ impl ProblemBuilder {
                 return Err(BuildError::InvalidParameter);
             }
         }
-        for (_, relation) in &self.constraints {
-            let points = match *relation {
-                Relation::Fix { point, .. }
-                | Relation::Midpoint { point, .. }
-                | Relation::PointLineDistance { point, .. }
-                | Relation::PointOnCurve { point, .. } => vec![point],
-                Relation::Distance { from, to, .. } | Relation::AxisDistance { from, to, .. } => {
-                    vec![from, to]
-                }
-                Relation::Coincident { first, second } => vec![first, second],
-                Relation::TangentDirection {
-                    joint, joint_arm, ..
-                } => vec![joint, joint_arm],
-                Relation::Curvature {
-                    joint,
-                    joint_arm,
-                    neighbor,
-                    neighbor_arm,
-                    ..
-                } => vec![joint, joint_arm, neighbor, neighbor_arm],
-                _ => Vec::new(),
-            };
-            if points.into_iter().any(|point| !known_point(point)) {
-                return Err(BuildError::UnknownPoint);
-            }
-            let segments = match *relation {
-                Relation::Horizontal { segment }
-                | Relation::Vertical { segment }
-                | Relation::PointLineDistance { line: segment, .. }
-                | Relation::Midpoint { segment, .. } => vec![segment],
-                Relation::Parallel { first, second }
-                | Relation::Perpendicular { first, second }
-                | Relation::Equal { first, second }
-                | Relation::Collinear { first, second } => vec![first, second],
-                // Only the straight arms are segments. The arc arms are checked as arcs, below,
-                // because an arc that has gone is a different absence from a segment that has.
-                Relation::Angle { first, second, .. } => [first, second]
-                    .into_iter()
-                    .filter_map(AngleArm::segment)
-                    .collect(),
-                _ => Vec::new(),
-            };
-            if segments.into_iter().any(|segment| !known_segment(segment)) {
-                return Err(BuildError::UnknownSegment);
-            }
-            self.check_angle_arms(*relation)?;
-        }
+        self.check_spline_points()?;
+        self.check_constraint_handles()?;
         let raw = Problem {
             owner: self.owner,
             points: self.points,
@@ -761,6 +902,7 @@ impl ProblemBuilder {
             arc_centers: self.arc_centers,
             parameters: self.parameters,
             circles: self.circles,
+            splines: self.splines,
             constraints: Vec::new(),
             snap_reach: SnapReach::UNBOUNDED,
         };
@@ -792,6 +934,7 @@ pub struct Problem {
     arc_centers: Vec<ArcCenter>,
     parameters: Vec<Parameter>,
     circles: Vec<Circle>,
+    splines: Vec<SplineShape>,
     constraints: Vec<ConstraintEntry>,
     /// How far a snap may carry a hand off the cursor. Not a property of the drawing — it is the
     /// gesture's, and it lives here because the drag is what reads it. A problem walked frame by
@@ -978,14 +1121,17 @@ impl Problem {
                 .iter()
                 .copied()
                 .zip(scalar_coordinates)
-                .map(|(parameter, coordinate)| match parameter.kind {
-                    ParameterKind::PositiveRadius => ParameterValue::Radius(
+                .map(|(parameter, coordinate)| {
+                    let settled =
                         if coordinate.to_bits() == parameter_coordinate(parameter).to_bits() {
                             parameter.stored
                         } else {
                             physical_parameter_value(parameter, *coordinate)
-                        },
-                    ),
+                        };
+                    match parameter.kind {
+                        ParameterKind::PositiveRadius => ParameterValue::Radius(settled),
+                        ParameterKind::SplineStation => ParameterValue::Station(settled),
+                    }
                 })
                 .collect(),
         }
@@ -1157,6 +1303,31 @@ impl Problem {
                 point: point(id)?,
                 curve: curve(subject)?,
             }),
+            Relation::PointOnSpline {
+                point: id,
+                spline: shape,
+                station,
+            } => {
+                let held = self
+                    .splines
+                    .get(shape.index)
+                    .filter(|held| shape.owner == self.owner && held.key == shape)
+                    .ok_or(BuildError::UnknownSpline)?;
+                let known_station = self.parameters.get(station.index).is_some_and(|parameter| {
+                    station.owner == self.owner && parameter.kind == ParameterKind::SplineStation
+                });
+                if !known_station {
+                    return Err(BuildError::UnknownParameter);
+                }
+                Ok(Resolved::PointOnSpline {
+                    point: point(id)?,
+                    spline: shape.index,
+                    station: station.index,
+                    per_unit: live_spline(held, &|slot: usize| self.points[slot].at)
+                        .as_ref()
+                        .map_or(1.0, station_length),
+                })
+            }
             Relation::Radius {
                 curve: subject,
                 length,
@@ -1297,6 +1468,42 @@ mod tests {
         (builder.finish().unwrap(), a, b, c, first, second)
     }
 
+    /// A three-point fit spline, a point standing beside it, and the relation that holds it on.
+    ///
+    /// The station is seeded at the middle fit point, which is a starting guess in the way the
+    /// pick that authored the relation would have been. The solve is free to slide it.
+    fn point_beside_a_spline() -> (ProblemBuilder, Relation, PointId, Vec<PointId>) {
+        let places = [[0.0, 0.0], [10.0, 6.0], [20.0, 0.0]];
+        let mut builder = ProblemBuilder::new();
+        let through: Vec<PointId> = places.iter().map(|at| builder.add_point(*at)).collect();
+        let spline = builder.add_fit_point_spline(through.clone(), Vec::new(), false);
+        let beside = builder.add_point([10.0, 2.0]);
+        let seed = station_length(&fit_point_spline(&places, &[None, None, None], false).unwrap());
+        let station = builder.add_free_spline_station(seed).unwrap();
+        let relation = Relation::PointOnSpline {
+            point: beside,
+            spline,
+            station,
+        };
+        (builder, relation, beside, through)
+    }
+
+    /// How far `witness` stands off the spline drawn through `places`, by dense sampling.
+    fn off_the_spline(places: &[[f64; 2]], witness: [f64; 2]) -> f64 {
+        let tangents = vec![None; places.len()];
+        let candidate = fit_point_spline(places, &tangents, false).unwrap();
+        candidate
+            .pieces
+            .iter()
+            .flat_map(|piece| {
+                (0_u16..=400).map(move |step| {
+                    let on = piece.point_at(f64::from(step) / 400.0);
+                    (on[0] - witness[0]).hypot(on[1] - witness[1])
+                })
+            })
+            .fold(f64::INFINITY, f64::min)
+    }
+
     fn accepts(problem: &Problem, relation: Relation) -> Settled {
         match problem.trial_add(relation).unwrap() {
             TrialAdd::Accepted { settled, .. } => settled,
@@ -1352,6 +1559,60 @@ mod tests {
                 pitch: 1.0,
                 phase: 0.0,
             },
+        );
+        // A spline needs a problem that holds one, and the fixture above holds none. A relation
+        // that builds but never writes a row is exactly what this test exists to catch, so it
+        // gets its own drawing rather than being left out.
+        let (builder, on_a_spline, _, _) = point_beside_a_spline();
+        accepts(&builder.finish().unwrap(), on_a_spline);
+    }
+
+    /// **A point held to a spline lands on the curve, and stays on it when the curve is redrawn.**
+    ///
+    /// This is the whole of what "coincident to a spline" means, and neither half is free. Landing
+    /// is the two rows; staying is the station being a solver column rather than a place frozen
+    /// when the relation was authored — a frozen one would leave the point standing where the
+    /// curve USED to be the moment a fit point moved.
+    #[test]
+    fn a_point_held_to_a_spline_lands_on_it_and_rides_when_the_spline_is_redrawn() {
+        let (mut builder, relation, beside, through) = point_beside_a_spline();
+        assert_eq!(relation.residual_count(), 2);
+        builder.add_constraint(relation);
+        let settled = builder.finish().unwrap().settle();
+        assert!(settled.diagnostics.satisfied, "the point should settle");
+
+        let places: Vec<[f64; 2]> = through
+            .iter()
+            .map(|point| settled.solution.position(*point).unwrap())
+            .collect();
+        let landed = settled.solution.position(beside).unwrap();
+        assert!(
+            off_the_spline(&places, landed) < 1.0e-4,
+            "{landed:?} stands off the spline through {places:?}"
+        );
+
+        // Now redraw the spline under it: the middle fit point is pulled up, and the held point
+        // has to follow the curve rather than stay where the old one ran.
+        let (mut builder, relation, beside, through) = point_beside_a_spline();
+        builder.add_constraint(relation);
+        builder.add_constraint(Relation::Fix {
+            point: through[1],
+            at: [10.0, 14.0],
+        });
+        let moved = builder.finish().unwrap().settle();
+        assert!(moved.diagnostics.satisfied, "the redraw should settle");
+        let places: Vec<[f64; 2]> = through
+            .iter()
+            .map(|point| moved.solution.position(*point).unwrap())
+            .collect();
+        let rode = moved.solution.position(beside).unwrap();
+        assert!(
+            off_the_spline(&places, rode) < 1.0e-4,
+            "{rode:?} came off the redrawn spline through {places:?}"
+        );
+        assert!(
+            (rode[1] - landed[1]).abs() > 1.0,
+            "the point should have been carried up with the curve: {landed:?} to {rode:?}"
         );
     }
 
@@ -1428,6 +1689,52 @@ mod tests {
             (arm[1].abs() - 1.0).abs() < 1.0e-4,
             "the lever should have found length 1, stands at {arm:?}"
         );
+    }
+
+    /// **A closed spline's station wraps, and a point held near the seam is held either side of it.**
+    ///
+    /// The station of a closed curve is a quantity that WRAPS, which is the family the arc sweep
+    /// belongs to and the family that hides seam bugs. A point sitting a hair before the join and
+    /// one sitting a hair after it are a hair apart on the drawing, and the solve has to agree —
+    /// if the wrap kinked, one of the pair would be dragged the long way round.
+    #[test]
+    fn a_point_held_near_a_closed_splines_seam_settles_on_either_side_of_it() {
+        let places = [[10.0, 0.0], [0.0, 10.0], [-10.0, 0.0], [0.0, -10.0]];
+        let landed = |beside: [f64; 2]| {
+            let mut builder = ProblemBuilder::new();
+            let through: Vec<PointId> = places.iter().map(|at| builder.add_point(*at)).collect();
+            let spline = builder.add_fit_point_spline(through.clone(), Vec::new(), true);
+            let standing = builder.add_point(beside);
+            for (point, at) in through.iter().zip(places) {
+                builder.add_constraint(Relation::Fix { point: *point, at });
+            }
+            let candidate = fit_point_spline(&places, &[None; 4], true).unwrap();
+            let seed = station_length(&candidate);
+            let station = builder.add_free_spline_station(seed).unwrap();
+            builder.add_constraint(Relation::PointOnSpline {
+                point: standing,
+                spline,
+                station,
+            });
+            let settled = builder.finish().unwrap().settle();
+            assert!(settled.diagnostics.satisfied, "{beside:?} did not settle");
+            settled.solution.position(standing).unwrap()
+        };
+
+        // The seam of this curve is its first fit point, at [10, 0]. Two witnesses a whisker
+        // either side of it, both a little outside the loop.
+        let before = landed([11.0, -0.6]);
+        let after = landed([11.0, 0.6]);
+        assert!(
+            (before[0] - after[0]).hypot(before[1] - after[1]) < 1.5,
+            "the seam pulled them apart: {before:?} against {after:?}"
+        );
+        for on in [before, after] {
+            assert!(
+                (on[0].hypot(on[1]) - 10.0).abs() < 0.5,
+                "{on:?} is not on the loop"
+            );
+        }
     }
 
     #[test]
@@ -2517,7 +2824,12 @@ fn scalar_coordinates_of_solution(problem: &Problem, solution: &Solution) -> Opt
                         {
                             value
                         }
-                        ParameterValue::Radius(_) => f64::NAN,
+                        ParameterValue::Station(value)
+                            if parameter.kind == ParameterKind::SplineStation =>
+                        {
+                            value
+                        }
+                        ParameterValue::Radius(_) | ParameterValue::Station(_) => f64::NAN,
                     };
                     parameter_coordinate(Parameter {
                         stored,
@@ -3005,6 +3317,14 @@ enum Resolved {
         point: usize,
         curve: ResolvedCurve,
     },
+    PointOnSpline {
+        point: usize,
+        spline: usize,
+        station: usize,
+        /// How much curve one unit of `station` spends, captured from the spline the constraint
+        /// was built against. See [`station_length`].
+        per_unit: f64,
+    },
     Radius {
         curve: ResolvedCurve,
         length: f64,
@@ -3088,7 +3408,7 @@ struct Residuals<'a> {
 /// a distance, and a distance cannot pull it below zero.
 fn parameter_coordinate(parameter: Parameter) -> f64 {
     match parameter.kind {
-        ParameterKind::PositiveRadius => parameter.stored,
+        ParameterKind::PositiveRadius | ParameterKind::SplineStation => parameter.stored,
     }
 }
 
@@ -3102,6 +3422,10 @@ fn physical_parameter_value(parameter: Parameter, coordinate: f64) -> f64 {
         ParameterKind::PositiveRadius => {
             coordinate.clamp(min_exact_positive(), max_exact_positive())
         }
+        // Deliberately unclamped. A station past the end of an open spline is a real answer —
+        // the point the author asked for is off the curve — and clamping it would flatten the
+        // residual's derivative to nothing exactly where the solve needs to be told so.
+        ParameterKind::SplineStation => coordinate,
     }
 }
 
@@ -3160,6 +3484,63 @@ fn unit_of_arm(at: &impl Fn(usize) -> [f64; 2], arm: ResolvedAngleArm) -> [f64; 
             }
         }
     }
+}
+
+/// The spline `shape` as it stands at these coordinates, refit from its own points.
+///
+/// Refit on every residual pass, and that is the point rather than the price. A spline's shape is
+/// a FUNCTION of points the solve is still moving, so a stored fit would be one iteration stale
+/// and a finite-difference column through a fit point would read a curve that did not move when
+/// the point did — which is to say, no column at all.
+fn live_spline(shape: &SplineShape, at: &impl Fn(usize) -> [f64; 2]) -> Option<SplineCandidate> {
+    let places: Vec<[f64; 2]> = shape.points.iter().map(|point| at(point.index)).collect();
+    match &shape.form {
+        SplineForm::FitPoint { arms } => {
+            let tangents: Vec<Option<[f64; 2]>> = arms
+                .iter()
+                .zip(&places)
+                .map(|(arm, place)| {
+                    // An arm sits on the cubic's own control point, a third of the derivative out,
+                    // the same reading the drawing takes. One dropped on its fit point names no
+                    // direction and reads as absent rather than collapsing the curve.
+                    let handle = at((*arm)?.index);
+                    let tangent = [(handle[0] - place[0]) * 3.0, (handle[1] - place[1]) * 3.0];
+                    (tangent[0] != 0.0 || tangent[1] != 0.0).then_some(tangent)
+                })
+                .collect();
+            fit_point_spline(&places, &tangents, shape.closed).ok()
+        }
+        SplineForm::ControlPoint => control_point_spline(&places).ok(),
+    }
+}
+
+/// Where on `candidate` the station `along` stands, counted in PIECES rather than in length.
+///
+/// Off either end the end piece's own cubic is extended rather than the answer clamped: a clamp
+/// would report the same place for every station past the end, and a residual that stops changing
+/// is a residual that has stopped telling the solve which way it went wrong. A closed spline has
+/// no end to go past, so its station wraps — the curve is genuinely periodic there, so wrapping
+/// the coordinate costs the residual no smoothness.
+fn spline_place(candidate: &SplineCandidate, along: f64) -> Option<[f64; 2]> {
+    if !along.is_finite() {
+        return None;
+    }
+    let count = f64::from(u32::try_from(candidate.pieces.len()).ok()?);
+    if count <= 0.0 {
+        return None;
+    }
+    let walked = if candidate.closed {
+        along.rem_euclid(count)
+    } else {
+        along
+    };
+    let (mut index, mut base) = (0_usize, 0.0_f64);
+    while index + 1 < candidate.pieces.len() && walked >= base + 1.0 {
+        index += 1;
+        base += 1.0;
+    }
+    let landed = candidate.pieces.get(index)?.point_at(walked - base);
+    (landed[0].is_finite() && landed[1].is_finite()).then_some(landed)
 }
 
 fn curve_geometry(
@@ -3673,6 +4054,31 @@ impl ResidualSystem for Residuals<'_> {
                         }
                     };
                     row += 1;
+                }
+                Resolved::PointOnSpline {
+                    point,
+                    spline,
+                    station,
+                    per_unit,
+                } => {
+                    let here = at(point);
+                    let along = physical_parameter_value(
+                        self.problem.parameters[station],
+                        whole[self.problem.points.len() * 2 + station],
+                    ) / per_unit;
+                    // A spline that cannot be fit at these coordinates says nothing, rather than
+                    // pulling the point onto a curve nobody can draw.
+                    let landed = self
+                        .problem
+                        .splines
+                        .get(spline)
+                        .and_then(|shape| live_spline(shape, &at))
+                        .and_then(|candidate| spline_place(&candidate, along));
+                    let (across, up) =
+                        landed.map_or((0.0, 0.0), |on| (here[0] - on[0], here[1] - on[1]));
+                    into[row] = across;
+                    into[row + 1] = up;
+                    row += 2;
                 }
                 Resolved::Radius { curve, length } => {
                     into[row] = match curve_geometry(
@@ -5150,6 +5556,12 @@ impl Problem {
             Relation::PointOnCurve { point, curve } => std::iter::once(point)
                 .chain(self.points_of_curve(curve))
                 .collect(),
+            // The WHOLE spline, arms included. Its shape is a function of every one of them, so a
+            // scope holding the point to a curve while leaving out a fit point three spans away
+            // would be holding it to a curve the solve is free to move out from under it.
+            Relation::PointOnSpline { point, spline, .. } => std::iter::once(point)
+                .chain(self.points_of_spline(spline))
+                .collect(),
             Relation::PointLineDistance { point, line, .. } => std::iter::once(point)
                 .chain(self.points_of_curve(SketchCurve::Segment(line)))
                 .collect(),
@@ -5251,8 +5663,10 @@ impl Problem {
                 }
             }
             // A radius only ever names a curve that turns, so it never names a segment. Nor
-            // does the gap between two of them.
-            Relation::Fix { .. }
+            // does the gap between two of them, nor a spline, which is made of points and
+            // nothing else.
+            Relation::PointOnSpline { .. }
+            | Relation::Fix { .. }
             | Relation::Quantize { .. }
             | Relation::Distance { .. }
             | Relation::AxisDistance { .. }
@@ -5261,6 +5675,25 @@ impl Problem {
             | Relation::Coincident { .. }
             | Relation::Concentric { .. } => Vec::new(),
         }
+    }
+
+    /// Every point a spline's shape depends on: the ones it is made of, and the arms steering them.
+    fn points_of_spline(&self, spline: SplineId) -> Vec<PointId> {
+        self.splines
+            .get(spline.index)
+            .filter(|held| spline.owner == self.owner && held.key == spline)
+            .map(|held| {
+                let arms = match &held.form {
+                    SplineForm::FitPoint { arms } => arms.clone(),
+                    SplineForm::ControlPoint => Vec::new(),
+                };
+                held.points
+                    .iter()
+                    .copied()
+                    .chain(arms.into_iter().flatten())
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     fn points_of_curve(&self, curve: SketchCurve) -> Vec<PointId> {

@@ -82,10 +82,15 @@ pub enum PickRequirement {
 impl PickRequirement {
     /// Whether `entity` fills this slot.
     ///
-    /// Every curve arm asks [`SketchCurve::carries_relation_geometry`] first. An aggregate is
-    /// nameable — it is a real curve with a real identity, and the hit-test resolves it — but no
-    /// relation can read one, so taking the pick would arm a gesture that completes and then
-    /// cannot be applied. The refusal belongs at the click, where the tool is still waiting.
+    /// Every curve arm asks the drawing what can be said about that KIND of curve first. An
+    /// aggregate is nameable — it is a real curve with a real identity, and the hit-test resolves
+    /// it — but most relations cannot read one, so taking the pick would arm a gesture that
+    /// completes and then cannot be applied. The refusal belongs at the click, where the tool is
+    /// still waiting.
+    ///
+    /// Coincident asks the WIDER question, because it is the one verb that does not read the
+    /// curve: standing somewhere along a spline needs no center, radius or direction. See
+    /// [`SketchCurve::can_hold_a_point`].
     fn accepts(self, entity: SketchEntity) -> bool {
         let curve = match entity {
             SketchEntity::Point(_) => {
@@ -96,7 +101,8 @@ impl PickRequirement {
         match self {
             Self::Point => false,
             Self::Segment | Self::PointOrLine => matches!(curve, SketchCurve::Segment(_)),
-            Self::Curve | Self::PointOrCurve => curve.carries_relation_geometry(),
+            Self::Curve => curve.carries_relation_geometry(),
+            Self::PointOrCurve => curve.can_hold_a_point(),
             Self::CircularCurve => curve.is_circular(),
             Self::DirectedCurve => {
                 matches!(curve, SketchCurve::Segment(_) | SketchCurve::Arc(_))

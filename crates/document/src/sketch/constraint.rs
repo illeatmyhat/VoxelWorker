@@ -23,9 +23,9 @@ use super::{
     SketchPoint, Spline,
 };
 use parametric::sketch::{
-    ArcId, BuildError, CircleId, ConstraintId, PointId, Problem, ProblemBuilder, Relation,
-    SegmentId, SketchCurve as ParametricSketchCurve, SpanEnd, TangentContactError,
-    TangentContactFailure,
+    station_length, ArcId, BuildError, CircleId, ConstraintId, ParameterId, PointId, Problem,
+    ProblemBuilder, Relation, SegmentId, SketchCurve as ParametricSketchCurve, SpanEnd, SplineId,
+    TangentContactError, TangentContactFailure,
 };
 pub use parametric::sketch::{InternalContainment, LineSide, SymmetryBranch, TangentBranch};
 use parametric::EvaluationContext;
@@ -76,6 +76,24 @@ impl SketchCurve {
     /// something the identity carries.
     pub const fn carries_relation_geometry(self) -> bool {
         matches!(self, Self::Segment(_) | Self::Arc(_) | Self::Circle(_))
+    }
+
+    /// Whether a POINT can be held ON this kind of curve.
+    ///
+    /// Wider than [`carries_relation_geometry`](Self::carries_relation_geometry), and the gap
+    /// between them is the whole difference between reading a shape and standing somewhere along
+    /// one. A relation about a shape needs a single center, radius or direction, and an aggregate
+    /// has none. Standing on a curve asks for none of that: a spline has a place everywhere along
+    /// it, and the solver holds a point to one by naming that place as a coordinate instead of by
+    /// reading a support off the identity.
+    ///
+    /// Still no for the aggregates whose places the solver models no curve for at all — an
+    /// ellipse and a conic have no station column, so a pick lands on them and is not held.
+    pub const fn can_hold_a_point(self) -> bool {
+        matches!(
+            self,
+            Self::Segment(_) | Self::Arc(_) | Self::Circle(_) | Self::Spline(_)
+        )
     }
 
     /// Whether this curve is a constant radius about a center, which is what Concentric needs on
@@ -1261,9 +1279,41 @@ pub(super) struct PreparedProblem {
     arcs: Vec<(EntityId, ArcId)>,
     circles: Vec<(EntityId, CircleId, parametric::sketch::ParameterId)>,
     constraints: Vec<(EntityId, ConstraintId)>,
+    local_splines: Vec<(EntityId, SplineId)>,
+    stations: Vec<StationColumn>,
     /// Kept whole because a curvature relation reads its span out of the spline rather than out of
     /// stored fields; a trial has to be able to make the same reading the build made.
     splines: Box<[Spline]>,
+}
+
+/// The solver column standing for ONE point-on-spline coincidence.
+///
+/// Keyed by what the coincidence is about rather than by the constraint's own id, because the
+/// column has to be built before the constraint exists: a trial asks whether a coincidence could
+/// be added, and the relation it trials cannot name a column the problem does not already hold.
+/// The drawing refuses a second coincidence of the same point to the same spline, so the pair is
+/// an identity.
+#[derive(Debug, Clone, Copy)]
+struct StationColumn {
+    point: EntityId,
+    spline: EntityId,
+    column: ParameterId,
+}
+
+/// Every local handle a relation can be written against.
+///
+/// One bundle rather than eight parameters, and it travels whole: the translation needs all of
+/// them to answer a single relation, and a caller that assembled a subset would be building a
+/// relation that silently could not be written.
+struct LocalHandles<'a> {
+    points: &'a [(EntityId, PointId)],
+    segments: &'a [(EntityId, SegmentId)],
+    arcs: &'a [(EntityId, ArcId)],
+    circles: &'a [(EntityId, CircleId, ParameterId)],
+    splines: &'a [(EntityId, SplineId)],
+    stations: &'a [StationColumn],
+    /// The drawing's own splines, which a curvature relation reads its span out of.
+    drawn: &'a [Spline],
 }
 
 pub(super) enum TrialMapError {
@@ -1479,7 +1529,12 @@ impl PreparedProblem {
             }
             let parametric::sketch::ParameterValue::Radius(value) = solution
                 .parameter(*parameter)
-                .ok_or(ScalarWritebackError::MissingSolutionParameter)?;
+                .ok_or(ScalarWritebackError::MissingSolutionParameter)?
+            else {
+                // A circle's own column came back as something other than a radius, which is a
+                // handle mixup rather than an unsolvable drawing.
+                return Err(ScalarWritebackError::MissingSolutionParameter);
+            };
             let value = super::ResolvedLength::try_from_f64(value)
                 .map_err(|_| ScalarWritebackError::RadiusNotRepresentable)?;
             circle.radius = CircleRadius::free(value);
@@ -1524,24 +1579,30 @@ impl PreparedProblem {
     fn relation(&self, kind: ConstraintKind) -> Option<Relation> {
         relation_for(
             kind,
-            &self.points,
-            &self.segments,
-            &self.arcs,
-            &self.circles,
-            &self.splines,
+            &LocalHandles {
+                points: &self.points,
+                segments: &self.segments,
+                arcs: &self.arcs,
+                circles: &self.circles,
+                splines: &self.local_splines,
+                stations: &self.stations,
+                drawn: &self.splines,
+            },
         )
     }
 }
 
 #[allow(clippy::too_many_lines)]
-fn relation_for(
-    kind: ConstraintKind,
-    points: &[(EntityId, PointId)],
-    segments: &[(EntityId, SegmentId)],
-    arcs: &[(EntityId, ArcId)],
-    circles: &[(EntityId, CircleId, parametric::sketch::ParameterId)],
-    splines: &[Spline],
-) -> Option<Relation> {
+fn relation_for(kind: ConstraintKind, handles: &LocalHandles) -> Option<Relation> {
+    let LocalHandles {
+        points,
+        segments,
+        arcs,
+        circles,
+        splines: local_splines,
+        stations,
+        drawn: splines,
+    } = *handles;
     let point = |id| {
         points
             .iter()
@@ -1695,6 +1756,27 @@ fn relation_for(
         } => point(id)
             .zip(point(other))
             .map(|(first, second)| Relation::Coincident { first, second }),
+        // A spline takes the OTHER relation, because the solver models no closed-form curve for
+        // one. It cannot be asked how far off a point is without also being told where along, so
+        // the where-along travels with the relation as a column of its own.
+        ConstraintKind::Coincident {
+            point: id,
+            onto: CoincidentTarget::Curve(SketchCurve::Spline(subject)),
+        } => {
+            let spline = local_splines
+                .iter()
+                .find(|(candidate, _)| *candidate == subject)
+                .map(|(_, local)| *local)?;
+            let station = stations
+                .iter()
+                .find(|held| held.point == id && held.spline == subject)
+                .map(|held| held.column)?;
+            point(id).map(|point| Relation::PointOnSpline {
+                point,
+                spline,
+                station,
+            })
+        }
         ConstraintKind::Coincident {
             point: id,
             onto: CoincidentTarget::Curve(subject),
@@ -1794,16 +1876,12 @@ pub(super) fn curvature_span_of(
 fn add_constraints(
     builder: &mut ProblemBuilder,
     constraints: &[Constraint],
-    points: &[(EntityId, PointId)],
-    segments: &[(EntityId, SegmentId)],
-    arcs: &[(EntityId, ArcId)],
-    circles: &[(EntityId, CircleId, parametric::sketch::ParameterId)],
-    splines: &[Spline],
+    handles: &LocalHandles,
 ) -> Vec<(EntityId, ConstraintId)> {
     constraints
         .iter()
         .filter_map(|constraint| {
-            relation_for(constraint.kind, points, segments, arcs, circles, splines)
+            relation_for(constraint.kind, handles)
                 .map(|relation| (constraint.id, builder.add_constraint(relation)))
         })
         .collect()
@@ -1819,6 +1897,44 @@ pub(super) fn prepare(
     context: Option<EvaluationContext>,
 ) -> Result<PreparedProblem, PrepareError> {
     prepare_scoped(sketch, constraints, context, None)
+}
+
+/// [`prepare`], told which constraint is about to be TRIED against the result.
+///
+/// A trial adds a relation to a problem that is already built, so any solver column that relation
+/// names has to be there before the trial starts. Every other relation names only geometry, which
+/// is why nothing needed telling until a point could stand on a spline. `pending` builds the
+/// column and nothing else: the relation itself is still the trial's to add or refuse.
+pub(super) fn prepare_expecting(
+    sketch: &Sketch,
+    constraints: &[Constraint],
+    context: Option<EvaluationContext>,
+    pending: ConstraintKind,
+) -> Result<PreparedProblem, PrepareError> {
+    prepare_within(sketch, constraints, context, None, Some(pending))
+}
+
+/// The station a point standing at `at` is standing at along `spline`, in that curve's own units.
+///
+/// A SEED. It starts the solve where the author's pick already landed, so the point is not dragged
+/// the length of the curve to get there and a spline that doubles back does not hand the solve the
+/// wrong lobe to begin from. Where the point ends up is the solve's answer, not this.
+fn station_seed(sketch: &Sketch, spline: EntityId, at: [f64; 2]) -> Option<f64> {
+    let held = sketch.splines.iter().find(|held| held.id == spline)?;
+    let candidate = sketch.spline_candidate(held)?;
+    let (index, local) = candidate
+        .pieces
+        .iter()
+        .enumerate()
+        .map(|(index, piece)| {
+            let span = substrate::curve_intersection::PlanarCurve::RationalBezier(*piece);
+            let local = span.nearest_parameter(at);
+            let on = span.point_at(local);
+            (index, local, (on[0] - at[0]).hypot(on[1] - at[1]))
+        })
+        .min_by(|left, right| left.2.total_cmp(&right.2))
+        .map(|(index, local, _)| (index, local))?;
+    Some((f64::from(u32::try_from(index).ok()?) + local) * station_length(&candidate))
 }
 
 /// Build the same problem over a NAMED SET of points rather than the whole drawing.
@@ -1837,6 +1953,17 @@ pub(super) fn prepare_scoped(
     constraints: &[Constraint],
     context: Option<EvaluationContext>,
     scope: Option<&[EntityId]>,
+) -> Result<PreparedProblem, PrepareError> {
+    prepare_within(sketch, constraints, context, scope, None)
+}
+
+#[allow(clippy::too_many_lines)]
+fn prepare_within(
+    sketch: &Sketch,
+    constraints: &[Constraint],
+    context: Option<EvaluationContext>,
+    scope: Option<&[EntityId]>,
+    pending: Option<ConstraintKind>,
 ) -> Result<PreparedProblem, PrepareError> {
     let in_scope = |id: EntityId| scope.is_none_or(|named| named.contains(&id));
     let mut builder = ProblemBuilder::new();
@@ -1911,14 +2038,99 @@ pub(super) fn prepare_scoped(
         local_circles.push((circle.id, local, radius));
     }
 
+    // A spline joins when every point it is SHAPED by is in scope, arms included. Leaving one out
+    // would put a curve in the problem that the solve could not redraw, and a point held to it
+    // would be held to the wrong shape rather than to none.
+    let mut drawn_splines: Vec<&Spline> = sketch.splines.iter().collect();
+    drawn_splines.sort_by_key(|spline| spline.id);
+    let mut local_splines: Vec<(EntityId, SplineId)> = Vec::new();
+    for spline in drawn_splines {
+        let arms: Vec<Option<EntityId>> = spline
+            .points
+            .iter()
+            .map(|id| spline.tangents.get(id).map(|handle| handle.forward))
+            .collect();
+        let shaped_by = spline
+            .points
+            .iter()
+            .copied()
+            .chain(arms.iter().flatten().copied());
+        if !shaped_by.into_iter().all(in_scope) {
+            continue;
+        }
+        let Some(through) = spline
+            .points
+            .iter()
+            .map(|id| point(*id))
+            .collect::<Option<Vec<_>>>()
+        else {
+            return Err(PrepareError::InvalidDocumentGeometry);
+        };
+        let local_arms: Vec<Option<PointId>> = arms.iter().map(|arm| arm.and_then(point)).collect();
+        let local = match spline.kind {
+            super::SplineKind::FitPoint => {
+                builder.add_fit_point_spline(through, local_arms, spline.closed)
+            }
+            super::SplineKind::ControlPoint => builder.add_control_point_spline(through),
+        };
+        local_splines.push((spline.id, local));
+    }
+
+    let mut stations: Vec<StationColumn> = Vec::new();
+    for kind in constraints
+        .iter()
+        .map(|constraint| constraint.kind)
+        .chain(pending)
+    {
+        let ConstraintKind::Coincident {
+            point: id,
+            onto: CoincidentTarget::Curve(SketchCurve::Spline(spline)),
+        } = kind
+        else {
+            continue;
+        };
+        let already = stations
+            .iter()
+            .any(|held| held.point == id && held.spline == spline);
+        let held_here = local_splines
+            .iter()
+            .any(|(candidate, _)| *candidate == spline);
+        if already || !held_here {
+            continue;
+        }
+        let Some(at) = sketch
+            .points
+            .iter()
+            .find(|point| point.id == id)
+            .map(|point| point.at.in_plane())
+        else {
+            continue;
+        };
+        let Some(seed) = station_seed(sketch, spline, at) else {
+            continue;
+        };
+        let column = builder
+            .add_free_spline_station(seed)
+            .map_err(PrepareError::InvalidLocalProblem)?;
+        stations.push(StationColumn {
+            point: id,
+            spline,
+            column,
+        });
+    }
+
     let local_constraints = add_constraints(
         &mut builder,
         constraints,
-        &points,
-        &segments,
-        &local_arcs,
-        &local_circles,
-        &sketch.splines,
+        &LocalHandles {
+            points: &points,
+            segments: &segments,
+            arcs: &local_arcs,
+            circles: &local_circles,
+            splines: &local_splines,
+            stations: &stations,
+            drawn: &sketch.splines,
+        },
     );
     let problem = builder
         .finish()
@@ -1930,6 +2142,8 @@ pub(super) fn prepare_scoped(
         arcs: local_arcs,
         circles: local_circles,
         constraints: local_constraints,
+        local_splines,
+        stations,
         splines: sketch.splines.clone(),
     })
 }

@@ -88,6 +88,38 @@ pub fn fit_point_spline(
     Ok(SplineCandidate { pieces, closed })
 }
 
+/// How much curve one unit of a point's STATION along this spline spends.
+///
+/// A station is held in length units rather than in pieces, for the reason an arc's radius is
+/// held as itself rather than as its logarithm: a solve spends the coordinate whose derivative is
+/// largest first, and a station that walked a whole piece per unit would be the cheapest thing in
+/// the drawing, so every solve would pay with it instead of with the geometry the author is
+/// actually holding. One unit of station is about one unit of travel, and the exchange rate with
+/// a position is one to one.
+///
+/// Measured on the control polygon, which is what makes it cheap enough to ask for on the way in.
+/// It is a UNIT, captured once from the curve a constraint was built against and then held fixed
+/// while that curve deforms — a scale that drifted with the shape would move the point the author
+/// pinned every time a neighbouring fit point did. A curve with no length answers one, because a
+/// unit of zero is not a unit.
+#[must_use]
+pub fn station_length(candidate: &SplineCandidate) -> f64 {
+    let total: f64 = candidate
+        .pieces
+        .iter()
+        .map(|piece| {
+            let (start, end) = (piece.control[0], piece.control[3]);
+            (end[0] - start[0]).hypot(end[1] - start[1])
+        })
+        .sum();
+    let pieces = u32::try_from(candidate.pieces.len()).unwrap_or(u32::MAX);
+    let count = f64::from(pieces);
+    if !total.is_finite() || total <= f64::EPSILON || count <= 0.0 {
+        return 1.0;
+    }
+    total / count
+}
+
 /// Convert a clamped uniform control-point spline into exact cubic Bézier spans.
 ///
 /// # Degree follows the control count

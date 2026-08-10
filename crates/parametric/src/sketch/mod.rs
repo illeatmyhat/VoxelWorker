@@ -60,10 +60,12 @@ pub use solve::{
     concentric_center, Analysis, AngleArm, ArcId, BuildError, CircleId, ConstraintId,
     CurrentValidation, Diagnostics, DragOutcome, Hand, HandRole, KeptQuantity, ParameterId,
     ParameterKind, ParameterValue, PointId, Problem, ProblemBuilder, Relation, RequestError,
-    SegmentId, Settled, SketchCurve, SnapReach, Solution, TangentContactFailure, TrialAdd,
-    TrialRejection,
+    SegmentId, Settled, SketchCurve, SnapReach, Solution, SplineId, TangentContactFailure,
+    TrialAdd, TrialRejection,
 };
-pub use spline::{control_point_spline, fit_point_spline, SplineCandidate, SplineCandidateError};
+pub use spline::{
+    control_point_spline, fit_point_spline, station_length, SplineCandidate, SplineCandidateError,
+};
 pub use symmetry::{
     choose_symmetry_branch, symmetry_axis_is_valid, symmetry_witness, SymmetryBranch,
     SymmetryError, SymmetryWitness,

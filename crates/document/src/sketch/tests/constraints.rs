@@ -1339,8 +1339,9 @@ fn a_point_lands_on_the_circle_an_arc_is_cut_from() {
     );
 }
 
-/// An endpoint is already on its own line, so the row could never be violated; and a higher curve
-/// has no support the kernel models to put a point on.
+/// An endpoint is already on its own line, so the row could never be violated; a point that SHAPES
+/// a spline is the same vacuity one curve up; and a curve the kernel can name no place along has
+/// nothing to stand on at all.
 #[test]
 fn a_vacuous_or_unmodelled_point_on_curve_is_refused() {
     let mut sketch = Sketch::empty(PlaneAxis::Z);
@@ -1355,6 +1356,19 @@ fn a_vacuous_or_unmodelled_point_on_curve_is_refused() {
             SketchPoint::new(13, 8),
         ])
         .expect("a spline");
+    let ellipse = sketch
+        .add_ellipse(
+            SketchPoint::new(0, 40),
+            SketchPoint::new(10, 40),
+            SketchPoint::new(0, 44),
+        )
+        .expect("an ellipse");
+    let control = sketch
+        .splines
+        .iter()
+        .find(|held| held.id == spline)
+        .expect("the spline")
+        .points[1];
 
     assert_eq!(
         sketch.add_constraint(
@@ -1369,13 +1383,35 @@ fn a_vacuous_or_unmodelled_point_on_curve_is_refused() {
     assert_eq!(
         sketch.add_constraint(
             ConstraintKind::Coincident {
-                point: tail,
+                point: control,
                 onto: CoincidentTarget::Curve(SketchCurve::Spline(spline)),
+            },
+            ctx(16)
+        ),
+        Err(ConstraintRefusal::Impossible),
+        "a point that draws the curve cannot also be held to it"
+    );
+    assert_eq!(
+        sketch.add_constraint(
+            ConstraintKind::Coincident {
+                point: tail,
+                onto: CoincidentTarget::Curve(SketchCurve::Ellipse(ellipse)),
             },
             ctx(16)
         ),
         Err(ConstraintRefusal::UnknownEntity)
     );
+    // And the spline itself is not among the refusals: a point that does not draw it can stand
+    // on it, which is the whole reason the two predicates differ.
+    sketch
+        .add_constraint(
+            ConstraintKind::Coincident {
+                point: tail,
+                onto: CoincidentTarget::Curve(SketchCurve::Spline(spline)),
+            },
+            ctx(16),
+        )
+        .expect("a free point can stand on a spline");
 }
 
 /// Collinear says parallel AND no offset, which is why it spends two freedoms where Parallel
@@ -3842,6 +3878,153 @@ fn a_curve_kind_carries_relation_geometry_exactly_when_the_drawing_can_produce_i
             "the two answers disagree for {curve:?}"
         );
     }
+}
+
+/// **A point can be held ON a spline, and among the aggregates only on a spline.**
+///
+/// The sibling of the invariant above, asking the wider question. Reading a shape and standing
+/// somewhere along one are different demands: a spline has no center, radius or direction and
+/// still has a place everywhere along it, so the two predicates are deliberately not the same.
+/// This is where the difference is stated, rather than left to be inferred from which picks the
+/// drawing happens to accept.
+#[test]
+fn a_curve_kind_can_hold_a_point_exactly_when_the_drawing_accepts_the_coincidence() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let tail = sketch.add_free_point(SketchPoint::new(0, 0));
+    let head = sketch.add_free_point(SketchPoint::new(10, 0));
+    let every_kind = [
+        SketchCurve::Segment(sketch.connect(tail, head).expect("a segment")),
+        SketchCurve::Arc(
+            sketch
+                .connect_arc(tail, head, AngleMeasurement::from_degrees(90))
+                .expect("an arc"),
+        ),
+        SketchCurve::Circle(
+            sketch
+                .add_circle(SketchPoint::new(0, 20), SketchLength::new(4))
+                .expect("a circle"),
+        ),
+        SketchCurve::Bezier(
+            sketch
+                .add_cubic_bezier([
+                    SketchPoint::new(0, 30),
+                    SketchPoint::new(4, 34),
+                    SketchPoint::new(8, 34),
+                    SketchPoint::new(12, 30),
+                ])
+                .expect("a bezier"),
+        ),
+        SketchCurve::Ellipse(
+            sketch
+                .add_ellipse(
+                    SketchPoint::new(0, 40),
+                    SketchPoint::new(10, 40),
+                    SketchPoint::new(0, 44),
+                )
+                .expect("an ellipse"),
+        ),
+        SketchCurve::Conic(
+            sketch
+                .add_conic(
+                    SketchPoint::new(0, 50),
+                    SketchPoint::new(10, 50),
+                    SketchPoint::new(5, 55),
+                    0.5,
+                )
+                .expect("a conic"),
+        ),
+        SketchCurve::Spline(
+            sketch
+                .add_fit_point_spline(
+                    &[
+                        SketchPoint::new(0, 60),
+                        SketchPoint::new(5, 64),
+                        SketchPoint::new(10, 60),
+                    ],
+                    false,
+                )
+                .expect("a spline"),
+        ),
+    ];
+    for (step, curve) in every_kind.into_iter().enumerate() {
+        // A fresh point each time, standing well off every curve so nothing but the coincidence
+        // under test decides the answer.
+        let standing = sketch.add_free_point(SketchPoint::from_continuous(
+            -20.0,
+            5.0 * f64::from(u32::try_from(step).expect("a small count")),
+        ));
+        let held = sketch
+            .add_constraint(
+                ConstraintKind::Coincident {
+                    point: standing,
+                    onto: CoincidentTarget::Curve(curve),
+                },
+                ctx(16),
+            )
+            .is_ok();
+        assert_eq!(
+            curve.can_hold_a_point(),
+            held,
+            "the two answers disagree for {curve:?}"
+        );
+    }
+}
+
+/// **A point held to a spline rides the curve when the curve is redrawn.**
+///
+/// Which is the whole of the difference between a coincidence and a snap. A snap puts the point
+/// where the curve was when the author clicked; the hold keeps it there afterwards, and the only
+/// way to keep a point on a spline is for the solve to be free to choose where along it stands.
+#[test]
+fn a_point_held_to_a_spline_rides_it_when_the_spline_is_redrawn() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let spline = sketch
+        .add_fit_point_spline(
+            &[
+                SketchPoint::new(0, 0),
+                SketchPoint::new(10, 6),
+                SketchPoint::new(20, 0),
+            ],
+            false,
+        )
+        .expect("a spline");
+    let middle = sketch
+        .splines
+        .iter()
+        .find(|held| held.id == spline)
+        .expect("the spline")
+        .points[1];
+    let standing = sketch.add_free_point(SketchPoint::from_continuous(10.0, 2.0));
+    sketch
+        .add_constraint(
+            ConstraintKind::Coincident {
+                point: standing,
+                onto: CoincidentTarget::Curve(SketchCurve::Spline(spline)),
+            },
+            ctx(16),
+        )
+        .expect("a point can stand on a spline");
+    let landed = position(&sketch, standing);
+    assert!(
+        (landed[1] - 2.0).abs() > 1.0,
+        "the hold should have pulled the point onto the curve, it sits at {landed:?}"
+    );
+
+    // Redraw the spline under it by pinning the middle fit point somewhere else.
+    sketch
+        .add_constraint(
+            ConstraintKind::Fix {
+                point: middle,
+                at: SketchPoint::new(10, 16),
+            },
+            ctx(16),
+        )
+        .expect("the fit point can be pinned");
+    let rode = position(&sketch, standing);
+    assert!(
+        rode[1] > landed[1] + 1.0,
+        "the point should have been carried up with the curve: {landed:?} to {rode:?}"
+    );
 }
 
 /// A rectangle dragged by a corner RESIZES. It does not slide across the plane.
