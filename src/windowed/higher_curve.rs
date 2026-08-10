@@ -8,6 +8,7 @@ use document::sketch::{SketchPoint, SketchSolid};
 use substrate::rational_bezier::RationalBezier;
 
 use document::sketch::SketchTarget;
+use parametric::EvaluationContext;
 
 /// How many conic picks are banked once the shoulder step begins: two anchors and the control
 /// point. The step after them cannot fail, so it is the one step exempt from the gates that
@@ -32,7 +33,10 @@ pub(super) enum HigherCurveEdit {
 struct PendingHigherCurve {
     owner: NodeId,
     kind: HigherCurveKind,
-    points: Vec<SketchPoint>,
+    /// The picks as the pointer resolved them, not just where they landed. A pick that becomes a
+    /// point can be held to the curve it was dropped on, and only the whole target says whether
+    /// there was one.
+    picks: Vec<SketchTarget>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -49,7 +53,7 @@ impl HigherCurveGesture {
         self.pending
             .iter()
             .filter(|pending| pending.owner == owner)
-            .flat_map(|pending| pending.points.iter().copied())
+            .flat_map(|pending| pending.picks.iter().map(|pick| pick.at()))
             .collect()
     }
 
@@ -95,6 +99,7 @@ impl HigherCurveGesture {
         kind: HigherCurveKind,
         producer: &SketchSolid,
         target: Option<SketchTarget>,
+        context: EvaluationContext,
     ) -> HigherCurveEdit {
         let Some(target) = target else {
             return HigherCurveEdit::InteractionOnly;
@@ -107,7 +112,7 @@ impl HigherCurveGesture {
             self.pending = Some(PendingHigherCurve {
                 owner,
                 kind,
-                points: vec![target.at()],
+                picks: vec![target],
             });
             return HigherCurveEdit::InteractionOnly;
         }
@@ -126,22 +131,22 @@ impl HigherCurveGesture {
         // goes". The clamp already keeps that off the degenerate end, and this step is the one the
         // author cannot fail.
         let shoulder_step =
-            kind == HigherCurveKind::Conic && pending.points.len() == CONIC_SHOULDER_PICK;
+            kind == HigherCurveKind::Conic && pending.picks.len() == CONIC_SHOULDER_PICK;
         if !shoulder_step
             && pending
-                .points
+                .picks
                 .last()
-                .is_some_and(|point| point.coincides(&target.at()))
+                .is_some_and(|pick| pick.at().coincides(&target.at()))
         {
             return HigherCurveEdit::InteractionOnly;
         }
         if kind == HigherCurveKind::FitPointSpline
-            && pending.points.len() >= 3
-            && pending.points[0].coincides(&target.at())
+            && pending.picks.len() >= 3
+            && pending.picks[0].at().coincides(&target.at())
         {
-            return self.finish_with(producer, true);
+            return self.finish_with(producer, true, context);
         }
-        pending.points.push(target.at());
+        pending.picks.push(target);
         // The conic takes a FOURTH pick the ellipse does not. Two anchors and a control point fix
         // a whole FAMILY of curves, not one: how hard the control point pulls is still free, and
         // that freedom is the difference between an elliptic, parabolic and hyperbolic curve
@@ -151,14 +156,14 @@ impl HigherCurveGesture {
             HigherCurveKind::Conic => 4,
             HigherCurveKind::FitPointSpline | HigherCurveKind::ControlPointSpline => usize::MAX,
         };
-        if pending.points.len() == arity {
+        if pending.picks.len() == arity {
             let mut restore = pending.clone();
-            let edit = self.finish_with(producer, false);
+            let edit = self.finish_with(producer, false, context);
             if matches!(edit, HigherCurveEdit::InteractionOnly) {
                 // The completing pick named no curve. Consuming the gesture here would charge the
                 // author every earlier pick for one bad cursor position, so it comes back minus
                 // the pick that answered nothing, ready for another try at the last step.
-                restore.points.pop();
+                restore.picks.pop();
                 self.pending = Some(restore);
             }
             return edit;
@@ -167,22 +172,32 @@ impl HigherCurveGesture {
     }
 
     /// Finish an open repeated-point spline on Enter. Fixed-arity tools ignore Enter.
-    pub fn finish(&mut self, producer: &SketchSolid) -> HigherCurveEdit {
-        self.finish_with(producer, false)
+    pub fn finish(
+        &mut self,
+        producer: &SketchSolid,
+        context: EvaluationContext,
+    ) -> HigherCurveEdit {
+        self.finish_with(producer, false, context)
     }
 
-    fn finish_with(&mut self, producer: &SketchSolid, closed: bool) -> HigherCurveEdit {
+    fn finish_with(
+        &mut self,
+        producer: &SketchSolid,
+        closed: bool,
+        context: EvaluationContext,
+    ) -> HigherCurveEdit {
         let Some(pending) = self.pending.take() else {
             return HigherCurveEdit::InteractionOnly;
         };
         let mut next = producer.clone();
+        let at: Vec<SketchPoint> = pending.picks.iter().map(|pick| pick.at()).collect();
         let made = match pending.kind {
-            HigherCurveKind::Ellipse => pending.points.get(..3).and_then(|points| {
+            HigherCurveKind::Ellipse => at.get(..3).and_then(|points| {
                 next.sketch
                     .add_ellipse(points[0], points[1], points[2])
                     .ok()
             }),
-            HigherCurveKind::Conic => pending.points.get(..4).and_then(|points| {
+            HigherCurveKind::Conic => at.get(..4).and_then(|points| {
                 // The third pick IS what the document stores: the control point the author placed,
                 // which stays grabbable afterwards. The fourth pick slid the shoulder along the
                 // track to say how hard it pulls, and all it contributes is rho.
@@ -191,17 +206,37 @@ impl HigherCurveGesture {
                     .add_conic(points[0], points[1], points[2], resolved.rho)
                     .ok()
             }),
-            HigherCurveKind::FitPointSpline => next
-                .sketch
-                .add_fit_point_spline(&pending.points, closed)
-                .ok(),
-            HigherCurveKind::ControlPointSpline => {
-                next.sketch.add_control_point_spline(&pending.points).ok()
-            }
+            HigherCurveKind::FitPointSpline => next.sketch.add_fit_point_spline(&at, closed).ok(),
+            HigherCurveKind::ControlPointSpline => next.sketch.add_control_point_spline(&at).ok(),
         };
-        made.map_or(HigherCurveEdit::InteractionOnly, |_| {
-            HigherCurveEdit::Document(next)
-        })
+        let Some(made) = made else {
+            return HigherCurveEdit::InteractionOnly;
+        };
+        // A pick that became a point is held to the curve it was dropped on. Which picks those are
+        // is the grammar's own answer: a spline's are all of them, a conic's are its two anchors
+        // and the control point, and its shoulder is not one because it only carries rho. An
+        // ellipse's three picks fix a center and two axis lengths, so they snap and assert nothing
+        // — the same affordance on the way in, a different meaning at the click.
+        let held: Vec<document::sketch::EntityId> = match pending.kind {
+            HigherCurveKind::Ellipse => Vec::new(),
+            HigherCurveKind::Conic => next
+                .sketch
+                .conics()
+                .iter()
+                .find(|conic| conic.id == made)
+                .map(|conic| vec![conic.from, conic.to, conic.control])
+                .unwrap_or_default(),
+            HigherCurveKind::FitPointSpline | HigherCurveKind::ControlPointSpline => next
+                .sketch
+                .splines()
+                .iter()
+                .find(|spline| spline.id == made)
+                .map(|spline| spline.points.clone())
+                .unwrap_or_default(),
+        };
+        next.sketch
+            .hold_points_to_picks(&held, &pending.picks, context);
+        HigherCurveEdit::Document(next)
     }
 
     /// Whether clicking here would author nothing — a conic control point on its own chord.
@@ -225,9 +260,9 @@ impl HigherCurveGesture {
         };
         match kind {
             HigherCurveKind::Conic => {
-                pending.points.len() == 2
-                    && pending.points.get(..2).is_some_and(|anchors| {
-                        conic_from_picks(anchors[0], anchors[1], cursor, None).is_none()
+                pending.picks.len() == 2
+                    && pending.picks.get(..2).is_some_and(|anchors| {
+                        conic_from_picks(anchors[0].at(), anchors[1].at(), cursor, None).is_none()
                     })
             }
             HigherCurveKind::Ellipse
@@ -254,10 +289,10 @@ impl HigherCurveGesture {
             .as_ref()
             .filter(|pending| pending.owner == owner && pending.kind == kind)?;
         let picks = pending
-            .points
+            .picks
             .get(..3)
-            .filter(|_| pending.points.len() == 3)?;
-        let resolved = conic_from_picks(picks[0], picks[1], picks[2], Some(cursor))?;
+            .filter(|_| pending.picks.len() == 3)?;
+        let resolved = conic_from_picks(picks[0].at(), picks[1].at(), picks[2].at(), Some(cursor))?;
         Some((resolved.track, resolved.shoulder))
     }
 
@@ -276,7 +311,7 @@ impl HigherCurveGesture {
         else {
             return Vec::new();
         };
-        let mut points = pending.points.clone();
+        let mut points: Vec<SketchPoint> = pending.picks.iter().map(|pick| pick.at()).collect();
         // On the shoulder step the cursor always counts, even resting on the control point: drop it
         // there and the preview falls back to the three-pick parabolic default, so hovering the far
         // end of the track flickers the curve away from what the click would make.
@@ -382,7 +417,12 @@ fn flatten_joined(curves: Vec<RationalBezier>) -> Vec<[f64; 2]> {
 #[allow(clippy::panic, clippy::expect_used)]
 mod tests {
     use super::*;
+
     use document::sketch::{PlaneAxis, Sketch};
+
+    fn context() -> EvaluationContext {
+        EvaluationContext::new(std::num::NonZeroU32::new(16).expect("16 is not zero"))
+    }
 
     fn target(x: i64, y: i64) -> SketchTarget {
         SketchTarget::fresh(SketchPoint::new(x, y))
@@ -399,9 +439,9 @@ mod tests {
             (HigherCurveKind::Conic, Some(target(2, 2))),
         ] {
             let mut gesture = HigherCurveGesture::default();
-            gesture.click(owner, kind, &source, Some(target(0, 0)));
-            gesture.click(owner, kind, &source, Some(target(5, 0)));
-            let third = gesture.click(owner, kind, &source, Some(target(2, 3)));
+            gesture.click(owner, kind, &source, Some(target(0, 0)), context());
+            gesture.click(owner, kind, &source, Some(target(5, 0)), context());
+            let third = gesture.click(owner, kind, &source, Some(target(2, 3)), context());
             let made = match shoulder {
                 None => third,
                 Some(shoulder) => {
@@ -409,7 +449,7 @@ mod tests {
                         matches!(third, HigherCurveEdit::InteractionOnly),
                         "a conic's control point leaves its pull unchosen"
                     );
-                    gesture.click(owner, kind, &source, Some(shoulder))
+                    gesture.click(owner, kind, &source, Some(shoulder), context())
                 }
             };
             assert!(matches!(made, HigherCurveEdit::Document(_)));
@@ -429,11 +469,21 @@ mod tests {
         let rho_for = |shoulder: SketchTarget| {
             let mut gesture = HigherCurveGesture::default();
             for point in [target(0, 0), target(8, 0), target(4, 8)] {
-                gesture.click(owner, HigherCurveKind::Conic, &source, Some(point));
+                gesture.click(
+                    owner,
+                    HigherCurveKind::Conic,
+                    &source,
+                    Some(point),
+                    context(),
+                );
             }
-            let HigherCurveEdit::Document(made) =
-                gesture.click(owner, HigherCurveKind::Conic, &source, Some(shoulder))
-            else {
+            let HigherCurveEdit::Document(made) = gesture.click(
+                owner,
+                HigherCurveKind::Conic,
+                &source,
+                Some(shoulder),
+                context(),
+            ) else {
                 panic!("the shoulder pick commits")
             };
             made.sketch.conics()[0].rho.value()
@@ -458,9 +508,21 @@ mod tests {
         for overshoot in [target(4, -40), target(4, 40)] {
             let mut gesture = HigherCurveGesture::default();
             for point in [target(0, 0), target(8, 0), target(4, 8)] {
-                gesture.click(owner, HigherCurveKind::Conic, &source, Some(point));
+                gesture.click(
+                    owner,
+                    HigherCurveKind::Conic,
+                    &source,
+                    Some(point),
+                    context(),
+                );
             }
-            let made = gesture.click(owner, HigherCurveKind::Conic, &source, Some(overshoot));
+            let made = gesture.click(
+                owner,
+                HigherCurveKind::Conic,
+                &source,
+                Some(overshoot),
+                context(),
+            );
             assert!(matches!(made, HigherCurveEdit::Document(_)));
         }
     }
@@ -474,15 +536,25 @@ mod tests {
         let source = SketchSolid::extrude(Sketch::empty(PlaneAxis::Z), 3);
         let mut gesture = HigherCurveGesture::default();
         for point in [target(0, 0), target(8, 0), target(4, 8)] {
-            gesture.click(owner, HigherCurveKind::Conic, &source, Some(point));
+            gesture.click(
+                owner,
+                HigherCurveKind::Conic,
+                &source,
+                Some(point),
+                context(),
+            );
         }
         let resting = gesture.preview(owner, HigherCurveKind::Conic, SketchPoint::new(4, 8));
         let halfway = gesture.preview(owner, HigherCurveKind::Conic, SketchPoint::new(4, 4));
         assert_ne!(resting, halfway, "the track's far end is its own reading");
 
-        let HigherCurveEdit::Document(made) =
-            gesture.click(owner, HigherCurveKind::Conic, &source, Some(target(4, 8)))
-        else {
+        let HigherCurveEdit::Document(made) = gesture.click(
+            owner,
+            HigherCurveKind::Conic,
+            &source,
+            Some(target(4, 8)),
+            context(),
+        ) else {
             panic!("the shoulder pick commits even on the control point")
         };
         assert!(made.sketch.conics()[0].rho.value() > 0.99);
@@ -497,13 +569,37 @@ mod tests {
         let source = SketchSolid::extrude(Sketch::empty(PlaneAxis::Z), 3);
         let mut gesture = HigherCurveGesture::default();
         for point in [target(0, 0), target(8, 0)] {
-            gesture.click(owner, HigherCurveKind::Conic, &source, Some(point));
+            gesture.click(
+                owner,
+                HigherCurveKind::Conic,
+                &source,
+                Some(point),
+                context(),
+            );
         }
-        let declined = gesture.click(owner, HigherCurveKind::Conic, &source, Some(target(4, 0)));
+        let declined = gesture.click(
+            owner,
+            HigherCurveKind::Conic,
+            &source,
+            Some(target(4, 0)),
+            context(),
+        );
         assert!(matches!(declined, HigherCurveEdit::InteractionOnly));
         assert_eq!(gesture.placed_points(owner).len(), 2);
-        gesture.click(owner, HigherCurveKind::Conic, &source, Some(target(4, 8)));
-        let made = gesture.click(owner, HigherCurveKind::Conic, &source, Some(target(4, 4)));
+        gesture.click(
+            owner,
+            HigherCurveKind::Conic,
+            &source,
+            Some(target(4, 8)),
+            context(),
+        );
+        let made = gesture.click(
+            owner,
+            HigherCurveKind::Conic,
+            &source,
+            Some(target(4, 4)),
+            context(),
+        );
         assert!(matches!(made, HigherCurveEdit::Document(_)));
     }
 
@@ -515,7 +611,13 @@ mod tests {
         let source = SketchSolid::extrude(Sketch::empty(PlaneAxis::Z), 3);
         let mut gesture = HigherCurveGesture::default();
         for point in [target(0, 0), target(8, 0)] {
-            gesture.click(owner, HigherCurveKind::Conic, &source, Some(point));
+            gesture.click(
+                owner,
+                HigherCurveKind::Conic,
+                &source,
+                Some(point),
+                context(),
+            );
         }
         let bending = gesture.preview(owner, HigherCurveKind::Conic, SketchPoint::new(4, 8));
         assert!(
@@ -526,7 +628,13 @@ mod tests {
         assert!(gesture
             .conic_shoulder_gizmo(owner, HigherCurveKind::Conic, SketchPoint::new(4, 4))
             .is_none());
-        gesture.click(owner, HigherCurveKind::Conic, &source, Some(target(4, 8)));
+        gesture.click(
+            owner,
+            HigherCurveKind::Conic,
+            &source,
+            Some(target(4, 8)),
+            context(),
+        );
         let (track, shoulder) = gesture
             .conic_shoulder_gizmo(owner, HigherCurveKind::Conic, SketchPoint::new(4, 6))
             .expect("the shoulder gizmo is live once the control point is down");
@@ -540,17 +648,121 @@ mod tests {
         let source = SketchSolid::extrude(Sketch::empty(PlaneAxis::Z), 3);
         let mut gesture = HigherCurveGesture::default();
         for point in [target(0, 0), target(5, 0), target(2, 4)] {
-            gesture.click(owner, HigherCurveKind::FitPointSpline, &source, Some(point));
+            gesture.click(
+                owner,
+                HigherCurveKind::FitPointSpline,
+                &source,
+                Some(point),
+                context(),
+            );
         }
         let made = gesture.click(
             owner,
             HigherCurveKind::FitPointSpline,
             &source,
             Some(target(0, 0)),
+            context(),
         );
         let HigherCurveEdit::Document(made) = made else {
             panic!("closing pick commits")
         };
         assert!(made.sketch.splines()[0].closed);
+    }
+
+    /// **A fit point is an ordinary point, and an ellipse's picks are not points at all.**
+    ///
+    /// Both gestures offer the same affordance over a curve, and the difference is what the pick
+    /// goes on to be. A spline's picks each become a stored point, so one dropped on a curve is
+    /// held there like any other point; an ellipse's three fix a center and two axis lengths and
+    /// are gone by the time the ellipse exists, so the pick has nothing left to assert with.
+    ///
+    /// A spline mints its points during the build rather than resolving them beforehand, which is
+    /// why the hold is applied to what the build produced. That is the part worth pinning: get it
+    /// wrong and the coincidence lands on a point nobody kept.
+    #[test]
+    fn a_fit_point_dropped_on_a_curve_is_held_and_an_ellipse_pick_is_not() {
+        let owner = NodeId(7);
+        let source = SketchSolid::extrude(Sketch::empty(PlaneAxis::Z), 3);
+        let (with_tail, tail) = source.with_point_placed(SketchPoint::new(0, 4));
+        let (with_head, head) = with_tail.with_point_placed(SketchPoint::new(40, 4));
+        let (rail, segment) = with_head
+            .with_segment_between_traced(tail, head)
+            .expect("a rail to drop picks on");
+        let on_the_rail = SketchTarget::Fresh {
+            at: SketchPoint::new(20, 4),
+            onto: Some(segment),
+        };
+        let held_to_the_rail = |made: &SketchSolid, point| {
+            made.sketch.constraints().iter().any(|constraint| {
+                constraint.kind
+                    == document::sketch::ConstraintKind::Coincident {
+                        point,
+                        onto: document::sketch::CoincidentTarget::Curve(segment),
+                    }
+            })
+        };
+
+        let mut spline = HigherCurveGesture::default();
+        for pick in [target(0, 0), on_the_rail, target(30, 0)] {
+            spline.click(
+                owner,
+                HigherCurveKind::FitPointSpline,
+                &rail,
+                Some(pick),
+                context(),
+            );
+        }
+        let HigherCurveEdit::Document(made) = spline.finish(&rail, context()) else {
+            panic!("Enter finishes the spline open")
+        };
+        let of_the_spline: Vec<document::sketch::EntityId> = made
+            .sketch
+            .splines()
+            .iter()
+            .flat_map(|spline| spline.points.clone())
+            .collect();
+        let fit_point = made
+            .sketch
+            .points()
+            .iter()
+            .find(|point| {
+                of_the_spline.contains(&point.id) && point.at.coincides(&SketchPoint::new(20, 4))
+            })
+            .expect("the pick became one of the spline's stored points")
+            .id;
+        assert!(
+            held_to_the_rail(&made, fit_point),
+            "{:?}",
+            made.sketch.constraints()
+        );
+
+        // The width pick is the one on the rail, and it is the pick that commits.
+        let mut ellipse = HigherCurveGesture::default();
+        for pick in [target(0, 0), target(10, 0)] {
+            ellipse.click(
+                owner,
+                HigherCurveKind::Ellipse,
+                &rail,
+                Some(pick),
+                context(),
+            );
+        }
+        let HigherCurveEdit::Document(made) = ellipse.click(
+            owner,
+            HigherCurveKind::Ellipse,
+            &rail,
+            Some(on_the_rail),
+            context(),
+        ) else {
+            panic!("the third pick settles an ellipse")
+        };
+        assert!(
+            made.sketch
+                .points()
+                .iter()
+                .all(|point| !held_to_the_rail(&made, point.id)),
+            "an axis-length pick asserts nothing: {:?}",
+            made.sketch.constraints()
+        );
     }
 }

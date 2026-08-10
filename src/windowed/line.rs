@@ -710,6 +710,7 @@ mod tests {
             Some(grabbed),
             Some(SketchPoint::new(3, 5)),
             None,
+            context(),
         )
         .unwrap();
         assert_eq!(resolved.existing(), Some(grabbed));

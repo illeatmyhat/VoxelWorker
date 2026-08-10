@@ -1923,6 +1923,29 @@ impl Sketch {
             .collect()
     }
 
+    /// Where on `curve` a pick taken at `at` is standing.
+    ///
+    /// The pick's own position, moved onto the curve it was taken on. A pick that becomes a stored
+    /// point could be left where the cursor was and pulled in by its coincidence, but a pick that
+    /// only fixes a radius or an angle has nothing to pull it, and from the author's side the two
+    /// are the same gesture: the curve was lit, so the pick is on it. Landing here is what makes
+    /// that true of both, and it also means a planted point starts where its own constraint
+    /// already wants it instead of being dragged there by the first solve.
+    ///
+    /// `None` when the curve is gone, or is an aggregate with no single resolved geometry — the
+    /// caller keeps the position it had.
+    #[must_use]
+    pub fn point_on_curve(
+        &self,
+        curve: SketchCurve,
+        at: SketchPoint,
+        context: parametric::EvaluationContext,
+    ) -> Option<SketchPoint> {
+        let geometry = self.planar_curve(curve, context)?;
+        let landed = geometry.point_at(geometry.nearest_parameter(at.in_plane()));
+        Some(SketchPoint::from_continuous(landed[0], landed[1]))
+    }
+
     /// Resolve one persisted curve into continuous relation geometry at this evaluation context.
     pub fn curve_geometry(
         &self,
@@ -5489,6 +5512,39 @@ impl Sketch {
         boxed_retain(&mut self.conics, |conic| conic.id != id);
         if let Some(points) = points {
             self.drop_undrawn_points(points);
+        }
+    }
+
+    /// Hold each of `points` to the curve the pick that named it landed on.
+    ///
+    /// The counterpart of the planting seam for builders that mint their own points: a spline
+    /// allocates a point per fit pick rather than resolving one, so the hold cannot be applied
+    /// before the build and is applied to what the build produced instead.
+    ///
+    /// **A fit point and a control point are ordinary points**, so dropping one on a curve means
+    /// there what it means for a line's endpoint. Picks that only fix a quantity name no point and
+    /// are simply not passed here — a conic's shoulder contributes rho and nothing else, and a
+    /// circle's rim picks fix a radius and are gone by the time the circle exists.
+    ///
+    /// Extra picks or extra points are ignored rather than refused: the zip is a convenience for a
+    /// caller that already knows the two lists correspond.
+    pub fn hold_points_to_picks(
+        &mut self,
+        points: &[EntityId],
+        picks: &[SketchTarget],
+        context: parametric::EvaluationContext,
+    ) {
+        for (point, pick) in points.iter().zip(picks) {
+            let Some(curve) = pick.onto() else {
+                continue;
+            };
+            drop(self.add_constraint(
+                ConstraintKind::Coincident {
+                    point: *point,
+                    onto: CoincidentTarget::Curve(curve),
+                },
+                context,
+            ));
         }
     }
 

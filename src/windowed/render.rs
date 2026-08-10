@@ -2580,6 +2580,7 @@ impl WindowedState {
             existing,
             self.sketch_snapped_point_at(cursor_x, cursor_y),
             hovered,
+            self.sketch_evaluation_context()?,
         )
     }
 
@@ -2868,9 +2869,11 @@ impl WindowedState {
                     self.sketch_node_state(target)
                         .map(|(producer, _)| (target, producer))
                 }) {
-                    let edit = self.higher_curve_gesture.finish(&producer);
-                    if let higher_curve::HigherCurveEdit::Document(next) = edit {
-                        self.commit_sketch_profile_edit(target, next);
+                    if let Some(context) = self.sketch_evaluation_context() {
+                        let edit = self.higher_curve_gesture.finish(&producer, context);
+                        if let higher_curve::HigherCurveEdit::Document(next) = edit {
+                            self.commit_sketch_profile_edit(target, next);
+                        }
                     }
                 }
             }
@@ -2972,10 +2975,14 @@ impl WindowedState {
             self.higher_curve_gesture.reset();
             return;
         };
+        let Some(context) = self.sketch_evaluation_context() else {
+            self.higher_curve_gesture.reset();
+            return;
+        };
         let resolved = self.sketch_target_at(cursor_x, cursor_y);
         let edit = self
             .higher_curve_gesture
-            .click(target, kind, &producer, resolved);
+            .click(target, kind, &producer, resolved, context);
         if let higher_curve::HigherCurveEdit::Document(next) = edit {
             self.commit_sketch_profile_edit(target, next);
         }
@@ -5667,57 +5674,18 @@ impl WindowedState {
         // The segment under the cursor and the state it should draw in. A vertex under the cursor
         // takes priority — it already answers with its own handle state — so a segment lights up
         // only when no vertex is hit, the SAME decision the vertex-grab makes. Reusing that
-        // hit-test keeps the feedback exactly aligned with what a click acts on. Select → Hover
-        // (brighter, "you can pick this edge"); Add-point has its own insert diamond, so
-        // segments stay Idle.
-        let hovered_edge: Option<(SketchEdgeHit, ui::gizmos::HandleState)> = match tool {
-            ui::panel::SketchTool::Select
-            | ui::panel::SketchTool::ArcTangent
-            | ui::panel::SketchTool::Circle2Tangent
-            | ui::panel::SketchTool::Circle3Tangent
-            | ui::panel::SketchTool::BreakCurve
-            | ui::panel::SketchTool::Trim
-            | ui::panel::SketchTool::Extend
-            | ui::panel::SketchTool::Fillet
-            | ui::panel::SketchTool::ChamferEqual
-            | ui::panel::SketchTool::ChamferDistanceAngle
-            | ui::panel::SketchTool::ChamferTwoDistance
-            | ui::panel::SketchTool::Offset => Some(ui::gizmos::HandleState::Hover),
-            // Line and the 3-point arc plant their endpoints, so an edge under the cursor is
-            // what the point will be HELD to and the author has to see it before committing.
-            ui::panel::SketchTool::Line | ui::panel::SketchTool::ThreePointArc => {
+        // hit-test keeps the feedback exactly aligned with what a click acts on.
+        //
+        // A tool that acts on a curve and a tool that takes its picks on one light it the same
+        // way: the highlight answers "the pointer is on that curve", which is the same question
+        // either way. What the tool then does with the answer is [`CurveUnderPointer`]'s to say.
+        let hovered_edge: Option<(SketchEdgeHit, ui::gizmos::HandleState)> = match tool
+            .curve_under_pointer()
+        {
+            ui::panel::CurveUnderPointer::ActedOn | ui::panel::CurveUnderPointer::PickedOn => {
                 Some(ui::gizmos::HandleState::Hover)
             }
-            // Add-point has its own insert diamond; the remaining drawing tools (#99, #102)
-            // target points and empty plane, never an edge.
-            ui::panel::SketchTool::AddPoint
-            | ui::panel::SketchTool::MidpointLine
-            | ui::panel::SketchTool::Rectangle
-            | ui::panel::SketchTool::Rectangle3Point
-            | ui::panel::SketchTool::RectangleCenterCorner
-            | ui::panel::SketchTool::ArcCenterEndpoints
-            | ui::panel::SketchTool::CircleCenterDiameter
-            | ui::panel::SketchTool::Circle2Point
-            | ui::panel::SketchTool::Circle3Point
-            | ui::panel::SketchTool::PolygonInscribed
-            | ui::panel::SketchTool::PolygonCircumscribed
-            | ui::panel::SketchTool::PolygonEdge
-            | ui::panel::SketchTool::SlotCenterToCenter
-            | ui::panel::SketchTool::SlotOverall
-            | ui::panel::SketchTool::SlotCenterPoint
-            | ui::panel::SketchTool::SlotCenterPointArc
-            | ui::panel::SketchTool::Slot3PointArc
-            | ui::panel::SketchTool::Ellipse
-            | ui::panel::SketchTool::Conic
-            | ui::panel::SketchTool::FitPointSpline
-            | ui::panel::SketchTool::ControlPointSpline
-            | ui::panel::SketchTool::MoveCopy
-            | ui::panel::SketchTool::Scale
-            | ui::panel::SketchTool::RectangularPattern
-            | ui::panel::SketchTool::CircularPattern
-            | ui::panel::SketchTool::FillRegion
-            | ui::panel::SketchTool::CarveRegion => None,
-            ui::panel::SketchTool::Mirror => Some(ui::gizmos::HandleState::Hover),
+            ui::panel::CurveUnderPointer::Ignored => None,
         }
         .and_then(|state| {
             self.last_cursor_position.and_then(|(cx, cy)| {
@@ -5742,12 +5710,11 @@ impl WindowedState {
                         })
                         .map(|hit| (hit, state));
                 }
-                // The one seam again: the edge lit is the edge `on_curve` will name, so a point
-                // under the cursor puts the highlight out exactly when it takes the coincidence.
-                if matches!(
-                    tool,
-                    ui::panel::SketchTool::Line | ui::panel::SketchTool::ThreePointArc
-                ) {
+                // The one seam again: a drawing tool's highlight comes from the same resolution its
+                // click will run, so a point under the cursor puts the highlight out exactly when
+                // it takes the pick — the author never sees a curve lit for a click that will
+                // land on a vertex instead.
+                if tool.curve_under_pointer() == ui::panel::CurveUnderPointer::PickedOn {
                     return self
                         .sketch_target_at(cx, cy)
                         .and_then(document::sketch::SketchTarget::onto)

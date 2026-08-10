@@ -445,6 +445,79 @@ impl SketchTool {
         Self::FillRegion,
         Self::CarveRegion,
     ];
+
+    /// What the curve under the pointer is to this tool.
+    ///
+    /// One answer for the whole rail, so the highlight and the click cannot disagree about which
+    /// tools care about a curve.
+    pub const fn curve_under_pointer(self) -> CurveUnderPointer {
+        match self {
+            Self::Select
+            | Self::ArcTangent
+            | Self::Circle2Tangent
+            | Self::Circle3Tangent
+            | Self::BreakCurve
+            | Self::Trim
+            | Self::Extend
+            | Self::Fillet
+            | Self::ChamferEqual
+            | Self::ChamferDistanceAngle
+            | Self::ChamferTwoDistance
+            | Self::Offset
+            | Self::Mirror => CurveUnderPointer::ActedOn,
+            Self::Line
+            | Self::MidpointLine
+            | Self::Rectangle
+            | Self::Rectangle3Point
+            | Self::RectangleCenterCorner
+            | Self::ThreePointArc
+            | Self::ArcCenterEndpoints
+            | Self::CircleCenterDiameter
+            | Self::Circle2Point
+            | Self::Circle3Point
+            | Self::PolygonInscribed
+            | Self::PolygonCircumscribed
+            | Self::PolygonEdge
+            | Self::SlotCenterToCenter
+            | Self::SlotOverall
+            | Self::SlotCenterPoint
+            | Self::SlotCenterPointArc
+            | Self::Slot3PointArc
+            | Self::Ellipse
+            | Self::Conic
+            | Self::FitPointSpline
+            | Self::ControlPointSpline => CurveUnderPointer::PickedOn,
+            // Add-point has its own insert diamond, and the tools below act on a SELECTION rather
+            // than on whatever the pointer is over.
+            Self::AddPoint
+            | Self::MoveCopy
+            | Self::Scale
+            | Self::RectangularPattern
+            | Self::CircularPattern
+            | Self::FillRegion
+            | Self::CarveRegion => CurveUnderPointer::Ignored,
+        }
+    }
+}
+
+/// What the curve under the pointer is to a [`SketchTool`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CurveUnderPointer {
+    /// The click names the curve: it is what will be trimmed, filleted, offset or selected.
+    ActedOn,
+    /// The click lands ON the curve, and the curve is what it lands on.
+    ///
+    /// **Every drawing tool is this one**, and they all offer the same affordance, because the
+    /// affordance answers the question the author is asking — is the pointer on that curve? What
+    /// the answer goes on to MEAN is the tool's business and differs between them. A pick that
+    /// becomes a stored point is held to the curve by a coincidence, so a line's endpoint, a
+    /// spline's fit point and a control point are all ordinary points that inherit the curve they
+    /// were dropped on. A pick that only fixes a quantity asserts nothing: a circle's rim click
+    /// says a radius and is gone by the time the circle exists, so it merely snaps.
+    PickedOn,
+    /// Nothing. Either the tool has its own affordance for what it inserts, or it works from a
+    /// selection made earlier and the pointer is not choosing geometry at all.
+    Ignored,
 }
 
 /// The floating Signal **display stack**'s viewer state.

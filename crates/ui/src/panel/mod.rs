@@ -399,9 +399,9 @@ pub use sketch_constraint::{
     SlotKind,
 };
 pub use state::{
-    AngleSnap, ArmedTool, ExportPanelState, LayerRange, ModeCommand, OrbitCenterRequest, OrbitMode,
-    PanelResponse, PanelState, PlacementGhost, PlacementPivot, PlacementSnap, PositionSnap,
-    SignalStackState, SketchExit, SketchTool, ViewMode,
+    AngleSnap, ArmedTool, CurveUnderPointer, ExportPanelState, LayerRange, ModeCommand,
+    OrbitCenterRequest, OrbitMode, PanelResponse, PanelState, PlacementGhost, PlacementPivot,
+    PlacementSnap, PositionSnap, SignalStackState, SketchExit, SketchTool, ViewMode,
 };
 
 use crate::palette::BlockPalette;
