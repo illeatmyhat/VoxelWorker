@@ -1024,6 +1024,111 @@ fn the_snap_ring_is_inked_from_the_room_left_in_the_cone() {
     }
 }
 
+/// **Sliding a held point along a spline whose pieces are twenty to one is smooth across a knot.**
+///
+/// The ADR 0043 gauge, pointed at the station column. A point held to a spline is held by a
+/// solver coordinate saying WHERE along it the point stands, and that coordinate is held in one
+/// constant unit — the seed curve's total chord over its piece count — rather than being
+/// renormalized per piece. A constant keeps the map C1 at every knot, which is the property the
+/// finite-difference Jacobian rests on; the price is that on a curve whose pieces differ wildly
+/// the unit is right for the average piece and wrong for both extremes.
+///
+/// So this is the witness that makes the price visible: chords of about 1, 20 and 1, and the held
+/// point walked the length of the curve so it crosses both knots. The gauge is the one 0043 uses —
+/// whole-drawing displacement per unit of cursor travel — because a conditioning failure in a
+/// coordinate the drawing pins down least shows up as a single frame that swings hundreds of
+/// times the cursor step, not as a drift.
+///
+/// **Measured: a worst gain of `1.0000014` over all 841 frames.** The drawing moves what the
+/// cursor moves and no more, at both knots and across the twenty-to-one change of scale between
+/// them. The price the constant unit was supposed to charge does not show up at this ratio, which
+/// is what says the deviation from a per-piece normalization cost nothing and bought the C1 join.
+/// The ceiling is the 0043 one rather than anything tighter, so the test states the property
+/// rather than pinning the number.
+///
+/// The fit points are pinned, so the only thing free to answer is the held point and its station.
+/// That is the point: an unpinned spline would let the curve deform and mix two causes into one
+/// number.
+#[test]
+fn sliding_a_held_point_along_an_uneven_spline_is_smooth_across_its_knots() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    // Chords of roughly 1.1, 20 and 1.1 — the twenty-to-one witness.
+    let places = [[0.0, 0.0], [1.0, 0.5], [21.0, 0.5], [22.0, 0.0]];
+    let spline = sketch
+        .add_fit_point_spline(
+            &places.map(|at| SketchPoint::from_continuous(at[0], at[1])),
+            false,
+        )
+        .expect("a spline");
+    let drawn: Vec<EntityId> = sketch
+        .splines
+        .iter()
+        .find(|held| held.id == spline)
+        .expect("the spline")
+        .points
+        .clone();
+    for (point, at) in drawn.iter().zip(places) {
+        sketch
+            .add_constraint(
+                ConstraintKind::Fix {
+                    point: *point,
+                    at: SketchPoint::from_continuous(at[0], at[1]),
+                },
+                ctx(16),
+            )
+            .expect("a fit point can be pinned");
+    }
+    let standing = sketch.add_free_point(SketchPoint::from_continuous(1.0, 1.5));
+    sketch
+        .add_constraint(
+            ConstraintKind::Coincident {
+                point: standing,
+                onto: CoincidentTarget::Curve(SketchCurve::Spline(spline)),
+            },
+            ctx(16),
+        )
+        .expect("a free point can stand on a spline");
+
+    // Walk the cursor the length of the curve, a fortieth of a unit at a time, held above it so
+    // the answer is the station sliding rather than the point being pushed off.
+    let step = 0.025;
+    let mut last: Option<Vec<f64>> = None;
+    let mut worst = 0.0_f64;
+    let mut measured = 0_u32;
+    for tick in 0..=840 {
+        let cursor = [0.5 + f64::from(tick) * step, 1.5];
+        let mut frame = sketch.clone();
+        let Ok(true) = frame.move_point(
+            standing,
+            SketchPoint::from_continuous(cursor[0], cursor[1]),
+            ctx(16),
+        ) else {
+            continue;
+        };
+        measured += 1;
+        let now: Vec<f64> = frame
+            .points()
+            .iter()
+            .flat_map(|point| point.at.in_plane())
+            .collect();
+        if let Some(was) = last.as_ref() {
+            worst = worst.max(spread(was, &now) / step);
+        }
+        last = Some(now);
+    }
+    // A walk that answered nothing would report a gain of zero and pass without measuring, so
+    // the count of answered frames is asserted beside the gain.
+    assert!(
+        measured > 800,
+        "only {measured} of 841 frames answered the cursor"
+    );
+    assert!(
+        worst < 3.0,
+        "a cursor step swung the drawing {worst} times over, so the station column is the \
+         direction the drawing pins down least"
+    );
+}
+
 /// The free sweep is STILL spent arbitrarily when nothing snaps, and this measures how badly.
 ///
 /// [ADR 0043](../../../../../docs/adr/0043-a-snap-lets-go-gradually.md) named the free sweep as the

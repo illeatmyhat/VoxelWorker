@@ -3970,6 +3970,63 @@ fn a_curve_kind_can_hold_a_point_exactly_when_the_drawing_accepts_the_coincidenc
     }
 }
 
+/// **The refused self-reference can be spelled in two steps, and the composed system behaves.**
+///
+/// A point that shapes a spline is turned away from standing on it, and that refusal is UX rather
+/// than a safety rail: a stand-in point coincident to the control point AND to the spline states
+/// the same system through a door that stays open. Worth knowing which it is. If the composed
+/// spelling fell over, the refusal would be load-bearing and the two-step door a hole; it does
+/// not, so the refusal is only the drawing declining to write a claim with no content in it.
+#[test]
+fn the_self_reference_a_spline_refuses_can_still_be_composed_in_two_steps() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let spline = sketch
+        .add_control_point_spline(&[
+            SketchPoint::new(0, 0),
+            SketchPoint::new(4, 8),
+            SketchPoint::new(12, 8),
+            SketchPoint::new(16, 0),
+        ])
+        .expect("a spline");
+    let control = sketch
+        .splines
+        .iter()
+        .find(|held| held.id == spline)
+        .expect("the spline")
+        .points[1];
+
+    let stand_in = sketch.add_free_point(SketchPoint::from_continuous(4.5, 7.0));
+    sketch
+        .add_constraint(
+            ConstraintKind::Coincident {
+                point: stand_in,
+                onto: CoincidentTarget::Curve(SketchCurve::Spline(spline)),
+            },
+            ctx(16),
+        )
+        .expect("the stand-in can stand on the spline");
+    sketch
+        .add_constraint(
+            ConstraintKind::Coincident {
+                point: stand_in,
+                onto: CoincidentTarget::Point(control),
+            },
+            ctx(16),
+        )
+        .expect("and can be tied to the control point");
+
+    // The composed system settles, both halves hold, and nothing ran away.
+    let (at, on) = (position(&sketch, stand_in), position(&sketch, control));
+    assert!(
+        (at[0] - on[0]).hypot(at[1] - on[1]) < 1.0e-6,
+        "the two points came apart: {at:?} against {on:?}"
+    );
+    assert!(
+        at.iter().all(|value| value.abs() < 1.0e3),
+        "the composed system ran away to {at:?}"
+    );
+}
+
 /// **A point held to a spline rides the curve when the curve is redrawn.**
 ///
 /// Which is the whole of the difference between a coincidence and a snap. A snap puts the point
