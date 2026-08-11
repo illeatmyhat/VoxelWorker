@@ -1160,6 +1160,17 @@ impl WindowedState {
         // press that has not left its own start by the drag threshold has not: it is on its way to
         // being a click, and a click makes things active without making them move.
         let began = drag.began || self.pointer_left_the_press();
+        // An arc's ends are told which way round they go BEFORE the point is asserted, because
+        // that is identity rather than position: the swap says which piece of the circle the
+        // author is drawing, and the settle then places the points on it.
+        if began {
+            let hand = snapped.in_plane();
+            if let Some(drag) = self.sketch_drag.as_mut() {
+                for turn in &mut drag.arc_turns {
+                    turn.follow(&mut preview.sketch, hand);
+                }
+            }
+        }
         let moved = match held {
             SketchGrab::Point(id) if began => preview
                 .sketch
@@ -1247,8 +1258,12 @@ impl WindowedState {
             self.end_the_vertex_drag();
             return IntentEffect::none();
         };
+        // A frame the drawing would not stand under is DROPPED, not the end of the gesture. The
+        // hand crossing an arc's far end lands on a frame whose two ends are one dot, which is no
+        // arc and is written nowhere — and it is the single frame the author is most committed to
+        // the wind. Ending there would strand the gesture mid-crossing. Nothing was written, so
+        // the next frame picks up from exactly where this one started.
         if !moved {
-            self.end_the_vertex_drag();
             return IntentEffect::none();
         }
         let Some(new_min) = self.profile_bbox_min(&preview) else {
@@ -5228,6 +5243,9 @@ impl WindowedState {
             original_offset: node.transform.offset_voxels,
             original_min: self.profile_bbox_min(producer)?,
             began: false,
+            arc_turns: held.point().map_or_else(Vec::new, |point| {
+                document::sketch::ArcTurnUnderTheHand::turns_under(&producer.sketch, point)
+            }),
         })
     }
 

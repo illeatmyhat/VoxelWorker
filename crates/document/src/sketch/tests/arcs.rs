@@ -7,7 +7,10 @@ use crate::sketch::{
     arc_center_radius, arc_interior_points, included_angle_through_degrees, EntityId, PlaneAxis,
     Point, PointLifetime, Sketch, SketchPoint, SketchSolid, ARC_SAGITTA_TOLERANCE,
 };
-use crate::sketch::{ConstraintKind, ConstraintRefusal, Dimension, SketchCurve, SketchLength};
+use crate::sketch::{
+    wrapped_into_a_half_turn, ArcTurnUnderTheHand, ConstraintKind, ConstraintRefusal, Dimension,
+    SketchCurve, SketchLength,
+};
 use crate::voxel::VoxelProducer;
 use ::parametric::units::AngleMeasurement;
 use voxel_core::voxel::VoxelGrid;
@@ -161,6 +164,125 @@ fn an_angle_arm_can_be_an_arcs_own_tangent() {
         ),
         Err(ConstraintRefusal::UnknownEntity),
         "the arc went with its endpoint"
+    );
+}
+
+/// **Reversing an arc carries every relation that named one of its ends.**
+///
+/// An arc runs counter-clockwise from `from` to `to`, so drawing it the other way round is a swap
+/// of those two fields — and an [`AngleArm::ArcEnd`](crate::sketch::AngleArm::ArcEnd) names an end
+/// by that field, not by a point id. Swap the fields alone and every angle struck at one end
+/// silently starts reading the other: a tangent that stood vertical starts standing horizontal
+/// under a relation nobody touched.
+///
+/// Measured both ways here. The stored tag says `To` where it said `From`, and the drawing settles
+/// the same: pull the free head right off and the line comes back 30 degrees off the tangent at
+/// `(10,0)`, the dot the author struck the angle at. Without the cascade it comes back 30 degrees
+/// off the tangent at `(0,10)` instead, which reads 60 at the dot that was named.
+#[test]
+fn reversing_an_arc_carries_the_angles_struck_at_its_ends() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let start = sketch.add_free_point(SketchPoint::new(10, 0));
+    let finish = sketch.add_free_point(SketchPoint::new(0, 10));
+    let arc = sketch
+        .connect_arc(start, finish, AngleMeasurement::from_degrees(90))
+        .expect("a quarter arc");
+    let held_arc = *sketch
+        .arcs()
+        .iter()
+        .find(|held| held.id == arc)
+        .expect("the arc");
+    for point in [held_arc.center, held_arc.from, held_arc.to] {
+        let at = sketch
+            .points()
+            .iter()
+            .find(|held| held.id == point)
+            .expect("the point")
+            .at;
+        sketch
+            .add_constraint(ConstraintKind::Fix { point, at }, ctx(16))
+            .expect("pinning a point where it already is");
+    }
+    let tail = sketch.add_free_point(SketchPoint::new(10, 0));
+    let head = sketch.add_free_point(SketchPoint::new(20, 4));
+    let line = sketch.connect(tail, head).expect("a free line");
+    sketch
+        .add_constraint(
+            ConstraintKind::Fix {
+                point: tail,
+                at: SketchPoint::new(10, 0),
+            },
+            ctx(16),
+        )
+        .expect("pinning the line's tail at the arc's end");
+    sketch
+        .add_constraint(
+            ConstraintKind::Dimension(Dimension::Angle {
+                first: crate::sketch::AngleArm::ArcEnd {
+                    arc,
+                    end: crate::sketch::ArcEnd::From,
+                },
+                second: crate::sketch::AngleArm::Segment { segment: line },
+                degrees: AngleMeasurement::from_degrees(30),
+                corner: crate::sketch::AngleCorner::Between,
+            }),
+            ctx(16),
+        )
+        .expect("a free line can always stand thirty degrees off a pinned tangent");
+
+    assert!(sketch.reverse_arc(arc), "an arc that is there reverses");
+    let reversed = *sketch
+        .arcs()
+        .iter()
+        .find(|held| held.id == arc)
+        .expect("the arc");
+    assert_eq!(
+        (reversed.from, reversed.to),
+        (finish, start),
+        "the two ends swapped"
+    );
+    let arm = sketch
+        .constraints()
+        .iter()
+        .find_map(|held| match held.kind {
+            ConstraintKind::Dimension(Dimension::Angle { first, .. }) => Some(first),
+            _ => None,
+        })
+        .expect("the angle is still stored");
+    assert_eq!(
+        arm,
+        crate::sketch::AngleArm::ArcEnd {
+            arc,
+            end: crate::sketch::ArcEnd::To,
+        },
+        "the arm followed the end it named to its new field"
+    );
+
+    // Pull the head well off and let the drawing answer: the angle is imposed at the dot the
+    // author struck it at, whichever field that dot is stored in now.
+    sketch
+        .move_point(head, SketchPoint::from_continuous(30.0, -6.0), ctx(16))
+        .expect("evaluation context");
+    let at = |id: EntityId| {
+        sketch
+            .points()
+            .iter()
+            .find(|held| held.id == id)
+            .expect("the point")
+            .at
+            .in_plane()
+    };
+    let (tail_at, head_at) = (at(tail), at(head));
+    let line_bearing = (head_at[1] - tail_at[1])
+        .atan2(head_at[0] - tail_at[0])
+        .to_degrees();
+    // The tangent at (10,0) about the origin runs straight up, and the residual is a sine, so
+    // thirty either side of it is the same claim.
+    let off_the_tangent = (line_bearing - 90.0).rem_euclid(180.0);
+    let turn = off_the_tangent.min(180.0 - off_the_tangent);
+    assert!(
+        (turn - 30.0).abs() < 1e-6,
+        "thirty degrees off the tangent at (10,0), got {turn} (line bears {line_bearing})"
     );
 }
 
@@ -1124,4 +1246,88 @@ fn seating_the_drawing_twice_moves_nothing_the_first_seat_did_not() {
             before.id
         );
     }
+}
+
+/// **An end walked past the other end keeps drawing the same arc, on the other side.**
+///
+/// The seam an arc's own reading cannot smooth over. `counter_clockwise_sweep` is right that its
+/// jump is honest — a hair short of closing is a hair short of a whole turn, and a hair past is a
+/// hair past zero, and those are two genuinely different arcs. What is wrong is asking the reading
+/// to answer a question about a HAND. The author turning an end past the far one drew one
+/// continuous motion, so the curve under it has to be continuous too, and the only way an arc
+/// changes direction is for its ends to swap.
+///
+/// Walked a whole turn and a quarter, so BOTH seams are crossed: the ends meeting at zero, and the
+/// ends meeting again a full turn later. Measured before the fix, the first crossing took the
+/// sweep from 15 degrees to 342 in one 15-degree step, collapsed the radius from 56.57 to 40, and
+/// then left it stuck at 23.91 while the far end's bearing drifted from -45 to -31 under a drag
+/// that never asked it to move.
+#[test]
+fn an_end_walked_past_the_other_end_draws_one_continuous_arc() {
+    let (mut sketch, from, to, center) = bare_quarter_arc();
+    let arc = sketch.arcs()[0].id;
+    let hub = sketch.point_in_plane(center).expect("the center");
+    let radius = 56.568_542_494_923_804_f64;
+    let mut turn = ArcTurnUnderTheHand::opening(&sketch, arc, from).expect("a turn to follow");
+    let bearing_of = |sketch: &Sketch, id| {
+        let at = sketch.point_in_plane(id).expect("a point");
+        (at[1] - hub[1]).atan2(at[0] - hub[0]).to_degrees()
+    };
+    let far_bearing = bearing_of(&sketch, to);
+    let step = 15.0_f64;
+    let mut stood = 90.0_f64;
+    let mut stands = 0;
+    // Thirty-one steps of fifteen degrees: from the end's own -135 round to +330, a whole turn and
+    // a quarter. Counted rather than accumulated so the walk lands on the seams exactly.
+    for taken in 1..=31 {
+        let asked = -135.0 + step * f64::from(taken);
+        let hand = [
+            hub[0] + radius * asked.to_radians().cos(),
+            hub[1] + radius * asked.to_radians().sin(),
+        ];
+        turn.follow(&mut sketch, hand);
+        let answered = sketch
+            .move_point(
+                from,
+                SketchPoint::from_continuous(hand[0], hand[1]),
+                ctx(16),
+            )
+            .expect("evaluation context");
+        if !answered {
+            // The seam itself: the two ends stacked, no piece of the circle to prefer. Stood, and
+            // the walk carries on — one refused frame at drag rates is a frame nobody sees.
+            stands += 1;
+            assert!(
+                stands <= 2,
+                "more than one frame stood at each of the two seams"
+            );
+            continue;
+        }
+        let form = sketch
+            .arc_form_of(arc)
+            .expect("three points that draw an arc");
+        assert!(
+            (form.radius - radius).abs() < 0.5,
+            "the arc stands at radius {} instead of {radius} at {asked} degrees",
+            form.radius
+        );
+        assert!(
+            wrapped_into_a_half_turn(bearing_of(&sketch, to) - far_bearing).abs() < 1.0,
+            "the far end swung to {} from {far_bearing} at {asked} degrees, and nothing asked it to",
+            bearing_of(&sketch, to)
+        );
+        assert!(
+            (form.sweep_degrees - stood).abs() < step + 2.0,
+            "the drawn arc jumped from {stood} to {} in one {step}-degree step at {asked} degrees",
+            form.sweep_degrees
+        );
+        stood = form.sweep_degrees;
+    }
+    // Two crossings, so the ends are back the way they were drawn.
+    let ended = sketch.arcs()[0];
+    assert_eq!(
+        (ended.from, ended.to),
+        (from, to),
+        "the arc came back from a whole turn drawn backwards"
+    );
 }

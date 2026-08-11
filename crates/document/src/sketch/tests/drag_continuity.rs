@@ -952,10 +952,9 @@ fn the_snap_ring_is_inked_from_the_room_left_in_the_cone() {
     let mut arc = Sketch::empty(PlaneAxis::Z);
     let from = arc.add_free_point(SketchPoint::new(40, 0));
     let to = arc.add_free_point(SketchPoint::new(0, 40));
-    drop(
-        arc.connect_arc(from, to, AngleMeasurement::from_degrees(90))
-            .expect("an arc to slide along"),
-    );
+    let _ = arc
+        .connect_arc(from, to, AngleMeasurement::from_degrees(90))
+        .expect("an arc to slide along");
     // Radially out from one point of the circle, so `across` is the step itself and the ring's
     // whole fade is walked. Fifteen degrees round keeps the gesture off the tangent, where a hand
     // pulling away from a quantity actually is.

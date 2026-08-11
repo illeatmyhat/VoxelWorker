@@ -2040,10 +2040,25 @@ impl Sketch {
     /// points are stacked on is arithmetically a perfectly good circle. An end within
     /// [`STACKED_DOT_TOLERANCE`] of the center is the same dot as the center, and an arc turning
     /// about a place it stands on has nothing left to turn.
+    ///
+    /// The two ENDS are asked the same question, and it is the seam a drag crosses rather than a
+    /// place it lands: with the ends stacked there is no piece of the circle to prefer, and the
+    /// reading answered `sweep = 0.00` with the radius already collapsed from 56.57 to 40 — which
+    /// then seeded the next frame and stayed. Both halves are one question, "are these two dots one
+    /// dot", so both are asked against [`STACKED_DOT_TOLERANCE`].
     #[must_use]
     fn arc_draws_a_circle(&self, id: EntityId) -> bool {
-        self.arc_form_of(id)
-            .is_some_and(|form| form.radius > STACKED_DOT_TOLERANCE)
+        self.arcs
+            .iter()
+            .find(|arc| arc.id == id)
+            .and_then(|arc| {
+                Some(three_points_draw_a_circle(
+                    self.point_in_plane(arc.from)?,
+                    self.point_in_plane(arc.to)?,
+                    self.point_in_plane(arc.center)?,
+                ))
+            })
+            .unwrap_or(false)
     }
 
     /// How the drawing currently stands `curve` off its own center, or `None` for a curve that
@@ -4203,9 +4218,34 @@ impl Sketch {
         // Refused rather than clamped, and refused whole. A frame the drawing cannot hold leaves
         // the drawing where it stood, which is what every other unanswerable drag does, and what
         // the author sees is an arc that stops at its own limit instead of one that vanishes.
+        //
+        // Asked of where the drawing STOOD, not of where it stands. By here the caller has already
+        // written the raw hands in, so an arc the frame is about to destroy is destroyed already —
+        // measured on the crossing frame, the arc excluded itself from its own guard and the
+        // collapse went through. `was` is the only record of the drawing the gesture found, which
+        // is what the question is about. An arc that was already degenerate before the hand
+        // touched it is left out on purpose: it is the one drag that could repair it.
+        let stood_at = |id: EntityId| {
+            was.iter()
+                .find(|(named, _)| *named == id)
+                .map(|(_, at)| *at)
+                .or_else(|| self.point_in_plane(id))
+        };
         let drawn: Vec<EntityId> = arcs_reached
             .into_iter()
-            .filter(|id| self.arc_draws_a_circle(*id))
+            .filter(|id| {
+                self.arcs
+                    .iter()
+                    .find(|arc| arc.id == *id)
+                    .and_then(|arc| {
+                        Some(three_points_draw_a_circle(
+                            stood_at(arc.from)?,
+                            stood_at(arc.to)?,
+                            stood_at(arc.center)?,
+                        ))
+                    })
+                    .unwrap_or(false)
+            })
             .collect();
         let stood = (self.points.clone(), self.circles.clone());
         plan.apply(self);
@@ -6256,6 +6296,46 @@ impl Sketch {
         self.sync_tangent_arms();
     }
 
+    /// Draw this arc the other way round its own circle, by swapping the two ends it is drawn
+    /// between. Reports whether there was an arc to turn.
+    ///
+    /// The only way an arc changes direction, because it carries no direction to change. It runs
+    /// counter-clockwise by definition (ADR 0038) and the endpoint ORDER is what says which way it
+    /// goes — [`counter_clockwise_sweep_degrees`] states it outright: "the caller that wants the
+    /// other arc over the same chord asks about the same three points with the ends swapped". So
+    /// this is that caller. Nothing moves: the same three dots stand exactly where they stood, and
+    /// what changes is which of the two pieces between them is the drawn one.
+    ///
+    /// **Every reader of the order comes with it.** An [`AngleArm::ArcEnd`] names a physical corner
+    /// of the drawing by naming an end, so leaving those tags alone would silently re-aim each one
+    /// at the opposite corner — a right angle authored at one end quietly becoming a claim about
+    /// the other. The tags on THIS arc are swapped in the same write, which is what keeps the
+    /// relation saying what its author said.
+    pub fn reverse_arc(&mut self, id: EntityId) -> bool {
+        let Some(arc) = self.arcs.iter_mut().find(|arc| arc.id == id) else {
+            return false;
+        };
+        std::mem::swap(&mut arc.from, &mut arc.to);
+        for constraint in &mut self.constraints {
+            let ConstraintKind::Dimension(Dimension::Angle { first, second, .. }) =
+                &mut constraint.kind
+            else {
+                continue;
+            };
+            for arm in [first, second] {
+                if let AngleArm::ArcEnd { arc: named, end } = arm {
+                    if *named == id {
+                        *end = match end {
+                            ArcEnd::From => ArcEnd::To,
+                            ArcEnd::To => ArcEnd::From,
+                        };
+                    }
+                }
+            }
+        }
+        true
+    }
+
     /// Put every UNSHARED arc center back on its chord's perpendicular bisector.
     ///
     /// Not a derivation, and not a walk back from ADR 0038. The center keeps the freedom it
@@ -6697,6 +6777,156 @@ pub const ARC_SAGITTA_TOLERANCE: f64 = 1.0 / 16.0;
 /// Hard cap on chords per arc, so a huge-radius near-collinear arc cannot degenerate
 /// into an unbounded fan.
 const ARC_MAX_CHORDS: u32 = 512;
+
+/// How far the hand has turned one end of an arc about that arc's center since the gesture opened,
+/// UNWRAPPED — so it keeps counting past a half turn instead of folding back.
+///
+/// The one piece of state a drag of an arc's end needs, and it needs it because orientation is
+/// path-dependent. An arc carries no direction: it runs counter-clockwise from
+/// [`from`](Arc::from) to [`to`](Arc::to), and the only way it can turn the other way is for those
+/// two to swap ([`reverse_arc`](Sketch::reverse_arc)). Deciding when to swap by comparing where the
+/// hand is NOW against where it started cannot work — winding an arc up toward a full circle
+/// rotates the held end by up to a whole turn less the sweep it began with, routinely past a half
+/// turn, and any short-way reading answers backwards there, unswapping the arc at exactly the
+/// moment the author is most committed to the wind. So the gesture carries the turn it has made.
+///
+/// The shell's whole-spline translate carrying where it was pressed is the same shape of thing: a
+/// gesture whose meaning depends on where it started keeps that where itself, because the drawing
+/// does not remember it.
+///
+/// What decides the order is CROSSING PARITY, not the sign of the turn. The two are the same thing
+/// only until the hand has been round once: the ends meet whenever the turn passes a multiple of a
+/// whole circle, so a hand wound a full lap past the far end has crossed twice and the arc is drawn
+/// the way it started. Reading the sign alone flips it back at the second seam and takes a
+/// 345-degree arc down to 15 in one step. Both seams are seams, and they alternate.
+///
+/// A frame that lands ON one — the ends stacked, no piece of the circle to prefer — is stood rather
+/// than written.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ArcTurnUnderTheHand {
+    /// The arc being turned.
+    arc: EntityId,
+    /// The end the hand holds. Fixed for the gesture: which of the arc's two ends this is called
+    /// `from` or `to` changes under the swap, and the hand does not.
+    held: EntityId,
+    /// Degrees, unwrapped: the bearing of the held end measured from the far end's, counted on past
+    /// a half turn and on past a whole one. Winding an arc up toward a full circle is a real
+    /// gesture and the count has to carry it.
+    turned_degrees: f64,
+    /// Which whole lap the gesture opened in, so the parity below is counted from the drawing the
+    /// author started with rather than from zero.
+    laps_at_the_opening: f64,
+    /// Whether the held end was the one the arc was drawn FROM when the gesture opened.
+    held_led_at_the_opening: bool,
+}
+
+impl ArcTurnUnderTheHand {
+    /// Read the turn the arc already stands at, as the gesture opens. `None` when the arc or its
+    /// three points cannot be read, or when `held` is not one of its ends.
+    #[must_use]
+    pub fn opening(sketch: &Sketch, arc: EntityId, held: EntityId) -> Option<Self> {
+        let form = sketch.arc_form_of(arc)?;
+        let stood = sketch.arcs.iter().find(|stored| stored.id == arc)?;
+        let held_led_at_the_opening = if held == stood.from {
+            true
+        } else if held == stood.to {
+            false
+        } else {
+            return None;
+        };
+        let turned_degrees = if held_led_at_the_opening {
+            -form.sweep_degrees
+        } else {
+            form.sweep_degrees
+        };
+        Some(Self {
+            arc,
+            held,
+            turned_degrees,
+            laps_at_the_opening: (turned_degrees / 360.0).floor(),
+            held_led_at_the_opening,
+        })
+    }
+
+    /// Every arc that has this point for one of its ends, opened. A point can end more than one
+    /// arc — a fillet chain ends two at the same dot — and the hand turns all of them at once.
+    #[must_use]
+    pub fn turns_under(sketch: &Sketch, held: EntityId) -> Vec<Self> {
+        sketch
+            .arcs
+            .iter()
+            .filter(|arc| arc.from == held || arc.to == held)
+            .filter_map(|arc| Self::opening(sketch, arc.id, held))
+            .collect()
+    }
+
+    /// Take the hand's new place, and draw the arc the way the hand has turned it.
+    ///
+    /// Both halves in one call because they are one statement. The turn is advanced by the SHORTEST
+    /// step from where the hand last stood — which is what unwraps it, and which is safe at drag
+    /// rates for every hand that is not sitting on the center — and then the arc is stored the way
+    /// round the sign says. Writing the order every frame rather than only on a crossing is what
+    /// makes this safe to run against a preview rebuilt from scratch each frame: the answer is a
+    /// function of the turn, not of what the last frame happened to leave behind.
+    pub fn follow(&mut self, sketch: &mut Sketch, hand: [f64; 2]) {
+        let (arc, held) = (self.arc, self.held);
+        let Some(stored) = sketch.arcs.iter().find(|stored| stored.id == arc).copied() else {
+            return;
+        };
+        let far = if held == stored.from {
+            stored.to
+        } else if held == stored.to {
+            stored.from
+        } else {
+            return;
+        };
+        let (Some(center), Some(far_at)) = (
+            sketch.point_in_plane(stored.center),
+            sketch.point_in_plane(far),
+        ) else {
+            return;
+        };
+        let bearing = |at: [f64; 2]| {
+            let (run, rise) = (at[0] - center[0], at[1] - center[1]);
+            (run.hypot(rise) > f64::EPSILON).then(|| rise.atan2(run).to_degrees())
+        };
+        let (Some(hand_bearing), Some(far_bearing)) = (bearing(hand), bearing(far_at)) else {
+            return;
+        };
+        let step = wrapped_into_a_half_turn(hand_bearing - far_bearing - self.turned_degrees);
+        if !step.is_finite() {
+            return;
+        }
+        self.turned_degrees += step;
+        let crossings = (self.turned_degrees / 360.0).floor() - self.laps_at_the_opening;
+        let held_leads = self.held_led_at_the_opening != ((crossings % 2.0).abs() > 0.5);
+        let leads = if held_leads { held } else { far };
+        if stored.from != leads {
+            sketch.reverse_arc(arc);
+        }
+    }
+}
+
+/// Whether three placed points draw an arc an author could see and grab.
+///
+/// The reading's own question ([`Sketch::arc_form`]) asked of loose coordinates, so a caller can
+/// ask it of where the drawing STOOD rather than only of where it stands.
+fn three_points_draw_a_circle(from: [f64; 2], to: [f64; 2], center: [f64; 2]) -> bool {
+    let Some(seat) = arc_center_on_bisector(from, to, center) else {
+        return false;
+    };
+    let radius = (from[0] - seat[0]).hypot(from[1] - seat[1]);
+    let apart = (from[0] - to[0]).hypot(from[1] - to[1]);
+    counter_clockwise_sweep_degrees(seat, from, to).is_some()
+        && radius > STACKED_DOT_TOLERANCE
+        && apart > STACKED_DOT_TOLERANCE
+}
+
+/// `degrees` brought into `(-180, 180]` — the shortest turn that lands at the same bearing.
+fn wrapped_into_a_half_turn(degrees: f64) -> f64 {
+    let folded = (180.0 - degrees).rem_euclid(360.0);
+    180.0 - folded
+}
 
 /// Whether a signed sweep is a legal [`Arc`] bulge: finite, non-zero, strictly under a full
 /// turn in magnitude.
