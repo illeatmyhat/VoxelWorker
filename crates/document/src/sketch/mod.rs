@@ -2073,15 +2073,10 @@ impl Sketch {
         first: EntityId,
         second: EntityId,
     ) -> Option<f64> {
-        let (center, first, second) = (
+        drawn_sweep_of(
             self.point_in_plane(center)?,
             self.point_in_plane(first)?,
             self.point_in_plane(second)?,
-        );
-        counter_clockwise_sweep_degrees(
-            arc_center_on_bisector(first, second, center)?,
-            first,
-            second,
         )
     }
 
@@ -2798,7 +2793,7 @@ impl Sketch {
         at: SketchPoint,
         context: parametric::EvaluationContext,
     ) -> Result<bool, SketchEvaluationError> {
-        self.move_point_reporting_its_snap(id, at, context, SnapReach::UNBOUNDED)
+        self.move_point_reporting_its_snap(id, at, context, SnapReach::UNBOUNDED, &mut [])
             .map(|answered| answered.moved)
     }
 
@@ -2823,6 +2818,7 @@ impl Sketch {
         at: SketchPoint,
         context: parametric::EvaluationContext,
         snap_reach: SnapReach,
+        carries: &mut [ArcTurnUnderAGesture],
     ) -> Result<DragAnswer, SketchEvaluationError> {
         // Grabbing the BACK arm of a tangent lever steers the FRONT one. The two ends name one
         // quantity, so only one of them can be the thing that moves; the mirror is restored by
@@ -2846,7 +2842,9 @@ impl Sketch {
         if self.point_index(id).is_none() {
             return Ok(DragAnswer::stood(false));
         }
-        self.drag_or_leave_it_alone(|sketch| sketch.point_move_attempt(id, at, context, snap_reach))
+        self.drag_or_leave_it_alone(|sketch| {
+            sketch.point_move_attempt(id, at, context, snap_reach, carries)
+        })
     }
 
     /// Move the whole CURVE `curve` so that it passes under `at`, and settle around it. Reports
@@ -2891,7 +2889,7 @@ impl Sketch {
             }
             sketch.sync_derived_points();
             // No ceiling: a body drag names no lead hand, so there is no snap to bound.
-            sketch.settle_under_the_hands(&hands, &was, context, SnapReach::UNBOUNDED)
+            sketch.settle_under_the_hands(&hands, &was, context, SnapReach::UNBOUNDED, &mut [])
         })
         .map(|answered| answered.moved)
     }
@@ -2973,6 +2971,7 @@ impl Sketch {
                             &[],
                             context,
                             SnapReach::UNBOUNDED,
+                            &mut [],
                         )?;
                         if !answered.moved {
                             break;
@@ -3018,7 +3017,7 @@ impl Sketch {
         // grip in it and the same two lines take it away either way.
         let stood = self
             .drag_or_leave_it_alone(|sketch| {
-                sketch.settle_under_the_hands(&hands, &[], context, SnapReach::UNBOUNDED)
+                sketch.settle_under_the_hands(&hands, &[], context, SnapReach::UNBOUNDED, &mut [])
             })
             .map(|answered| answered.moved);
         self.constraints
@@ -3340,7 +3339,7 @@ impl Sketch {
                 }
             }
             sketch.sync_derived_points();
-            sketch.settle_under_the_hands(&hands, &was, context, SnapReach::UNBOUNDED)
+            sketch.settle_under_the_hands(&hands, &was, context, SnapReach::UNBOUNDED, &mut [])
         })
         .map(|answered| answered.moved)
     }
@@ -3437,6 +3436,7 @@ impl Sketch {
         at: SketchPoint,
         context: parametric::EvaluationContext,
         snap_reach: SnapReach,
+        carries: &mut [ArcTurnUnderAGesture],
     ) -> Result<DragAnswer, SketchEvaluationError> {
         // Every point moves the same way now, an arc's center included: ADR 0038 left the
         // drawing with no point whose coordinates are somebody else's arithmetic, so there is no
@@ -3483,7 +3483,7 @@ impl Sketch {
             .iter()
             .map(|stood| (stood.id, stood.at.in_plane()))
             .collect();
-        self.settle_under_the_hands(&hands, &was, context, snap_reach)
+        self.settle_under_the_hands(&hands, &was, context, snap_reach, carries)
     }
 
     /// Whether the standing constraint system is met by the drawing exactly as it stands, with
@@ -4119,12 +4119,121 @@ impl Sketch {
     /// nothing, is where it stood. What goes down is therefore always the WHOLE hand set, and the
     /// kernel leans on that: knowing what the hand has hold of is how it tells a corner being
     /// pulled from a whole rail being moved.
+    /// Re-solve this frame from a copy of the drawing whose crossing arcs are drawn the other way
+    /// round, and take the answer only if it stands.
+    ///
+    /// One validator reads which way round an arc is drawn: a tangent CONTACT stands on the arc's
+    /// DRAWN piece or it does not, and the two readings of an arc whose ends have just crossed are
+    /// different pieces. Measured on a segment tangent to an arc's interior, wound through a seam,
+    /// the same move is refused as `OutsideFirstDomain` under the reading the last frame left and
+    /// accepted under the one this frame is about to be given — and a refusal ends the gesture
+    /// outright.
+    ///
+    /// Re-solved from a relabelled COPY rather than patched in place. The whole frame then comes
+    /// from one authority: a prepared problem whose arc record says one order while its sibling
+    /// derived state says another is two authorities inside a single frame, which is the disease
+    /// this drawing keeps paying for. The solve is order-indifferent — its rows are radii — so the
+    /// second answer is the first one within tolerance, which `first` is carried here to assert
+    /// rather than assume. The cost is one redundant solve on the one or two frames of a gesture
+    /// that cross at all.
+    ///
+    /// Nothing is written until it stands. A frame the relabelled drawing refuses or stands leaves
+    /// this one untouched, carry included, which is what keeps the carry unwrapping over WRITTEN
+    /// frames only.
+    #[allow(clippy::too_many_arguments)]
+    // An arc that was drawing a circle before the frame has to still be drawing one after it.
+    //
+    // Now that the center stands where the gesture pinned it, a radius is free to go to nothing:
+    // pull an end all the way onto the center and the rows are perfectly satisfied by a circle
+    // of radius zero, which stacks all three points on one place and leaves no arc for the
+    // author to pull back out of. Nothing downstream catches it either: at the collapse the
+    // reading answered a radius of 4.4e-11 and a sweep of 180 degrees, which is a circle in
+    // every arithmetic sense and a vanished shape on the screen.
+    //
+    // So the question is asked in the vocabulary that already answers it. An end within
+    // [`STACKED_DOT_TOLERANCE`] of the center IS the center, and an arc turning about a place
+    // it stands on is not an arc.
+    //
+    // Refused rather than clamped, and refused whole. A frame the drawing cannot hold leaves
+    // the drawing where it stood, which is what every other unanswerable drag does, and what
+    // the author sees is an arc that stops at its own limit instead of one that vanishes.
+    //
+    // Asked of where the drawing STOOD, not of where it stands. By here the caller has already
+    // written the raw hands in, so an arc the frame is about to destroy is destroyed already —
+    // measured on the crossing frame, the arc excluded itself from its own guard and the
+    // collapse went through. `was` is the only record of the drawing the gesture found, which
+    // is what the question is about. An arc that was already degenerate before the hand
+    // touched it is left out on purpose: it is the one drag that could repair it.
+    fn arcs_that_were_still_drawing_circles(
+        &self,
+        reached: Vec<EntityId>,
+        was: &[(EntityId, [f64; 2])],
+    ) -> Vec<EntityId> {
+        let stood_at = |id: EntityId| {
+            was.iter()
+                .find(|(named, _)| *named == id)
+                .map(|(_, at)| *at)
+                .or_else(|| self.point_in_plane(id))
+        };
+        reached
+            .into_iter()
+            .filter(|id| {
+                self.arcs
+                    .iter()
+                    .find(|arc| arc.id == *id)
+                    .and_then(|arc| {
+                        Some(three_points_draw_a_circle(
+                            stood_at(arc.from)?,
+                            stood_at(arc.to)?,
+                            stood_at(arc.center)?,
+                        ))
+                    })
+                    .unwrap_or(false)
+            })
+            .collect()
+    }
+
+    fn settle_again_the_other_way_round(
+        &mut self,
+        crossing: &[EntityId],
+        first: Option<constraint::ApplyPlan>,
+        hands: &[Hand],
+        was: &[(EntityId, [f64; 2])],
+        context: parametric::EvaluationContext,
+        snap_reach: SnapReach,
+        carries: &mut [ArcTurnUnderAGesture],
+    ) -> Result<DragAnswer, SketchEvaluationError> {
+        let mut relabelled = self.clone();
+        for id in crossing {
+            relabelled.reverse_arc(*id);
+        }
+        let answered =
+            relabelled.settle_under_the_hands(hands, was, context, snap_reach, &mut [])?;
+        if answered.moved {
+            debug_assert!(
+                first.is_none_or(|first| first.placed().iter().all(|before| {
+                    relabelled.point_in_plane(before.id).is_none_or(|after| {
+                        let stood = before.at.in_plane();
+                        (after[0] - stood[0]).hypot(after[1] - stood[1]) < 1.0e-6
+                    })
+                })),
+                "re-solving a relabelled arc moved the drawing, so order is an input to the solve"
+            );
+            *self = relabelled;
+            for carry in carries.iter_mut() {
+                carry.commit(self);
+            }
+        }
+        Ok(answered)
+    }
+
     fn settle_under_the_hands(
         &mut self,
         hands: &[Hand],
         was: &[(EntityId, [f64; 2])],
         context: parametric::EvaluationContext,
         snap_reach: SnapReach,
+        carries: &mut [ArcTurnUnderAGesture],
     ) -> Result<DragAnswer, SketchEvaluationError> {
         // Everything the caller recorded, not just the hands.
         //
@@ -4209,6 +4318,9 @@ impl Sketch {
                 }
             }
             self.sync_derived_points();
+            for carry in carries.iter_mut() {
+                carry.commit(self);
+            }
             return Ok(DragAnswer { moved: true, kept });
         }
         let prepared = constraint::prepare_scoped(self, &standing, Some(context), Some(&reach))
@@ -4219,6 +4331,27 @@ impl Sketch {
             Ok(parametric::sketch::DragOutcome::Rejected(settled)) => (settled, false),
             Err(_) => return Ok(DragAnswer::stood(false)),
         };
+        // Which way round each arc is DRAWN is settled BEFORE the frame is validated, because one
+        // validator reads it — see [`settle_again_the_other_way_round`](Self::settle_again_the_other_way_round).
+        let crossing: Vec<EntityId> = carries
+            .iter()
+            .filter_map(|carry| {
+                carry.crossing_under(&self.arcs, &|id| {
+                    prepared
+                        .point(id)
+                        .and_then(|point| settled.solution.position(point))
+                        .or_else(|| self.point_in_plane(id))
+                })
+            })
+            .collect();
+        if !crossing.is_empty() {
+            let first = prepared
+                .plan_apply(&self.points, &self.circles, &settled.solution)
+                .ok();
+            return self.settle_again_the_other_way_round(
+                &crossing, first, hands, &was, context, snap_reach, carries,
+            );
+        }
         validate_prepared_tangent_contacts(&prepared, &settled.solution)?;
         if !accepted {
             return Ok(DragAnswer::stood(false));
@@ -4226,51 +4359,7 @@ impl Sketch {
         let plan = prepared
             .plan_apply(&self.points, &self.circles, &settled.solution)
             .map_err(|_| SketchEvaluationError::ScalarWritebackFailed)?;
-        // An arc that was drawing a circle before the frame has to still be drawing one after it.
-        //
-        // Now that the center stands where the gesture pinned it, a radius is free to go to nothing:
-        // pull an end all the way onto the center and the rows are perfectly satisfied by a circle
-        // of radius zero, which stacks all three points on one place and leaves no arc for the
-        // author to pull back out of. Nothing downstream catches it either: at the collapse the
-        // reading answered a radius of 4.4e-11 and a sweep of 180 degrees, which is a circle in
-        // every arithmetic sense and a vanished shape on the screen.
-        //
-        // So the question is asked in the vocabulary that already answers it. An end within
-        // [`STACKED_DOT_TOLERANCE`] of the center IS the center, and an arc turning about a place
-        // it stands on is not an arc.
-        //
-        // Refused rather than clamped, and refused whole. A frame the drawing cannot hold leaves
-        // the drawing where it stood, which is what every other unanswerable drag does, and what
-        // the author sees is an arc that stops at its own limit instead of one that vanishes.
-        //
-        // Asked of where the drawing STOOD, not of where it stands. By here the caller has already
-        // written the raw hands in, so an arc the frame is about to destroy is destroyed already —
-        // measured on the crossing frame, the arc excluded itself from its own guard and the
-        // collapse went through. `was` is the only record of the drawing the gesture found, which
-        // is what the question is about. An arc that was already degenerate before the hand
-        // touched it is left out on purpose: it is the one drag that could repair it.
-        let stood_at = |id: EntityId| {
-            was.iter()
-                .find(|(named, _)| *named == id)
-                .map(|(_, at)| *at)
-                .or_else(|| self.point_in_plane(id))
-        };
-        let drawn: Vec<EntityId> = arcs_reached
-            .into_iter()
-            .filter(|id| {
-                self.arcs
-                    .iter()
-                    .find(|arc| arc.id == *id)
-                    .and_then(|arc| {
-                        Some(three_points_draw_a_circle(
-                            stood_at(arc.from)?,
-                            stood_at(arc.to)?,
-                            stood_at(arc.center)?,
-                        ))
-                    })
-                    .unwrap_or(false)
-            })
-            .collect();
+        let drawn = self.arcs_that_were_still_drawing_circles(arcs_reached, &was);
         let stood = (self.points.clone(), self.circles.clone());
         plan.apply(self);
         self.carry_authored_handles(&stood.0);
@@ -4279,6 +4368,11 @@ impl Sketch {
             self.points = stood.0;
             self.circles = stood.1;
             return Ok(DragAnswer::stood(false));
+        }
+        // The frame stands, so the carry comes up to it. Last, and only here: every path above
+        // that leaves the drawing where it was leaves the carry there too.
+        for carry in carries.iter_mut() {
+            carry.commit(self);
         }
         Ok(DragAnswer {
             moved: true,
@@ -6890,41 +6984,68 @@ impl ArcTurnUnderAGesture {
         })
     }
 
-    /// Take the settled drawing, and draw this arc the way the gesture has carried it.
-    ///
-    /// The carry is advanced by the SHORTEST step from where the arc last stood — which is what
-    /// unwraps it — and then the arc is stored the way round the parity says. Writing the order
-    /// every frame rather than only on a crossing is what makes this safe to run against a preview
-    /// rebuilt from scratch each frame: the answer is a function of the carry, not of what the last
-    /// frame happened to leave behind.
-    pub fn follow(&mut self, sketch: &mut Sketch) {
-        let Some(stored) = sketch
-            .arcs
-            .iter()
-            .find(|stored| stored.id == self.arc)
-            .copied()
-        else {
-            return;
-        };
-        let Some(drawn) = sketch.drawn_sweep_between(stored.center, self.first, self.second) else {
-            return;
-        };
+    /// The carry, advanced by the SHORTEST step from where the arc last stood — which is what
+    /// unwraps it.
+    fn carried_after(&self, drawn: f64) -> f64 {
         let step = wrapped_into_a_half_turn(drawn - self.carried_degrees);
-        if !step.is_finite() {
-            return;
+        if step.is_finite() {
+            self.carried_degrees + step
+        } else {
+            self.carried_degrees
         }
-        self.carried_degrees += step;
-        let crossed_an_odd_number_of_times =
-            ((self.carried_degrees / 360.0).floor() % 2.0).abs() > 0.5;
-        let leads = if crossed_an_odd_number_of_times {
+    }
+
+    /// Which end the arc should be drawn FROM at a given carry. Parity, not sign: the ends meet
+    /// whenever the carry passes a multiple of a whole circle.
+    fn leads_at(&self, carried: f64) -> EntityId {
+        if ((carried / 360.0).floor() % 2.0).abs() > 0.5 {
             self.second
         } else {
             self.first
-        };
-        if stored.from != leads {
-            sketch.reverse_arc(self.arc);
         }
     }
+
+    /// This arc's id, if the frame `at` describes turns it round the other way.
+    ///
+    /// Asked of a CANDIDATE drawing — the solution the settle has produced and not yet written —
+    /// because the answer has to be known before the frame is validated. Tangent CONTACT
+    /// validation asks whether a contact stands on the DRAWN piece, and the two readings of a
+    /// crossing arc are different pieces: measured, the same move is refused as
+    /// `OutsideFirstDomain` under the reading the last frame left, and accepted under the one this
+    /// frame is about to be given.
+    fn crossing_under(
+        &self,
+        arcs: &[Arc],
+        at: &dyn Fn(EntityId) -> Option<[f64; 2]>,
+    ) -> Option<EntityId> {
+        let stored = arcs.iter().find(|stored| stored.id == self.arc)?;
+        let drawn = drawn_sweep_of(at(stored.center)?, at(self.first)?, at(self.second)?)?;
+        (stored.from != self.leads_at(self.carried_after(drawn))).then_some(self.arc)
+    }
+
+    /// Take the carry up to where the drawing now stands.
+    ///
+    /// Called only when the frame WRITES. A stood frame leaves the drawing where it was, so
+    /// advancing the carry there would count a crossing the geometry never made, and the next
+    /// written frame would count it again.
+    fn commit(&mut self, sketch: &Sketch) {
+        let Some(stored) = sketch.arcs.iter().find(|stored| stored.id == self.arc) else {
+            return;
+        };
+        if let Some(drawn) = sketch.drawn_sweep_between(stored.center, self.first, self.second) {
+            self.carried_degrees = self.carried_after(drawn);
+        }
+    }
+}
+
+/// [`Sketch::drawn_sweep_between`] asked of loose coordinates, so a caller can ask it of a frame
+/// the drawing has not been given yet.
+fn drawn_sweep_of(center: [f64; 2], first: [f64; 2], second: [f64; 2]) -> Option<f64> {
+    counter_clockwise_sweep_degrees(
+        arc_center_on_bisector(first, second, center)?,
+        first,
+        second,
+    )
 }
 
 /// Whether three placed points draw an arc an author could see and grab.

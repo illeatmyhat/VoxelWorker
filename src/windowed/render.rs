@@ -1160,10 +1160,14 @@ impl WindowedState {
         // press that has not left its own start by the drag threshold has not: it is on its way to
         // being a click, and a click makes things active without making them move.
         let began = drag.began || self.pointer_left_the_press();
+        // The gesture's own memory of how far it has turned each arc, lent to the drawing for the
+        // frame and taken back after. Which way round an arc is drawn is path-dependent, and the
+        // preview is rebuilt from the pre-drag producer every frame, so the drawing cannot know it.
+        let mut carried_arcs = drag.arc_turns.clone();
         let moved = match held {
             SketchGrab::Point(id) if began => preview
                 .sketch
-                .move_point_reporting_its_snap(id, snapped, context, snap_reach)
+                .move_point_reporting_its_snap(id, snapped, context, snap_reach, &mut carried_arcs)
                 .map(|answered| {
                     // The ghost is the drag's, not the frame's: a step that did not snap says so
                     // by clearing it, so the circle appears and disappears with the hand rather
@@ -1242,6 +1246,7 @@ impl WindowedState {
         };
         if let Some(drag) = self.sketch_drag.as_mut() {
             drag.began = true;
+            drag.arc_turns = carried_arcs;
         }
         let Ok(moved) = moved else {
             self.end_the_vertex_drag();
@@ -1254,16 +1259,6 @@ impl WindowedState {
         // the next frame picks up from exactly where this one started.
         if !moved {
             return IntentEffect::none();
-        }
-        // Which way round each arc is DRAWN is settled last, because it is a label rather than a
-        // place: the solve's rows are radii and know nothing about it, and an arc carried by the
-        // gesture rather than held by it can only be measured once it has moved. A hand on a
-        // slot's centerline carries both rails this way without anything having to know what a
-        // slot is.
-        if let Some(drag) = self.sketch_drag.as_mut() {
-            for turn in &mut drag.arc_turns {
-                turn.follow(&mut preview.sketch);
-            }
         }
         let Some(new_min) = self.profile_bbox_min(&preview) else {
             self.end_the_vertex_drag();

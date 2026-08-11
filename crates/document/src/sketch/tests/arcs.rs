@@ -1286,15 +1286,15 @@ fn an_end_walked_past_the_other_end_draws_one_continuous_arc() {
             hub[1] + radius * asked.to_radians().sin(),
         ];
         let answered = sketch
-            .move_point(
+            .move_point_reporting_its_snap(
                 from,
                 SketchPoint::from_continuous(hand[0], hand[1]),
                 ctx(16),
+                crate::sketch::SnapReach::UNBOUNDED,
+                &mut turns,
             )
-            .expect("evaluation context");
-        for turn in &mut turns {
-            turn.follow(&mut sketch);
-        }
+            .expect("evaluation context")
+            .moved;
         if !answered {
             // The seam itself: the two ends stacked, no piece of the circle to prefer. Stood, and
             // the walk carries on — one refused frame at drag rates is a frame nobody sees.

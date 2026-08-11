@@ -104,6 +104,7 @@ fn a_straight_slot_lengthens_when_its_end_cap_is_pulled() {
             SketchPoint::from_continuous(60.0, 0.0),
             ctx(16),
             SnapReach::UNBOUNDED,
+            &mut [],
         )
         .expect("the drag lands");
 
@@ -159,6 +160,7 @@ fn a_scaffold_span_offers_no_quantity_to_hold() {
             SketchPoint::from_continuous(32.0, 6.0),
             ctx(16),
             SnapReach::UNBOUNDED,
+            &mut [],
         )
         .expect("the drag lands");
     assert!(
@@ -313,15 +315,15 @@ fn an_arc_slots_rails_turn_with_the_spine_they_are_drawn_from() {
                 40.0 * asked.to_radians().sin(),
             ];
             let answered = sketch
-                .move_point(
+                .move_point_reporting_its_snap(
                     held,
                     SketchPoint::from_continuous(hand[0], hand[1]),
                     ctx(16),
+                    SnapReach::UNBOUNDED,
+                    &mut turns,
                 )
-                .expect("evaluation context");
-            for turn in &mut turns {
-                turn.follow(&mut sketch);
-            }
+                .expect("evaluation context")
+                .moved;
             if !answered {
                 // A seam: the two cap centers stacked, no piece of the circle to prefer.
                 stands += 1;
@@ -366,6 +368,122 @@ fn an_arc_slots_rails_turn_with_the_spine_they_are_drawn_from() {
             "the walk never reached a seam, so it proves nothing"
         );
     }
+}
+
+/// **A contact is judged against the piece the frame is about to draw, not the one it inherited.**
+///
+/// Which way round an arc is drawn is decided from the settled solution, because an arc a gesture
+/// CARRIES rather than holds cannot be measured until it has moved. That put the decision after the
+/// solve — and one validator runs earlier. A tangent CONTACT stands on the arc's DRAWN piece or it
+/// does not, and the two readings of an arc whose ends have just crossed are different pieces.
+///
+/// A segment tangent to this arc's INTERIOR, at bearing 45, and the far end wound clockwise so the
+/// sweep grows. Measured with the decision left until after validation: the wind ran clean to 345
+/// degrees, stood on the seam exactly as designed, and then died — `InvalidTangent`
+/// `OutsideFirstDomain` at the next frame, which in the shell ends the gesture outright. The same
+/// move offered to the same drawing with the arc reversed first answered `Ok(true)`. So the
+/// refusal was a property of the LABEL: the stale reading is a 15-degree sliver spanning 75 to 90
+/// with the contact outside it, and the reading the frame was about to be given is 345 degrees
+/// spanning 90 to 435, which contains 45 + 360.
+///
+/// A contact at an arc's END could never have shown this — both readings share their endpoints,
+/// which is why an arc slot's four tangencies cross both seams without noticing.
+///
+/// The last two frames are the honest boundary: wound far enough, the contact really does leave
+/// the drawn piece, and then the drawing refuses and is right to.
+#[test]
+fn a_tangent_contact_is_judged_against_the_piece_the_frame_will_draw() {
+    use crate::sketch::{LineSide, SketchCurve, TangentBranch};
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let held = sketch.add_free_point(SketchPoint::new(40, 0));
+    let far = sketch.add_free_point(SketchPoint::new(0, 40));
+    let arc = sketch
+        .connect_arc(
+            held,
+            far,
+            ::parametric::units::AngleMeasurement::from_degrees(90),
+        )
+        .expect("a quarter arc");
+    let touch = 40.0 / 2.0_f64.sqrt();
+    let along = 20.0 / 2.0_f64.sqrt();
+    let tail = sketch.add_free_point(SketchPoint::from_continuous(touch - along, touch + along));
+    let head = sketch.add_free_point(SketchPoint::from_continuous(touch + along, touch - along));
+    let segment = sketch.connect(tail, head).expect("a line");
+    // `Left` names the other side of the segment's authored run and nothing touches the arc there.
+    sketch
+        .add_constraint(
+            crate::sketch::ConstraintKind::tangent(
+                SketchCurve::Segment(segment),
+                SketchCurve::Arc(arc),
+                TangentBranch::Line(LineSide::Right),
+            ),
+            ctx(16),
+        )
+        .expect("a line already touching the arc's middle");
+
+    let mut turns = crate::sketch::ArcTurnUnderAGesture::opening_over(&sketch);
+    let step = 15.0_f64;
+    let mut drawn: Option<f64> = None;
+    let mut stands = 0;
+    for taken in 1..=21 {
+        let asked = -step * f64::from(taken);
+        let hand = [
+            40.0 * asked.to_radians().cos(),
+            40.0 * asked.to_radians().sin(),
+        ];
+        let answered = sketch
+            .move_point_reporting_its_snap(
+                held,
+                SketchPoint::from_continuous(hand[0], hand[1]),
+                ctx(16),
+                SnapReach::UNBOUNDED,
+                &mut turns,
+            )
+            .unwrap_or_else(|refused| {
+                panic!("at {asked} degrees the drawing refused a frame it can hold: {refused:?}")
+            });
+        if !answered.moved {
+            stands += 1;
+            assert!(stands <= 1, "one seam, one stood frame");
+            continue;
+        }
+        let form = sketch.arc_form_of(arc).expect("an arc");
+        assert!(
+            (form.radius - 40.0).abs() < 1.0e-3,
+            "at {asked} degrees the arc left radius 40 for {}",
+            form.radius
+        );
+        if let Some(was) = drawn {
+            assert!(
+                (form.sweep_degrees - was).abs() < step + 2.0,
+                "at {asked} degrees the arc jumped from {was} to {}",
+                form.sweep_degrees
+            );
+        }
+        drawn = Some(form.sweep_degrees);
+    }
+    assert_eq!(stands, 1, "the walk never reached the seam");
+
+    // Wound one step further, the contact is genuinely off the drawn piece, and refusing is the
+    // right answer rather than a stale one.
+    let asked = -330.0_f64;
+    let refused = sketch.move_point_reporting_its_snap(
+        held,
+        SketchPoint::from_continuous(
+            40.0 * asked.to_radians().cos(),
+            40.0 * asked.to_radians().sin(),
+        ),
+        ctx(16),
+        SnapReach::UNBOUNDED,
+        &mut turns,
+    );
+    assert!(
+        matches!(
+            refused,
+            Err(crate::sketch::SketchEvaluationError::InvalidTangent { .. })
+        ),
+        "the contact has been wound past the arc's own end, and got {refused:?}"
+    );
 }
 
 /// The author's ask, in their words: "try making an arc slot endpoint roughly follow its radius".
@@ -469,6 +587,7 @@ fn a_bare_arcs_end_holds_its_radius_and_reports_it() {
                 SketchPoint::from_continuous(out, 6.0),
                 ctx(16),
                 SnapReach::UNBOUNDED,
+                &mut [],
             )
             .expect("answered");
         assert!(
@@ -501,6 +620,7 @@ fn radius_under_a_ceiling(slot: &Sketch, end: EntityId, cursor: [f64; 2], reach:
             SketchPoint::from_continuous(cursor[0], cursor[1]),
             ctx(16),
             SnapReach::of_length(reach),
+            &mut [],
         )
         .expect("answered");
     let at = sketch
@@ -567,6 +687,7 @@ fn a_ceiling_does_not_bring_the_spring_back() {
                     SketchPoint::from_continuous(cursor[0], cursor[1]),
                     ctx(16),
                     SnapReach::of_length(2.0),
+                    &mut [],
                 )
                 .expect("answered");
             sketch
@@ -624,6 +745,7 @@ fn the_ghost_names_the_circle_the_arc_is_on() {
                 SketchPoint::from_continuous(out, 6.0),
                 ctx(16),
                 SnapReach::UNBOUNDED,
+                &mut [],
             )
             .expect("answered")
             .kept
@@ -706,6 +828,7 @@ fn an_arc_keeps_its_circle_around_a_whole_turn() {
                 SketchPoint::from_continuous(cursor[0], cursor[1]),
                 ctx(16),
                 SnapReach::UNBOUNDED,
+                &mut [],
             )
             .expect("answered");
         let at = |id| {
@@ -1059,6 +1182,7 @@ fn the_snap_ring_is_inked_from_the_room_left_in_the_cone() {
                 SketchPoint::from_continuous(cursor[0], cursor[1]),
                 ctx(16),
                 SnapReach::UNBOUNDED,
+                &mut [],
             )
             .expect("answered")
             .kept;
@@ -1319,6 +1443,7 @@ fn an_unsnapped_walk_is_smooth_in_every_direction() {
                 SketchPoint::from_continuous(cursor[0], cursor[1]),
                 ctx(16),
                 SnapReach::UNBOUNDED,
+                &mut [],
             ) else {
                 continue;
             };

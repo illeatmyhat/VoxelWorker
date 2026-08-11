@@ -1360,6 +1360,12 @@ pub(super) struct ApplyPlan {
 }
 
 impl ApplyPlan {
+    /// Where the plan would put each point, without putting it there. Read by the settle's
+    /// order-indifference tripwire, which compares two solves of the same drawing.
+    pub(super) fn placed(&self) -> &[Point] {
+        &self.points
+    }
+
     pub(super) fn apply(self, sketch: &mut Sketch) {
         sketch.points = self.points;
         sketch.circles = self.circles;
