@@ -281,6 +281,93 @@ fn a_hand_near_its_own_quantity_still_holds_it_exactly() {
     );
 }
 
+/// **An arc slot wound past its own far end is still one slot.**
+///
+/// A slot's two rails and its centerline are the same shape three times at three radii about one
+/// hub, so they draw the same way round or they are not a slot. The hand names the CENTERLINE — a
+/// spine end IS a cap center — while the body an author looks at is the rails, whose ends sit half
+/// a width away and are named by nothing the gesture holds.
+///
+/// The owner's report, against a bare arc that had just been fixed: "it works for a bare 3 point
+/// arc but not for an arc slot." Measured at the seam where the two cap centers meet, shrinking:
+/// the spine turned onto the other side and read 15 degrees while both rails read 345, having gone
+/// the long way. A whole turn later the same thing mirrored — spine 345 against rails 15. Radii
+/// held at 44, 36 and 40 the whole way, so nothing was wrong with the shape; the three arcs simply
+/// stopped agreeing about which piece of their circles the slot was.
+///
+/// Wound both ways and far enough each way to cross TWO seams, because the seams alternate.
+#[test]
+fn an_arc_slots_rails_turn_with_the_spine_they_are_drawn_from() {
+    for way in [-1.0_f64, 1.0] {
+        let mut sketch = curved_slot();
+        let hub = spine_end(&sketch, [0.0, 0.0]);
+        let held = spine_end(&sketch, [0.0, 40.0]);
+        let mut turns = crate::sketch::ArcTurnUnderAGesture::opening_over(&sketch);
+        let step = 15.0_f64;
+        let mut drawn: Option<f64> = None;
+        let mut stands = 0;
+        for taken in 1..=42 {
+            let asked = 90.0 + way * step * f64::from(taken);
+            let hand = [
+                40.0 * asked.to_radians().cos(),
+                40.0 * asked.to_radians().sin(),
+            ];
+            let answered = sketch
+                .move_point(
+                    held,
+                    SketchPoint::from_continuous(hand[0], hand[1]),
+                    ctx(16),
+                )
+                .expect("evaluation context");
+            for turn in &mut turns {
+                turn.follow(&mut sketch);
+            }
+            if !answered {
+                // A seam: the two cap centers stacked, no piece of the circle to prefer.
+                stands += 1;
+                assert!(
+                    stands <= 2,
+                    "more than one frame stood at each of two seams"
+                );
+                continue;
+            }
+            let turning: Vec<(EntityId, f64, f64)> = sketch
+                .arcs()
+                .iter()
+                .filter(|arc| arc.center == hub)
+                .filter_map(|arc| {
+                    sketch
+                        .arc_form_of(arc.id)
+                        .map(|form| (arc.id, form.radius, form.sweep_degrees))
+                })
+                .collect();
+            assert_eq!(
+                turning.len(),
+                3,
+                "two rails and a centerline turn about the slot's hub"
+            );
+            let slot = turning[0].2;
+            for (id, radius, sweep) in &turning {
+                assert!(
+                    (sweep - slot).abs() < 1.0e-6,
+                    "at {asked} degrees, arc {id:?} of radius {radius} draws {sweep} where the slot draws {slot}"
+                );
+            }
+            if let Some(was) = drawn {
+                assert!(
+                    (slot - was).abs() < step + 2.0,
+                    "at {asked} degrees, the slot jumped from {was} to {slot} in one {step}-degree step"
+                );
+            }
+            drawn = Some(slot);
+        }
+        assert!(
+            stands > 0,
+            "the walk never reached a seam, so it proves nothing"
+        );
+    }
+}
+
 /// The author's ask, in their words: "try making an arc slot endpoint roughly follow its radius".
 ///
 /// An end of a round curve holds its radius EXACTLY across a generous cone, because the drawing

@@ -675,15 +675,17 @@ struct SketchVertexDrag {
     /// press is still a drag — re-asking would strand the geometry wherever the last live frame
     /// left it while the cursor kept moving.
     began: bool,
-    /// The arcs this gesture turns, one per arc the held point ends, each carrying how far it has
-    /// been turned about its own center.
+    /// One per arc in the drawing, each carrying how far this gesture has swept it.
     ///
     /// An arc has no direction to flip: it runs counter-clockwise from its `from` to its `to`, so
-    /// turning an end past the other one is a SWAP of the two. Which way round the arc should be
-    /// drawn depends on how many times the hand has crossed the far end, and the drawing does not
-    /// remember that — the preview is rebuilt from `original` every frame — so the gesture carries
-    /// it, the way a whole-curve translate carries where it was pressed.
-    arc_turns: Vec<document::sketch::ArcTurnUnderTheHand>,
+    /// carrying one end past the other is a SWAP of the two. Which way round it should be drawn
+    /// depends on how many times its ends have crossed, and the drawing does not remember that —
+    /// the preview is rebuilt from `original` every frame — so the gesture carries it, the way a
+    /// whole-curve translate carries where it was pressed.
+    ///
+    /// Every arc, not the held one: a slot's rails are carried by a hand that names only its
+    /// centerline, and an arc that does not move cannot cross, so it costs a subtraction a frame.
+    arc_turns: Vec<document::sketch::ArcTurnUnderAGesture>,
 }
 
 #[derive(Default)]

@@ -8,7 +8,7 @@ use crate::sketch::{
     Point, PointLifetime, Sketch, SketchPoint, SketchSolid, ARC_SAGITTA_TOLERANCE,
 };
 use crate::sketch::{
-    wrapped_into_a_half_turn, ArcTurnUnderTheHand, ConstraintKind, ConstraintRefusal, Dimension,
+    wrapped_into_a_half_turn, ArcTurnUnderAGesture, ConstraintKind, ConstraintRefusal, Dimension,
     SketchCurve, SketchLength,
 };
 use crate::voxel::VoxelProducer;
@@ -1268,7 +1268,7 @@ fn an_end_walked_past_the_other_end_draws_one_continuous_arc() {
     let arc = sketch.arcs()[0].id;
     let hub = sketch.point_in_plane(center).expect("the center");
     let radius = 56.568_542_494_923_804_f64;
-    let mut turn = ArcTurnUnderTheHand::opening(&sketch, arc, from).expect("a turn to follow");
+    let mut turns = ArcTurnUnderAGesture::opening_over(&sketch);
     let bearing_of = |sketch: &Sketch, id| {
         let at = sketch.point_in_plane(id).expect("a point");
         (at[1] - hub[1]).atan2(at[0] - hub[0]).to_degrees()
@@ -1285,7 +1285,6 @@ fn an_end_walked_past_the_other_end_draws_one_continuous_arc() {
             hub[0] + radius * asked.to_radians().cos(),
             hub[1] + radius * asked.to_radians().sin(),
         ];
-        turn.follow(&mut sketch, hand);
         let answered = sketch
             .move_point(
                 from,
@@ -1293,6 +1292,9 @@ fn an_end_walked_past_the_other_end_draws_one_continuous_arc() {
                 ctx(16),
             )
             .expect("evaluation context");
+        for turn in &mut turns {
+            turn.follow(&mut sketch);
+        }
         if !answered {
             // The seam itself: the two ends stacked, no piece of the circle to prefer. Stood, and
             // the walk carries on — one refused frame at drag rates is a frame nobody sees.

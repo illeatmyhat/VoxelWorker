@@ -2061,6 +2061,30 @@ impl Sketch {
             .unwrap_or(false)
     }
 
+    /// The counter-clockwise sweep from one named end of an arc round to the other, read the way
+    /// the drawing reads it — through the SEATED center, so the number is the one that is drawn.
+    ///
+    /// Asked of two ends by id rather than of an arc, because the caller that wants it
+    /// ([`ArcTurnUnderAGesture`]) is watching two particular dots across a gesture that may swap
+    /// which of them the arc calls its `from`.
+    fn drawn_sweep_between(
+        &self,
+        center: EntityId,
+        first: EntityId,
+        second: EntityId,
+    ) -> Option<f64> {
+        let (center, first, second) = (
+            self.point_in_plane(center)?,
+            self.point_in_plane(first)?,
+            self.point_in_plane(second)?,
+        );
+        counter_clockwise_sweep_degrees(
+            arc_center_on_bisector(first, second, center)?,
+            first,
+            second,
+        )
+    }
+
     /// How the drawing currently stands `curve` off its own center, or `None` for a curve that
     /// does not turn.
     ///
@@ -6778,131 +6802,127 @@ pub const ARC_SAGITTA_TOLERANCE: f64 = 1.0 / 16.0;
 /// into an unbounded fan.
 const ARC_MAX_CHORDS: u32 = 512;
 
-/// How far the hand has turned one end of an arc about that arc's center since the gesture opened,
-/// UNWRAPPED — so it keeps counting past a half turn instead of folding back.
+/// How far one arc's drawn sweep has been carried since a gesture opened, UNWRAPPED — so it keeps
+/// counting past a whole turn instead of folding back.
 ///
-/// The one piece of state a drag of an arc's end needs, and it needs it because orientation is
+/// The one piece of state a gesture that bends an arc needs, and it needs it because orientation is
 /// path-dependent. An arc carries no direction: it runs counter-clockwise from
 /// [`from`](Arc::from) to [`to`](Arc::to), and the only way it can turn the other way is for those
 /// two to swap ([`reverse_arc`](Sketch::reverse_arc)). Deciding when to swap by comparing where the
-/// hand is NOW against where it started cannot work — winding an arc up toward a full circle
-/// rotates the held end by up to a whole turn less the sweep it began with, routinely past a half
-/// turn, and any short-way reading answers backwards there, unswapping the arc at exactly the
-/// moment the author is most committed to the wind. So the gesture carries the turn it has made.
+/// drawing is NOW against where it started cannot work — winding an arc up toward a full circle
+/// carries the sweep by up to a whole turn less the one it began with, routinely past a half turn,
+/// and any short-way reading answers backwards there, unswapping the arc at exactly the moment the
+/// author is most committed to the wind. So the gesture carries the sweep it has drawn.
 ///
-/// The shell's whole-spline translate carrying where it was pressed is the same shape of thing: a
+/// The shell's whole-curve translate carrying where it was pressed is the same shape of thing: a
 /// gesture whose meaning depends on where it started keeps that where itself, because the drawing
 /// does not remember it.
 ///
-/// What decides the order is CROSSING PARITY, not the sign of the turn. The two are the same thing
-/// only until the hand has been round once: the ends meet whenever the turn passes a multiple of a
-/// whole circle, so a hand wound a full lap past the far end has crossed twice and the arc is drawn
-/// the way it started. Reading the sign alone flips it back at the second seam and takes a
-/// 345-degree arc down to 15 in one step. Both seams are seams, and they alternate.
+/// **Measured from the arc's OWN two ends, not from the hand, and read after the settle.** An arc
+/// slot is why: its two rails and its centerline are the same shape three times at three radii
+/// about one hub, and a hand on a spine end names the CENTERLINE alone — a spine end IS a cap
+/// center, while the rails' ends sit half a width away and are named by nothing. Turning the hand
+/// past the far cap swapped the centerline and left both rails going the long way round, 15 degrees
+/// against 345. Reading each arc's own ends instead answers for every arc a gesture bends, whatever
+/// held it: the rails cross in the same frame the spine does, because their ends are radially
+/// aligned, and nothing had to know what a slot is. An arc the gesture never moves has a constant
+/// sweep, crosses nothing, and is left alone — so this is opened over the whole drawing rather than
+/// over a family somebody has to define.
+///
+/// **The order is a label the settle ignores.** Its rows are radii; the tangent branch reads
+/// centers and radii. So the swap can be applied AFTER the drawing settles, which is the only place
+/// the carried arcs can be measured at all. One consumer does run earlier — tangent CONTACT
+/// validation asks whether a contact stands on the drawn piece — so a frame that crosses a seam
+/// validates under the order the frame before it left. Contacts at arc ends are immune, both
+/// complementary readings sharing their endpoints, and an interior contact on an arc crossing its
+/// own seam is degenerate that frame whichever way it is read.
+///
+/// What decides the order is CROSSING PARITY, not the sign of the carry. The two are the same thing
+/// only until the drawing has been round once: the ends meet whenever the sweep passes a multiple
+/// of a whole circle, so an arc wound a full lap has crossed twice and is drawn the way it started.
+/// Reading the sign alone flips it back at the second seam and takes a 345-degree arc down to 15 in
+/// one step. Both seams are seams, and they alternate.
 ///
 /// A frame that lands ON one — the ends stacked, no piece of the circle to prefer — is stood rather
-/// than written.
+/// than written, and **the carry unwraps over WRITTEN frames only**. A stood frame writes nothing,
+/// so the next written frame is two frames of motion away from the last one, which is still far
+/// under the half turn the unwrapping needs.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct ArcTurnUnderTheHand {
-    /// The arc being turned.
+pub struct ArcTurnUnderAGesture {
+    /// The arc being carried.
     arc: EntityId,
-    /// The end the hand holds. Fixed for the gesture: which of the arc's two ends this is called
-    /// `from` or `to` changes under the swap, and the hand does not.
-    held: EntityId,
-    /// Degrees, unwrapped: the bearing of the held end measured from the far end's, counted on past
-    /// a half turn and on past a whole one. Winding an arc up toward a full circle is a real
-    /// gesture and the count has to carry it.
-    turned_degrees: f64,
-    /// Which whole lap the gesture opened in, so the parity below is counted from the drawing the
-    /// author started with rather than from zero.
-    laps_at_the_opening: f64,
-    /// Whether the held end was the one the arc was drawn FROM when the gesture opened.
-    held_led_at_the_opening: bool,
+    /// The end the arc was drawn FROM when the gesture opened. Held by id, because which field it
+    /// sits in is exactly what changes underneath.
+    first: EntityId,
+    /// The end it was drawn TO.
+    second: EntityId,
+    /// Degrees, unwrapped: the counter-clockwise sweep from `first` round to `second`, counted on
+    /// past a whole turn and on past none. Winding an arc up toward a full circle is a real gesture
+    /// and the count has to carry it.
+    carried_degrees: f64,
 }
 
-impl ArcTurnUnderTheHand {
-    /// Read the turn the arc already stands at, as the gesture opens. `None` when the arc or its
-    /// three points cannot be read, or when `held` is not one of its ends.
+impl ArcTurnUnderAGesture {
+    /// Every arc in the drawing, as the gesture opens.
+    ///
+    /// The whole drawing rather than a reach: an arc the gesture does not move cannot cross, so it
+    /// costs a subtraction a frame and answers correctly for free. Working out which arcs a gesture
+    /// reaches, on the other hand, is a question with a wrong answer in it.
     #[must_use]
-    pub fn opening(sketch: &Sketch, arc: EntityId, held: EntityId) -> Option<Self> {
-        let form = sketch.arc_form_of(arc)?;
-        let stood = sketch.arcs.iter().find(|stored| stored.id == arc)?;
-        let held_led_at_the_opening = if held == stood.from {
-            true
-        } else if held == stood.to {
-            false
-        } else {
-            return None;
-        };
-        let turned_degrees = if held_led_at_the_opening {
-            -form.sweep_degrees
-        } else {
-            form.sweep_degrees
-        };
-        Some(Self {
-            arc,
-            held,
-            turned_degrees,
-            laps_at_the_opening: (turned_degrees / 360.0).floor(),
-            held_led_at_the_opening,
-        })
-    }
-
-    /// Every arc that has this point for one of its ends, opened. A point can end more than one
-    /// arc — a fillet chain ends two at the same dot — and the hand turns all of them at once.
-    #[must_use]
-    pub fn turns_under(sketch: &Sketch, held: EntityId) -> Vec<Self> {
+    pub fn opening_over(sketch: &Sketch) -> Vec<Self> {
         sketch
             .arcs
             .iter()
-            .filter(|arc| arc.from == held || arc.to == held)
-            .filter_map(|arc| Self::opening(sketch, arc.id, held))
+            .filter_map(|arc| Self::opening(sketch, arc.id))
             .collect()
     }
 
-    /// Take the hand's new place, and draw the arc the way the hand has turned it.
+    /// Read the sweep one arc already stands at. `None` when its three points cannot be read or do
+    /// not draw an arc.
+    #[must_use]
+    pub fn opening(sketch: &Sketch, arc: EntityId) -> Option<Self> {
+        let stood = sketch.arcs.iter().find(|stored| stored.id == arc)?;
+        Some(Self {
+            arc,
+            first: stood.from,
+            second: stood.to,
+            carried_degrees: sketch.drawn_sweep_between(stood.center, stood.from, stood.to)?,
+        })
+    }
+
+    /// Take the settled drawing, and draw this arc the way the gesture has carried it.
     ///
-    /// Both halves in one call because they are one statement. The turn is advanced by the SHORTEST
-    /// step from where the hand last stood — which is what unwraps it, and which is safe at drag
-    /// rates for every hand that is not sitting on the center — and then the arc is stored the way
-    /// round the sign says. Writing the order every frame rather than only on a crossing is what
-    /// makes this safe to run against a preview rebuilt from scratch each frame: the answer is a
-    /// function of the turn, not of what the last frame happened to leave behind.
-    pub fn follow(&mut self, sketch: &mut Sketch, hand: [f64; 2]) {
-        let (arc, held) = (self.arc, self.held);
-        let Some(stored) = sketch.arcs.iter().find(|stored| stored.id == arc).copied() else {
+    /// The carry is advanced by the SHORTEST step from where the arc last stood — which is what
+    /// unwraps it — and then the arc is stored the way round the parity says. Writing the order
+    /// every frame rather than only on a crossing is what makes this safe to run against a preview
+    /// rebuilt from scratch each frame: the answer is a function of the carry, not of what the last
+    /// frame happened to leave behind.
+    pub fn follow(&mut self, sketch: &mut Sketch) {
+        let Some(stored) = sketch
+            .arcs
+            .iter()
+            .find(|stored| stored.id == self.arc)
+            .copied()
+        else {
             return;
         };
-        let far = if held == stored.from {
-            stored.to
-        } else if held == stored.to {
-            stored.from
-        } else {
+        let Some(drawn) = sketch.drawn_sweep_between(stored.center, self.first, self.second) else {
             return;
         };
-        let (Some(center), Some(far_at)) = (
-            sketch.point_in_plane(stored.center),
-            sketch.point_in_plane(far),
-        ) else {
-            return;
-        };
-        let bearing = |at: [f64; 2]| {
-            let (run, rise) = (at[0] - center[0], at[1] - center[1]);
-            (run.hypot(rise) > f64::EPSILON).then(|| rise.atan2(run).to_degrees())
-        };
-        let (Some(hand_bearing), Some(far_bearing)) = (bearing(hand), bearing(far_at)) else {
-            return;
-        };
-        let step = wrapped_into_a_half_turn(hand_bearing - far_bearing - self.turned_degrees);
+        let step = wrapped_into_a_half_turn(drawn - self.carried_degrees);
         if !step.is_finite() {
             return;
         }
-        self.turned_degrees += step;
-        let crossings = (self.turned_degrees / 360.0).floor() - self.laps_at_the_opening;
-        let held_leads = self.held_led_at_the_opening != ((crossings % 2.0).abs() > 0.5);
-        let leads = if held_leads { held } else { far };
+        self.carried_degrees += step;
+        let crossed_an_odd_number_of_times =
+            ((self.carried_degrees / 360.0).floor() % 2.0).abs() > 0.5;
+        let leads = if crossed_an_odd_number_of_times {
+            self.second
+        } else {
+            self.first
+        };
         if stored.from != leads {
-            sketch.reverse_arc(arc);
+            sketch.reverse_arc(self.arc);
         }
     }
 }
