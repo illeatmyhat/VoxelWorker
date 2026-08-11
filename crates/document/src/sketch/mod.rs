@@ -2033,6 +2033,19 @@ impl Sketch {
         self.arc_form(self.arcs.iter().find(|arc| arc.id == id)?)
     }
 
+    /// Whether this arc still draws something an author could see and grab.
+    ///
+    /// Stricter than [`arc_form`](Self::arc_form) reading at all, and the difference is the whole
+    /// point: the reading answers arithmetic, and a radius of `4.4e-11` about a place all three
+    /// points are stacked on is arithmetically a perfectly good circle. An end within
+    /// [`STACKED_DOT_TOLERANCE`] of the center is the same dot as the center, and an arc turning
+    /// about a place it stands on has nothing left to turn.
+    #[must_use]
+    fn arc_draws_a_circle(&self, id: EntityId) -> bool {
+        self.arc_form_of(id)
+            .is_some_and(|form| form.radius > STACKED_DOT_TOLERANCE)
+    }
+
     /// How the drawing currently stands `curve` off its own center, or `None` for a curve that
     /// does not turn.
     ///
@@ -4108,11 +4121,33 @@ impl Sketch {
             .filter(|constraint| self.constraint_stands_within(constraint, &reach))
             .copied()
             .collect();
-        // Nothing standing means nothing to trade the pull off against, so every hand is reachable
-        // exactly and the hands ARE the answer. Returning here without writing them would drop the
-        // gesture on the floor: measured, a bare arc dragged sideways did not move at all, because
-        // no relation touched it and so no solve ran to carry the pull.
-        if standing.is_empty() {
+        // Nothing standing AND nothing shaped means nothing to trade the pull off against, so every
+        // hand is reachable exactly and the hands ARE the answer. Returning here without writing
+        // them would drop the gesture on the floor: measured, a bare arc dragged sideways did not
+        // move at all, because no relation touched it and so no solve ran to carry the pull.
+        //
+        // An ARC is the exception, and it is why the second half of the question is asked at all.
+        // Its three points are not three free places: the two ends stand one radius from the
+        // center, and the kernel carries that as rows whether or not the author ever asserted
+        // anything. Write the hands through and those rows go unheard — the center the gesture
+        // pinned holds for exactly one statement before the seat below projects it onto the
+        // bisector of the chord the drag just moved, walking a center from [0,40] to
+        // [-19.23,36.15] and taking the whole arc with it. Through the solver the same drag is
+        // three points, one column and two rows, and least-norm answers it the way the author
+        // reads it: the center stands, the dragged end lands under the cursor, and the far end
+        // slides out along its own ray to the radius that names.
+        //
+        // Nothing else needs the detour. A segment holds no shape of its own, a circle keeps its
+        // radius as an authored value, and a spline's arms are a mirror restored by the seat.
+        let arcs_reached: Vec<EntityId> = self
+            .curves_standing_on_any(&reach)
+            .into_iter()
+            .filter_map(|curve| match curve {
+                SketchCurve::Arc(id) => Some(id),
+                _ => None,
+            })
+            .collect();
+        if standing.is_empty() && arcs_reached.is_empty() {
             // A snap still applies. It is geometry, not a relation: a bare arc's end stands a
             // radius from its own center whether or not anything is asserted about it, and the
             // author asked for exactly this — "the circle ghost and snapping should apply to any
@@ -4152,10 +4187,35 @@ impl Sketch {
         let plan = prepared
             .plan_apply(&self.points, &self.circles, &settled.solution)
             .map_err(|_| SketchEvaluationError::ScalarWritebackFailed)?;
-        let before = self.points.clone();
+        // An arc that was drawing a circle before the frame has to still be drawing one after it.
+        //
+        // Now that the center stands where the gesture pinned it, a radius is free to go to nothing:
+        // pull an end all the way onto the center and the rows are perfectly satisfied by a circle
+        // of radius zero, which stacks all three points on one place and leaves no arc for the
+        // author to pull back out of. Nothing downstream catches it either: at the collapse the
+        // reading answered a radius of 4.4e-11 and a sweep of 180 degrees, which is a circle in
+        // every arithmetic sense and a vanished shape on the screen.
+        //
+        // So the question is asked in the vocabulary that already answers it. An end within
+        // [`STACKED_DOT_TOLERANCE`] of the center IS the center, and an arc turning about a place
+        // it stands on is not an arc.
+        //
+        // Refused rather than clamped, and refused whole. A frame the drawing cannot hold leaves
+        // the drawing where it stood, which is what every other unanswerable drag does, and what
+        // the author sees is an arc that stops at its own limit instead of one that vanishes.
+        let drawn: Vec<EntityId> = arcs_reached
+            .into_iter()
+            .filter(|id| self.arc_draws_a_circle(*id))
+            .collect();
+        let stood = (self.points.clone(), self.circles.clone());
         plan.apply(self);
-        self.carry_authored_handles(&before);
+        self.carry_authored_handles(&stood.0);
         self.sync_derived_points();
+        if !drawn.iter().all(|id| self.arc_draws_a_circle(*id)) {
+            self.points = stood.0;
+            self.circles = stood.1;
+            return Ok(DragAnswer::stood(false));
+        }
         Ok(DragAnswer {
             moved: true,
             kept: settled.kept,

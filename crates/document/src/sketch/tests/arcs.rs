@@ -656,16 +656,33 @@ fn a_center_dragged_into_the_bulge_carries_the_arc_rather_than_flipping_it() {
     assert_near(center_of(&sketch, arc).at.in_plane(), [2.0, -2.0]);
 }
 
-/// The center is authored, but its ONE freedom is how far out along the chord's bisector it
-/// stands — so when an end moves, the seat moves with the bisector rather than staying put and
-/// leaving the dot off the curve.
+/// **An end dragged onto its own center is refused, and the arc is left standing.**
+///
+/// The limit of holding the center. With the pin honored, the radius is whatever the dragged end
+/// says it is, and an end asked to stand on the center says nothing: a circle of radius zero
+/// satisfies both of the arc's rows perfectly and collapses all three points onto one place, from
+/// which no author can pull the arc back out. The reading is what refuses it — an end sitting on
+/// its center draws no arc, so [`arc_form`](Sketch::arc_form) answers nothing and the frame is
+/// dropped whole.
+///
+/// This used to land somewhere else and land quietly: the center re-seated onto the bisector of
+/// the new chord, so the half turn from `[0,0]` to `[2,0]` came back as a half turn of radius 1
+/// about `[1,0]`. That was the same re-seat that walked the whole arc across the plane on every
+/// endpoint drag, and it is gone.
 #[test]
-fn a_center_re_seats_when_an_endpoint_moves() {
-    let (mut sketch, _from, to, arc) = half_turn();
-    assert!(sketch
-        .move_point(to, SketchPoint::new(2, 0), ctx(16))
-        .expect("evaluation context"));
-    assert_near(center_of(&sketch, arc).at.in_plane(), [1.0, 0.0]);
+fn an_end_dragged_onto_its_own_center_is_refused() {
+    let (mut sketch, from, to, arc) = half_turn();
+    assert_eq!(
+        sketch.move_point(to, SketchPoint::new(2, 0), ctx(16)),
+        Ok(false),
+        "the drawing took a frame that leaves it no arc"
+    );
+    assert_near(center_of(&sketch, arc).at.in_plane(), [2.0, 0.0]);
+    assert_near(sketch.point_in_plane(to).expect("the far end"), [4.0, 0.0]);
+    assert_near(
+        sketch.point_in_plane(from).expect("the near end"),
+        [0.0, 0.0],
+    );
 }
 
 #[test]
@@ -963,6 +980,148 @@ fn one_radius_dimension_holds_an_arc_and_a_circle_against_their_own_rim_drags() 
         assert!(
             (radius - 10.0).abs() < 1.0e-6,
             "a dimensioned {name} was dragged to {radius}, not held at 10"
+        );
+    }
+}
+
+/// A bare quarter arc from `(-40,0)` to `(40,0)`, which mints its center at `(0,40)` and stands
+/// both ends `56.57` out from it. Nothing is asserted about it — that is the whole point, because
+/// the drag path an undimensioned arc takes is the one under test.
+fn bare_quarter_arc() -> (Sketch, EntityId, EntityId, EntityId) {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let from = sketch.add_free_point(SketchPoint::from_continuous(-40.0, 0.0));
+    let to = sketch.add_free_point(SketchPoint::from_continuous(40.0, 0.0));
+    let arc = sketch
+        .connect_arc(from, to, AngleMeasurement::from_degrees(90))
+        .expect("a fresh arc over an unjoined pair");
+    let center = sketch
+        .arcs()
+        .iter()
+        .find(|held| held.id == arc)
+        .expect("the arc")
+        .center;
+    (sketch, from, to, center)
+}
+
+/// **An arc endpoint drag turns about the center, and the center does not move.**
+///
+/// The gesture already declares this — [`Hand`](crate::sketch::Hand) names the center a `Pin` — and
+/// the declaration was honest all along. What was not honest was the path: with nothing asserted
+/// about a bare arc, the settle took a write-through shortcut that never ran the solver, so the
+/// `Pin` was never turned into a row, and the seat that ran on the very next line projected the
+/// center onto the perpendicular bisector of the chord the drag had just changed. Measured, a pull
+/// of the near end to `[-60,-20]` walked the center from `[0,40]` to `[-19.23,36.15]` and took the
+/// whole arc with it.
+///
+/// The far-pull clause guards the regression the shortcut was born to fix: an unconstrained end
+/// must still land where the cursor is. A solve that drops a Lead it has nothing to trade against
+/// fails here rather than in the author's hands.
+#[test]
+fn an_arc_endpoint_drag_holds_the_center_it_turns_about() {
+    let (mut sketch, from, _, center) = bare_quarter_arc();
+    assert_eq!(
+        sketch.move_point(from, SketchPoint::from_continuous(-60.0, -20.0), ctx(16)),
+        Ok(true),
+        "the drag was not answered, so this proves nothing"
+    );
+    let hub = sketch.point_in_plane(center).expect("the center");
+    assert!(
+        (hub[0]).abs() < 1.0e-6 && (hub[1] - 40.0).abs() < 1.0e-6,
+        "the pinned center walked to {hub:?} instead of standing at [0, 40]"
+    );
+    let end = sketch.point_in_plane(from).expect("the dragged end");
+    assert!(
+        (end[0] + 60.0).abs() < 1.0e-6 && (end[1] + 20.0).abs() < 1.0e-6,
+        "the dragged end landed at {end:?} instead of under the cursor at [-60, -20]"
+    );
+}
+
+/// **With the center held, the FAR end slides along its own radius.**
+///
+/// The consequence of holding the center, and the half of the gesture nobody was performing. An arc
+/// stores three points and derives everything else from them, so a drag that moves one end without
+/// moving the other leaves a triple no circle passes through — and every reader manufactures a
+/// circle anyway ([`arc_form`](Sketch::arc_form) re-seats the center on each read), which is how an
+/// inconsistent store becomes a moving picture.
+///
+/// The far end is not a hand. It is FREE, and the arc's own rows — one radius, one row per end —
+/// place it: least-norm satisfies `|to - center| = radius` by moving it the shortest way there,
+/// which is straight out along the ray it already stands on. So the bearing is the assertion. The
+/// sweep changes as a consequence, which is the thing the author asked for.
+#[test]
+fn an_arc_endpoint_drag_slides_the_far_end_along_its_own_radius() {
+    let (mut sketch, from, to, center) = bare_quarter_arc();
+    let hub = sketch.point_in_plane(center).expect("the center");
+    let stood = sketch.point_in_plane(to).expect("the far end");
+    let bearing = (stood[1] - hub[1]).atan2(stood[0] - hub[0]);
+    // Walked, because a drag is walked. Each frame's answer is a step taken from a seed the caller
+    // has already bent, so the tangential residue is a function of how far one frame reaches: the
+    // same pull taken in one jump leaves the far end 1.78 degrees off its ray, and in eight steps
+    // it leaves 0.27.
+    for step in 1..=8 {
+        let travel = f64::from(step) / 8.0;
+        assert_eq!(
+            sketch.move_point(
+                from,
+                SketchPoint::from_continuous(-40.0 - 20.0 * travel, -20.0 * travel),
+                ctx(16)
+            ),
+            Ok(true),
+            "the drag was not answered, so this proves nothing"
+        );
+    }
+    let hub = sketch.point_in_plane(center).expect("the center");
+    let near = sketch.point_in_plane(from).expect("the dragged end");
+    let far = sketch.point_in_plane(to).expect("the far end");
+    let reach = |at: [f64; 2]| (at[0] - hub[0]).hypot(at[1] - hub[1]);
+    assert!(
+        (reach(far) - reach(near)).abs() < 1.0e-6,
+        "the arc's ends stand {} and {} from the center, so no circle passes through both",
+        reach(near),
+        reach(far)
+    );
+    let turned = (far[1] - hub[1]).atan2(far[0] - hub[0]) - bearing;
+    assert!(
+        turned.abs() < 0.02,
+        "the far end swung {turned} radians off its own ray instead of sliding along it"
+    );
+    assert!(
+        reach(far) > 56.6,
+        "the far end stands {} from the center, so it did not follow the radius out",
+        reach(far)
+    );
+}
+
+/// **Seating the drawing a second time moves nothing.**
+///
+/// [`sync_derived_points`](Sketch::sync_derived_points) runs at the end of BOTH settle paths, and it
+/// is only ever meant to remove a drift nobody chose. That makes it an identity on any drawing the
+/// settle left consistent — so running it twice is the cheapest way to ask whether it is still a
+/// corrector anywhere.
+///
+/// A guard rather than a falsification: it was green before the pin was honored and it is green
+/// after, because projecting onto a bisector is idempotent once the chord stops moving. Seen red by
+/// deleting the settle's own closing seat, which leaves the solver's `1e-8` residue in the store
+/// for the second one to find. What it is here to catch is the day a settle leaves the drawing
+/// inconsistent — which surfaces to the author not as a wrong shape but as one that drifts a little
+/// further every frame they hold the mouse down.
+#[test]
+fn seating_the_drawing_twice_moves_nothing_the_first_seat_did_not() {
+    let (mut sketch, from, _, _) = bare_quarter_arc();
+    assert_eq!(
+        sketch.move_point(from, SketchPoint::from_continuous(-60.0, -20.0), ctx(16)),
+        Ok(true),
+        "the drag was not answered, so this proves nothing"
+    );
+    let settled: Vec<Point> = sketch.points().to_vec();
+    sketch.sync_derived_points();
+    let seated: Vec<Point> = sketch.points().to_vec();
+    for (before, after) in settled.iter().zip(seated.iter()) {
+        assert_eq!(
+            before.at.in_plane(),
+            after.at.in_plane(),
+            "a second seat moved point {:?}, so the first one left the drawing inconsistent",
+            before.id
         );
     }
 }
