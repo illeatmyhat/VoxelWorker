@@ -106,6 +106,27 @@ mod rail;
 )]
 mod sketch_overlay;
 
+/// The layer every INSTRUMENT draws on — one door, so the tier is auditable.
+///
+/// Chrome is over the drawing and the drawing is over the scene, and egui gives that to us only
+/// through the `Order` tier: within one order, the layers this application makes are not areas, so
+/// `GraphicLayers::drain` empties them in HASH-MAP ITERATION ORDER, out of a branch egui's own
+/// comment calls a safety net it does not expect to reach. Nothing within a tier is ordered. The
+/// tiers are carrying the whole arrangement.
+///
+/// Which is why there are exactly two doors to a tier — this one, and
+/// [`sketch_mark_painter`](sketch_overlay) for the marks below it — and the audit is
+/// `LayerId::new` outside them. Enumerating the chrome by grepping for `Order::` was tried and it
+/// is not the same thing: it finds everything that NAMES an order and is blind to anything that
+/// inherited one. The DISPLAY stack inherited the root ui's background layer that way and spent a
+/// release under the sketch.
+///
+/// [`crate::gizmos::orbit_reticle_overlay`] is the one deliberate exception, and it documents
+/// itself: it is a camera mark the chrome is supposed to cover.
+pub(crate) fn chrome_layer(id: &'static str) -> egui::LayerId {
+    egui::LayerId::new(egui::Order::Foreground, egui::Id::new(id))
+}
+
 pub use notice::viewport_notice;
 pub use rail::{icon_rail, orbit_type_button_rect, rail_height, rail_rect, rail_top, RailClick};
 pub use sketch_overlay::{

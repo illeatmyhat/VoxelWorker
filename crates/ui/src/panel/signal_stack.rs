@@ -22,7 +22,7 @@
 //! [`cube_right_inset_points`], fed back to `view_cube_corner` so the anchor tracks the
 //! stack's current width.
 
-use egui::{CornerRadius, Margin, Pos2, Rect, Sense, Shape, Stroke, StrokeKind, UiBuilder, Vec2};
+use egui::{CornerRadius, Margin, Pos2, Rect, Sense, Shape, Stroke, StrokeKind, Vec2};
 
 use super::{controls, layers, PanelResponse, PanelState, ViewMode};
 use crate::theme::{
@@ -80,6 +80,9 @@ pub fn cube_right_inset_points(folded: bool) -> f32 {
 /// on egui consumption) went DEAD across the top of the viewport, growing with the stack
 /// (worst in Onion-fog, whose section is tallest). A non-allocating child paints the
 /// identical pixels while leaving the root cursor — and thus the input region — untouched.
+///
+/// Both of those, and the named Foreground layer that keeps the sketch overlay from painting over
+/// the box, come from [`super::floating_instrument`] — see it for why each half is there.
 pub fn build_signal_stack(
     root_ui: &mut egui::Ui,
     state: &mut PanelState,
@@ -98,7 +101,7 @@ pub fn build_signal_stack(
         Vec2::new(width, (central_rect.height() - 2.0 * STACK_MARGIN).max(0.0)),
     );
 
-    let mut stack_ui = root_ui.new_child(UiBuilder::new().max_rect(max_rect));
+    let mut stack_ui = super::floating_instrument(root_ui, max_rect, "signal_display_stack");
     // The stack's scoped Signal style, built from `Style::default` so the floating stack
     // renders the same regardless of the app-wide restyle around it.
     theme::apply_stack_style(&mut stack_ui);
@@ -418,5 +421,77 @@ mod tests {
                 assert!((stack_rect.top() - (central.top() + STACK_MARGIN)).abs() <= 2.5);
             });
         }
+    }
+
+    /// **The stack paints over the sketch, not under it.**
+    ///
+    /// Reported after the overlay was clipped to the viewport: "the display settings stackbox
+    /// still renders under it. And so does the viewport" — the second being a SECTION of this same
+    /// box, not another widget.
+    ///
+    /// A non-allocating child does not inherit a layer of its own; it paints in the ROOT ui's,
+    /// which is the background tier. Every other instrument names `Order::Foreground` explicitly,
+    /// so a search for the ones that do enumerates the chrome that opted in and silently omits
+    /// this one, which inherited. Putting the sketch marks on `Order::Middle` then turned what had
+    /// been insertion luck into a guarantee pointing the wrong way.
+    ///
+    /// What is asserted is the drained paint ORDER, because that is what "over" means: the marks
+    /// are drawn FIRST in the frame, exactly as the shell draws them, and every one of their
+    /// shapes still has to come out behind every shape of the stack. Marks are told apart by their
+    /// clip rect, which is the viewport and is theirs alone.
+    ///
+    /// **Seen red**: without the named layer, the stack's first shape came back at index 0 and
+    /// the sketch's last at 43 — the drawing painted last, over the instrument.
+    #[test]
+    fn the_display_stack_paints_over_the_sketch_marks() {
+        let context = egui::Context::default();
+        let mut state = PanelState::default();
+        let mut response = PanelResponse::default();
+        let raw_input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1280.0, 800.0))),
+            ..Default::default()
+        };
+        // Deliberately inset from the screen, so a mark's clip rect is a value nothing else in
+        // the frame carries — with a full-screen viewport it is also the root ui's clip and the
+        // two cannot be told apart.
+        let viewport = Rect::from_min_max(Pos2::new(100.0, 50.0), Pos2::new(1180.0, 750.0));
+        let output = context.run_ui(raw_input, |ui| {
+            // A mark running clear across the stack's corner, drawn first — the frame's own order.
+            crate::chrome::sketch_segment_lines(
+                ui,
+                viewport,
+                &[crate::chrome::SketchEdgeLine {
+                    a: viewport.left_top(),
+                    b: viewport.right_bottom(),
+                    state: crate::gizmos::HandleState::Idle,
+                    construction: false,
+                }],
+            );
+            build_signal_stack(ui, &mut state, viewport, 800, 0, &mut response);
+        });
+
+        let mark = |index: usize| {
+            output
+                .shapes
+                .get(index)
+                .is_some_and(|s| s.clip_rect == viewport)
+        };
+        let last_mark = (0..output.shapes.len()).filter(|index| mark(*index)).max();
+        let first_stack = (0..output.shapes.len()).find(|index| !mark(*index));
+        assert!(
+            last_mark.is_some() && first_stack.is_some(),
+            "the frame drew {} shapes but not both a sketch mark and a stack shape, so the order \
+             is not what this measured",
+            output.shapes.len()
+        );
+        // Sentinels chosen so a missing side fails the comparison below rather than passing it;
+        // the assert above has already ruled that out.
+        let last_mark = last_mark.unwrap_or(usize::MAX);
+        let first_stack = first_stack.unwrap_or(0);
+        assert!(
+            first_stack > last_mark,
+            "the stack's first shape is at {first_stack} and the sketch's last at {last_mark}, \
+             so the drawing paints over the instrument"
+        );
     }
 }

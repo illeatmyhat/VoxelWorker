@@ -3,12 +3,12 @@
 //! session-durable placement snap settings ([`PositionSnap`], [`AngleSnap`]).
 //!
 //! Drawn with the same **absolute-rect immediate-mode child** idiom as the Signal stack
-//! (`signal_stack.rs`) — `root_ui.new_child(..)` at a corner of the central rect, background
-//! painted behind via an [`egui::Frame`], the painted `min_rect()` returned as a chrome
+//! (`signal_stack.rs`) — [`super::floating_instrument`] at a corner of the central rect,
+//! background painted behind via an [`egui::Frame`], the painted `min_rect()` returned as a chrome
 //! hit-rect — rather than an `egui::Area`, so it renders on the single-frame headless `shot`
 //! capture and the shell's camera gate treats it as chrome (clicks on it don't orbit).
 
-use egui::{CornerRadius, Margin, Pos2, Rect, Stroke, UiBuilder, Vec2};
+use egui::{CornerRadius, Margin, Pos2, Rect, Stroke, Vec2};
 use voxel_core::voxel::ShapeKind;
 
 use super::state::{AngleSnap, PanelState, PlacementPivot, PositionSnap};
@@ -48,7 +48,7 @@ pub fn build_add_shape_dialog(
             (central_rect.height() - 2.0 * DIALOG_MARGIN).max(0.0),
         ),
     );
-    let mut dialog_ui = root_ui.new_child(UiBuilder::new().max_rect(max_rect));
+    let mut dialog_ui = super::floating_instrument(root_ui, max_rect, "add_shape_dialog");
 
     egui::Frame::new()
         .fill(BG)

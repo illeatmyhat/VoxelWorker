@@ -1,6 +1,6 @@
 //! The floating viewport notice — a refusal, drawn where the author is looking.
 
-use egui::{Color32, FontId, Id, LayerId, Order, Pos2, Rect, Stroke, StrokeKind, TextFormat, Vec2};
+use egui::{Color32, FontId, Pos2, Rect, Stroke, StrokeKind, TextFormat, Vec2};
 
 use crate::theme;
 
@@ -30,10 +30,9 @@ pub fn viewport_notice(ui: &egui::Ui, viewport_rect: Rect, why: &str) {
     job.append("  ·  ", 0.0, format_with(theme::BORDER));
     job.append(why, 0.0, format_with(theme::TEXT_PRIMARY));
 
-    let painter = ui.ctx().layer_painter(LayerId::new(
-        Order::Foreground,
-        Id::new("signal_viewport_notice"),
-    ));
+    let painter = ui
+        .ctx()
+        .layer_painter(super::chrome_layer("signal_viewport_notice"));
     let galley = painter.layout_job(job);
     let size = galley.size() + Vec2::new(PAD_X * 2.0, PAD_Y * 2.0);
     let corner = Pos2::new(

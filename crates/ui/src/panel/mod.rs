@@ -407,6 +407,34 @@ pub use state::{
 use crate::palette::BlockPalette;
 use crate::theme;
 
+/// A floating instrument's own [`egui::Ui`]: a NON-ALLOCATING child of the root at an absolute
+/// rect, on its own [`egui::Order::Foreground`] layer.
+///
+/// Both halves are load-bearing and each was learned the hard way.
+///
+/// Non-allocating, because [`egui::Ui::scope_builder`] advances the PARENT cursor past the child,
+/// and `Context::run_ui` records the root's remaining `available_rect_before_wrap` as the "not
+/// over egui" input region — so a scoped instrument carves a full-width band out of the viewport's
+/// input and the shell's orbit, pan and zoom go dead across it.
+///
+/// On a named layer, because a child that does not name one paints in the root ui's, which is
+/// [`egui::LayerId::background()`]. That is the trap: every other piece of chrome says
+/// `Order::Foreground` out loud, so a search for the instruments finds the ones that opted in and
+/// silently omits the ones that inherited — and an instrument in the background tier is one the
+/// sketch overlay is entitled to paint straight over. **A floating instrument states its tier;
+/// inheriting one is how it ends up under the drawing.**
+pub(crate) fn floating_instrument(
+    root_ui: &mut egui::Ui,
+    max_rect: egui::Rect,
+    id: &'static str,
+) -> egui::Ui {
+    root_ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(max_rect)
+            .layer_id(crate::chrome::chrome_layer(id)),
+    )
+}
+
 /// Build the right-hand side panel into the root [`egui::Ui`] of the frame.
 ///
 /// The sidebar hosts the scene tree, points, inspector and export; the display-related

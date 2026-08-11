@@ -58,10 +58,9 @@ pub fn orbit_center(painter: &Painter, center: Pos2, placing: bool) {
 /// layer discipline; it registers no chrome rect, because the pivot is not grabbable — it is
 /// moved by the context menu, never by dragging it.
 pub fn orbit_center_overlay(ui: &egui::Ui, center: Pos2, placing: bool) {
-    let painter = ui.ctx().layer_painter(egui::LayerId::new(
-        egui::Order::Foreground,
-        egui::Id::new("orbit_center_gizmo"),
-    ));
+    let painter = ui
+        .ctx()
+        .layer_painter(crate::chrome::chrome_layer("orbit_center_gizmo"));
     orbit_center(&painter, center, placing);
 }
 

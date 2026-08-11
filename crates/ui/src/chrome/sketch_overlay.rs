@@ -69,12 +69,17 @@ pub const SKETCH_CONSTRAINT_BADGE_OFFSET: f32 = 30.0;
 /// application. The clip is what makes "the sketch lives in the viewport" true of the marks rather
 /// than merely true of the camera.
 ///
-/// [`Order::Middle`] rather than `Foreground` is the second half of the same statement. The
-/// floating chrome — the icon rail, the notice, the exit control, every menu — is all `Foreground`,
-/// and two layers sharing an order are painted in the sequence their layers were first touched
-/// that frame. That is insertion luck, not a decision. `Middle` is empty in this application, so
-/// putting the marks there says once and for all that the drawing is under the instruments and
-/// over the scene — including over the root ui, which is where the panels and the reticle live.
+/// [`Order::Middle`] rather than `Foreground` is the second half of the same statement. Every
+/// instrument goes through [`chrome_layer`](super::chrome_layer) onto `Foreground`, and two layers
+/// sharing an order are emptied in hash-map order — so a mark on `Foreground` was ABOVE or BELOW
+/// the rail by luck. `Middle` is this application's only occupant of its tier, which turns the
+/// arrangement into something the enum decides.
+///
+/// It also means the marks are over the root ui, and that is a claim about what is IN the root ui.
+/// It cost a release to learn: the DISPLAY stack was a non-allocating child that never named a
+/// layer, so it inherited the root's background one and this tier promptly guaranteed the drawing
+/// would cover it. See [`chrome_layer`](super::chrome_layer) — a floating instrument names its
+/// tier, and the audit is the two doors rather than a search for the ones that mention an order.
 ///
 /// [`crate::gizmos::orbit_reticle_overlay`] takes `Background` for what looks like the same
 /// problem, and the PRINCIPLE is the same — pick the tier that makes the requirement a guarantee
@@ -95,10 +100,9 @@ pub fn sketch_exit_control(
     viewport_rect: Rect,
     chrome_rects: &mut Vec<Rect>,
 ) -> Option<SketchExit> {
-    let painter = ui.ctx().layer_painter(LayerId::new(
-        Order::Foreground,
-        Id::new("sketch_exit_control"),
-    ));
+    let painter = ui
+        .ctx()
+        .layer_painter(super::chrome_layer("sketch_exit_control"));
     painter.rect_stroke(
         viewport_rect.shrink(1.0),
         0.0,
@@ -712,7 +716,7 @@ mod tests {
             ink: super::SketchVertexInk::OnInk,
         };
         let mut chrome = Vec::new();
-        Context::default().run_ui(
+        let _ = Context::default().run_ui(
             RawInput {
                 screen_rect: Some(screen),
                 ..Default::default()

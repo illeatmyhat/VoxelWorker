@@ -1,7 +1,7 @@
 //! The Signal icon rail under the view cube: Home / Fit / viewport-mode-cycle / orbit type.
 
 use camera::OrbitType;
-use egui::{Color32, Id, LayerId, Order, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
+use egui::{Color32, Id, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 
 use crate::icons::Icon;
 use crate::panel::{OrbitMode, ViewMode};
@@ -121,7 +121,7 @@ pub fn icon_rail(
     let rail_rect = rail_rect(cube_left, cube_bottom, cube_size);
     let painter = ui
         .ctx()
-        .layer_painter(LayerId::new(Order::Foreground, Id::new("signal_icon_rail")));
+        .layer_painter(super::chrome_layer("signal_icon_rail"));
     painter.rect_filled(rail_rect, 0.0, theme::BG);
 
     let mut click = None;
