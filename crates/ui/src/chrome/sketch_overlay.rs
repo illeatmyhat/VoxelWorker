@@ -59,6 +59,34 @@ pub const SKETCH_CONSTRAINT_BADGE: f32 = 32.0;
 /// reads the same at any badge size.
 pub const SKETCH_CONSTRAINT_BADGE_OFFSET: f32 = 30.0;
 
+/// The layer every sketch mark is painted on: over the scene, under the floating chrome, and
+/// CLIPPED TO THE VIEWPORT.
+///
+/// A sketch mark is a projection of the drawing, so it goes wherever the drawing goes — including
+/// off the side of the viewport when the camera is close or the geometry is wide. Nothing about
+/// that projection knows where the panels are, so without the clip the marks paint straight across
+/// the side panel and the palette dock, and the drawing appears to float on top of the
+/// application. The clip is what makes "the sketch lives in the viewport" true of the marks rather
+/// than merely true of the camera.
+///
+/// [`Order::Middle`] rather than `Foreground` is the second half of the same statement. The
+/// floating chrome — the icon rail, the notice, the exit control, every menu — is all `Foreground`,
+/// and two layers sharing an order are painted in the sequence their layers were first touched
+/// that frame. That is insertion luck, not a decision. `Middle` is empty in this application, so
+/// putting the marks there says once and for all that the drawing is under the instruments and
+/// over the scene — including over the root ui, which is where the panels and the reticle live.
+///
+/// [`crate::gizmos::orbit_reticle_overlay`] takes `Background` for what looks like the same
+/// problem, and the PRINCIPLE is the same — pick the tier that makes the requirement a guarantee
+/// instead of luck — but the requirement is the opposite one. The reticle is a whole-frame camera
+/// mark that the chrome *should* cover, so it wants to be under everything egui draws. Sketch
+/// marks are the drawing itself and must not go under the panels. Only the clip is common to both.
+fn sketch_mark_painter(ui: &egui::Ui, viewport: Rect, id: &'static str) -> egui::Painter {
+    ui.ctx()
+        .layer_painter(LayerId::new(Order::Middle, Id::new(id)))
+        .with_clip_rect(viewport)
+}
+
 /// The sketch-mode exit control + immersive border: a faint accent inset border framing the
 /// viewport plus the floating `CANCEL` / `FINISH SKETCH` pair bottom-right; returns the clicked
 /// arm. Registers the buttons as chrome so a click never leaks to the camera orbit.
@@ -133,12 +161,10 @@ pub fn sketch_exit_control(
 }
 
 /// Draw the add-point insert-preview diamond at `center` (already-projected). Not chrome — a
-/// passive preview, so a click passes through to the shell's insert.
-pub fn sketch_insert_marker(ui: &egui::Ui, center: Pos2) {
-    let painter = ui.ctx().layer_painter(LayerId::new(
-        Order::Foreground,
-        Id::new("sketch_insert_marker"),
-    ));
+/// passive preview, so a click passes through to the shell's insert. Clipped to `viewport` like
+/// every sketch mark; see [`sketch_mark_painter`].
+pub fn sketch_insert_marker(ui: &egui::Ui, viewport: Rect, center: Pos2) {
+    let painter = sketch_mark_painter(ui, viewport, "sketch_insert_marker");
     gizmos::diamond(&painter, center, SKETCH_INSERT_MARKER_HALF);
 }
 
@@ -154,11 +180,8 @@ pub fn sketch_insert_marker(ui: &egui::Ui, center: Pos2) {
 /// curve is invisible. The halo is what separates the mark from the curve; the weight is what
 /// separates it from the guide lines it crosses. A ring at the center closes it, so the mark reads
 /// as pointing at a place rather than as four loose strokes.
-pub fn sketch_snap_marker(ui: &egui::Ui, center: Pos2) {
-    let painter = ui.ctx().layer_painter(LayerId::new(
-        Order::Foreground,
-        Id::new("sketch_snap_marker"),
-    ));
+pub fn sketch_snap_marker(ui: &egui::Ui, viewport: Rect, center: Pos2) {
+    let painter = sketch_mark_painter(ui, viewport, "sketch_snap_marker");
     let arms = |color, width| {
         gizmos::snap_ticks_weighted(
             &painter,
@@ -256,11 +279,8 @@ pub enum SketchPreviewMark {
 /// Ordered so the reading is bottom-up: guides under the outline they explain, the taken points
 /// over both (they are the author's own input and must never be buried), and a refusal on top of
 /// everything, because it is the reason nothing else is happening.
-pub fn sketch_draw_preview(ui: &egui::Ui, marks: &[SketchPreviewMark]) {
-    let painter = ui.ctx().layer_painter(LayerId::new(
-        Order::Foreground,
-        Id::new("sketch_draw_preview"),
-    ));
+pub fn sketch_draw_preview(ui: &egui::Ui, viewport: Rect, marks: &[SketchPreviewMark]) {
+    let painter = sketch_mark_painter(ui, viewport, "sketch_draw_preview");
     let polylines = |want: SketchPreviewLine| {
         for mark in marks {
             if let SketchPreviewMark::Polyline {
@@ -342,11 +362,8 @@ pub struct DimensionGizmo {
 /// A PICKED dimension gets an accent plate behind its value, which is where a badge puts its
 /// plate too. The number is the only part of a dimension an author can reliably aim at, so it is
 /// the part that reports being held.
-pub fn sketch_dimension_gizmos(ui: &egui::Ui, gizmos: &[DimensionGizmo]) {
-    let painter = ui.ctx().layer_painter(LayerId::new(
-        Order::Foreground,
-        Id::new("sketch_dimension_gizmos"),
-    ));
+pub fn sketch_dimension_gizmos(ui: &egui::Ui, viewport: Rect, gizmos: &[DimensionGizmo]) {
+    let painter = sketch_mark_painter(ui, viewport, "sketch_dimension_gizmos");
     for gizmo in gizmos {
         if gizmo.picked {
             for box_rect in gizmo.drawing.label_boxes() {
@@ -379,11 +396,8 @@ pub fn sketch_dimension_gizmos(ui: &egui::Ui, gizmos: &[DimensionGizmo]) {
 ///
 /// Not chrome — a press over a badge is resolved by the shell's own hit-test, which needs the
 /// click rather than having egui swallow it.
-pub fn sketch_constraint_badges(ui: &egui::Ui, badges: &[ConstraintBadge]) {
-    let painter = ui.ctx().layer_painter(LayerId::new(
-        Order::Foreground,
-        Id::new("sketch_constraint_badges"),
-    ));
+pub fn sketch_constraint_badges(ui: &egui::Ui, viewport: Rect, badges: &[ConstraintBadge]) {
+    let painter = sketch_mark_painter(ui, viewport, "sketch_constraint_badges");
     for badge in badges {
         let box_rect = Rect::from_center_size(badge.center, Vec2::splat(SKETCH_CONSTRAINT_BADGE));
         let ink = if badge.picked {
@@ -410,11 +424,8 @@ pub fn sketch_constraint_badges(ui: &egui::Ui, badges: &[ConstraintBadge]) {
 /// (right→left, any-intersection) = dashed outline + lighter fill — dashed already means
 /// "looser" in the gizmo family, so the semantic is legible mid-drag. Not chrome — a passive
 /// preview over an already-armed press.
-pub fn sketch_marquee_band(ui: &egui::Ui, rect: Rect, window: bool) {
-    let painter = ui.ctx().layer_painter(LayerId::new(
-        Order::Foreground,
-        Id::new("sketch_marquee_band"),
-    ));
+pub fn sketch_marquee_band(ui: &egui::Ui, viewport: Rect, rect: Rect, window: bool) {
+    let painter = sketch_mark_painter(ui, viewport, "sketch_marquee_band");
     let stroke = Stroke::new(1.0_f32, theme::ACCENT);
     if window {
         painter.rect_filled(rect, 0.0, theme::MARQUEE_WINDOW_FILL);
@@ -490,11 +501,8 @@ pub struct SketchVertexHandle {
 
 /// Draw the committed segment lines between their projected endpoints. Idle edges first, then the
 /// single hovered/marked one on top so its brighter line (or warn line + ✕) is never clipped.
-pub fn sketch_segment_lines(ui: &egui::Ui, lines: &[SketchEdgeLine]) {
-    let painter = ui.ctx().layer_painter(LayerId::new(
-        Order::Foreground,
-        Id::new("sketch_segment_lines"),
-    ));
+pub fn sketch_segment_lines(ui: &egui::Ui, viewport: Rect, lines: &[SketchEdgeLine]) {
+    let painter = sketch_mark_painter(ui, viewport, "sketch_segment_lines");
     let draw = |line: &SketchEdgeLine| {
         gizmos::roled_segment(&painter, line.a, line.b, line.state, line.construction);
         if line.state == gizmos::HandleState::Marked {
@@ -517,11 +525,8 @@ pub fn sketch_segment_lines(ui: &egui::Ui, lines: &[SketchEdgeLine]) {
 /// idle-then-emphasised ordering and the same [`gizmos::HandleState`] vocabulary the segment lines
 /// use, so an arc and a straight edge answer the pointer identically. A `Marked` arc stamps its
 /// warn `✕` once, at the curve's midpoint, rather than once per chord.
-pub fn sketch_arc_curves(ui: &egui::Ui, curves: &[SketchCurveLine]) {
-    let painter = ui.ctx().layer_painter(LayerId::new(
-        Order::Foreground,
-        Id::new("sketch_arc_curves"),
-    ));
+pub fn sketch_arc_curves(ui: &egui::Ui, viewport: Rect, curves: &[SketchCurveLine]) {
+    let painter = sketch_mark_painter(ui, viewport, "sketch_arc_curves");
     let draw = |curve: &SketchCurveLine| {
         match curve.ink {
             SketchCurveInk::TangentLever => {
@@ -558,15 +563,22 @@ pub fn sketch_arc_curves(ui: &egui::Ui, curves: &[SketchCurveLine]) {
 /// chrome so a press drags the vertex instead of orbiting.
 pub fn sketch_vertex_handles(
     ui: &egui::Ui,
+    viewport: Rect,
     handles: &[SketchVertexHandle],
     chrome_rects: &mut Vec<Rect>,
 ) {
-    let painter = ui.ctx().layer_painter(LayerId::new(
-        Order::Foreground,
-        Id::new("sketch_vertex_handles"),
-    ));
+    let painter = sketch_mark_painter(ui, viewport, "sketch_vertex_handles");
     let grab = SKETCH_HANDLE_HALF + SKETCH_HANDLE_GRAB_PAD;
     for handle in handles {
+        // The grab is registered as the part of the reach the viewport actually shows, and a reach
+        // it shows nothing of is skipped outright. The rect in `chrome_rects` is the shell's
+        // do-not-orbit gate, so anything registered past the clip is an armed grab with no pixels
+        // under it — a hold the author cannot see, sitting over the side panel. Intersecting
+        // rather than testing keeps that true at the viewport edge as well as outside it.
+        let reach = Rect::from_center_size(handle.at, Vec2::splat(grab * 2.0)).intersect(viewport);
+        if !reach.is_positive() {
+            continue;
+        }
         match handle.ink {
             SketchVertexInk::TangentArm => {
                 gizmos::tangent_arm_handle(&painter, handle.at, SKETCH_HANDLE_HALF, handle.state);
@@ -579,7 +591,7 @@ pub fn sketch_vertex_handles(
                 ink == SketchVertexInk::OnInk,
             ),
         }
-        chrome_rects.push(Rect::from_center_size(handle.at, Vec2::splat(grab * 2.0)));
+        chrome_rects.push(reach);
     }
 }
 
@@ -587,6 +599,140 @@ pub fn sketch_vertex_handles(
 mod tests {
     use super::{sketch_draw_preview, SketchPreviewLine, SketchPreviewMark};
     use egui::{pos2, Context, Pos2, RawInput, Rect, Vec2};
+
+    /// A viewport the whole test screen fits inside, for the tests that are asking about ink and
+    /// arrangement rather than about the clip. The clip is its own test.
+    fn whole_screen() -> Rect {
+        Rect::EVERYTHING
+    }
+
+    /// **Every sketch mark is clipped to the viewport, so a drawing that runs off the side of the
+    /// screen does not paint across the panels.**
+    ///
+    /// Reported from the app: "the egui sketch renders on top of the UI when it should be
+    /// constrained to the viewport." A sketch mark is a projection of the drawing and knows
+    /// nothing about where the panels are, so a curve that leaves the viewport used to keep going
+    /// straight over the side panel and the palette dock.
+    ///
+    /// What is asserted is the CLIP RECT each shape carries, not where the shape's own vertices
+    /// are. Vertices outside the viewport are the normal case and the whole point — a segment
+    /// leaving the frame still has to draw the part of itself that stays. The clip is what decides
+    /// how much of it lands, so the clip is the thing under test.
+    ///
+    /// **Seen red**: with the `.with_clip_rect(viewport)` removed from
+    /// [`super::sketch_mark_painter`], every mark reported `[0 0] - [400 300]`, the whole screen.
+    #[test]
+    fn every_sketch_mark_is_clipped_to_the_viewport() {
+        let screen = Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, 300.0));
+        // A viewport with room on all four sides, so a mark escaping in any direction shows up.
+        let viewport = Rect::from_min_max(pos2(60.0, 40.0), pos2(300.0, 240.0));
+        // Everything below deliberately runs out past the viewport on at least one side.
+        let outside = pos2(380.0, 280.0);
+        let inside = pos2(120.0, 90.0);
+
+        let mut chrome = Vec::new();
+        let output = Context::default().run_ui(
+            RawInput {
+                screen_rect: Some(screen),
+                ..Default::default()
+            },
+            |ui| {
+                super::sketch_segment_lines(
+                    ui,
+                    viewport,
+                    &[super::SketchEdgeLine {
+                        a: inside,
+                        b: outside,
+                        state: crate::gizmos::HandleState::Idle,
+                        construction: false,
+                    }],
+                );
+                super::sketch_arc_curves(
+                    ui,
+                    viewport,
+                    &[super::SketchCurveLine {
+                        chords: vec![inside, pos2(200.0, 20.0), outside],
+                        state: crate::gizmos::HandleState::Idle,
+                        ink: super::SketchCurveInk::Real,
+                    }],
+                );
+                super::sketch_vertex_handles(
+                    ui,
+                    viewport,
+                    &[super::SketchVertexHandle {
+                        at: inside,
+                        state: crate::gizmos::HandleState::Idle,
+                        ink: super::SketchVertexInk::OnInk,
+                    }],
+                    &mut chrome,
+                );
+                super::sketch_insert_marker(ui, viewport, outside);
+                super::sketch_snap_marker(ui, viewport, outside);
+                super::sketch_marquee_band(ui, viewport, Rect::from_min_max(inside, outside), true);
+                sketch_draw_preview(
+                    ui,
+                    viewport,
+                    &[SketchPreviewMark::Polyline {
+                        chords: vec![inside, outside],
+                        line: SketchPreviewLine::Outline,
+                        strength: 1.0,
+                    }],
+                );
+            },
+        );
+
+        assert!(
+            !output.shapes.is_empty(),
+            "the marks painted nothing, so the clip is not what this measured"
+        );
+        for clipped in &output.shapes {
+            assert!(
+                viewport.contains_rect(clipped.clip_rect),
+                "a sketch mark was clipped to {:?}, which reaches outside the viewport {viewport:?}",
+                clipped.clip_rect
+            );
+        }
+    }
+
+    /// **A vertex handle the viewport does not reach registers no grab.**
+    ///
+    /// The clip stops such a handle being DRAWN, which is exactly what makes this worth asserting
+    /// separately: a rect left in the chrome list is the shell's do-not-orbit gate, so it would be
+    /// an invisible grab sitting over the side panel, belonging to a vertex the author cannot see.
+    /// Being unable to see it is what makes it unfindable rather than merely wrong.
+    ///
+    /// **Seen red**: with the cull removed, both handles registered.
+    #[test]
+    fn a_handle_outside_the_viewport_registers_no_grab() {
+        let screen = Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, 300.0));
+        let viewport = Rect::from_min_max(pos2(60.0, 40.0), pos2(300.0, 240.0));
+        let handle = |at| super::SketchVertexHandle {
+            at,
+            state: crate::gizmos::HandleState::Idle,
+            ink: super::SketchVertexInk::OnInk,
+        };
+        let mut chrome = Vec::new();
+        Context::default().run_ui(
+            RawInput {
+                screen_rect: Some(screen),
+                ..Default::default()
+            },
+            |ui| {
+                super::sketch_vertex_handles(
+                    ui,
+                    viewport,
+                    &[handle(pos2(120.0, 90.0)), handle(pos2(370.0, 90.0))],
+                    &mut chrome,
+                );
+            },
+        );
+        assert_eq!(
+            chrome.len(),
+            1,
+            "only the handle in the viewport: {chrome:?}"
+        );
+        assert!(viewport.intersects(chrome[0]));
+    }
 
     fn painted(marks: &[SketchPreviewMark]) -> usize {
         let context = Context::default();
@@ -596,7 +742,7 @@ mod tests {
                     screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::splat(32.0))),
                     ..Default::default()
                 },
-                |ui| sketch_draw_preview(ui, marks),
+                |ui| sketch_draw_preview(ui, whole_screen(), marks),
             )
             .shapes
             .len()
@@ -622,7 +768,7 @@ mod tests {
                     screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::splat(32.0))),
                     ..Default::default()
                 },
-                |ui| sketch_draw_preview(ui, marks),
+                |ui| sketch_draw_preview(ui, whole_screen(), marks),
             )
             .shapes
             .iter()
@@ -740,7 +886,7 @@ mod tests {
                 .collect()
         };
         let center = pos2(32.0, 32.0);
-        let mark = strokes(&|ui| super::sketch_snap_marker(ui, center));
+        let mark = strokes(&|ui| super::sketch_snap_marker(ui, whole_screen(), center));
         let on_a_handle = strokes(&|ui| {
             crate::gizmos::vertex_handle(
                 ui.painter(),

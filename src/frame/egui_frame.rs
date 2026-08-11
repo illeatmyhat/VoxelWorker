@@ -736,40 +736,53 @@ pub fn run_egui_frame(
             // The committed segment lines, drawn FIRST so the vertex dots sit on top.
             // Not chrome — a segment press is handled by the shell's hit-test, and these are a
             // passive under-layer.
-            ui::chrome::sketch_segment_lines(ui, sketch_segment_lines);
+            ui::chrome::sketch_segment_lines(ui, central_rect_points, sketch_segment_lines);
             // The committed arc curves, on the same under-layer as the straight edges.
-            ui::chrome::sketch_arc_curves(ui, sketch_arc_lines);
+            ui::chrome::sketch_arc_curves(ui, central_rect_points, sketch_arc_lines);
             // The draggable profile-vertex handles, drawn at the shell's
             // projected screen positions and registered as chrome (a handle press drags the
             // vertex, never orbits).
-            ui::chrome::sketch_vertex_handles(ui, sketch_handles, &mut chrome_rects_points);
+            ui::chrome::sketch_vertex_handles(
+                ui,
+                central_rect_points,
+                sketch_handles,
+                &mut chrome_rects_points,
+            );
             // The constraint badges, over the geometry rather than under
             // it — a badge is what tells the author a level-looking line is level BECAUSE it was
             // asserted, so a line drawn across it would take the answer away.
             if !sketch_dimension_gizmos.is_empty() {
-                ui::chrome::sketch_dimension_gizmos(ui, sketch_dimension_gizmos);
+                ui::chrome::sketch_dimension_gizmos(
+                    ui,
+                    central_rect_points,
+                    sketch_dimension_gizmos,
+                );
             }
             if !sketch_constraint_badges.is_empty() {
-                ui::chrome::sketch_constraint_badges(ui, sketch_constraint_badges);
+                ui::chrome::sketch_constraint_badges(
+                    ui,
+                    central_rect_points,
+                    sketch_constraint_badges,
+                );
             }
             // The add-point insert preview — a diamond on the hovered edge. NOT
             // chrome (a passive marker), so a click passes through to the stationary-release insert.
             if let Some(center) = sketch_insert_preview {
-                ui::chrome::sketch_insert_marker(ui, center);
+                ui::chrome::sketch_insert_marker(ui, central_rect_points, center);
             }
             // The snapping mark — the engaged tick-cross where a drawing tool's pick has left the
             // grid for a curve. Passive like the insert diamond.
             if let Some(center) = sketch_snap_marker {
-                ui::chrome::sketch_snap_marker(ui, center);
+                ui::chrome::sketch_snap_marker(ui, central_rect_points, center);
             }
             // #99: the drawing tools' dashed preview — the uncommitted polyline rubber line /
             // rectangle ghost. Passive like the insert marker.
             if !sketch_draw_preview.is_empty() {
-                ui::chrome::sketch_draw_preview(ui, sketch_draw_preview);
+                ui::chrome::sketch_draw_preview(ui, central_rect_points, sketch_draw_preview);
             }
             // Slice 3: the marquee rubber band — solid window / dashed crossing. Passive.
             if let Some((rect, window)) = sketch_marquee {
-                ui::chrome::sketch_marquee_band(ui, rect, window);
+                ui::chrome::sketch_marquee_band(ui, central_rect_points, rect, window);
             }
         }
 

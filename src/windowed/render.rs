@@ -3276,6 +3276,20 @@ impl WindowedState {
         }
     }
 
+    /// The marquee's box in physical pixels, **clamped to the viewport**.
+    ///
+    /// One minting serves both readings of the gesture — the band that is drawn and the box that
+    /// selects — because they are the same rectangle and had drifted into being two. The overlay
+    /// paints nothing outside the viewport, and the sketch overlay's own law is that what is
+    /// clickable is exactly what is drawn; a box reaching under the side panel and selecting the
+    /// geometry hidden there would be a mutation the author had no way to see coming.
+    ///
+    /// The DIRECTION is read from the raw cursor, never from this rectangle: which way the hand
+    /// travelled is what picks window-vs-crossing, and clamping must not be able to change it.
+    fn sketch_marquee_box_px(&self, from: (f64, f64), to: (f64, f64)) -> egui::Rect {
+        marquee_box_px(self.last_viewport_px, from, to)
+    }
+
     /// Sketch-selection slice 3: resolve a DRAGGED empty-space Select release into the box
     /// selection. Direction picks the semantic (Fusion): left→right = **window** — points inside
     /// the box, segments with ≥1 endpoint inside; right→left = **crossing** — any entity the box
@@ -3297,10 +3311,7 @@ impl WindowedState {
             return;
         };
         let window = up_x >= down_x;
-        let rect = egui::Rect::from_two_pos(
-            egui::Pos2::new(down_x as f32, down_y as f32),
-            egui::Pos2::new(up_x as f32, up_y as f32),
-        );
+        let rect = self.sketch_marquee_box_px((down_x, down_y), (up_x, up_y));
         let mut picked: Vec<ui::panel::SelectionTarget> = Vec::new();
         let arms = self.tangent_arm_points(sketch);
         for (index, vertex) in self.sketch_vertex_px.iter().enumerate() {
@@ -6449,15 +6460,14 @@ impl WindowedState {
                         >= VIEW_CUBE_DRAG_THRESHOLD_PIXELS
                         || (cursor_y - down_y).abs() >= VIEW_CUBE_DRAG_THRESHOLD_PIXELS;
                     if past_threshold {
-                        let rect = egui::Rect::from_two_pos(
-                            egui::Pos2::new(
-                                down_x as f32 / pixels_per_point,
-                                down_y as f32 / pixels_per_point,
-                            ),
-                            egui::Pos2::new(
-                                cursor_x as f32 / pixels_per_point,
-                                cursor_y as f32 / pixels_per_point,
-                            ),
+                        // The same box the release will select with, in points rather than pixels
+                        // — see `sketch_marquee_box_px`. Drawn from the clamped rectangle so the
+                        // band stops where the selection stops.
+                        let box_px =
+                            self.sketch_marquee_box_px((down_x, down_y), (cursor_x, cursor_y));
+                        let rect = egui::Rect::from_min_max(
+                            (box_px.min.to_vec2() / pixels_per_point).to_pos2(),
+                            (box_px.max.to_vec2() / pixels_per_point).to_pos2(),
                         );
                         self.sketch_marquee_band = Some((rect, cursor_x >= down_x));
                     }
@@ -7586,6 +7596,24 @@ const fn normalized_polygon_sides(sides: u16) -> u16 {
 }
 
 /// The directional marquee predicate for the projected closed circle ring.
+/// The marquee's box in physical pixels, clamped to `viewport_px` (`[x, y, w, h]`).
+///
+/// Free of the shell so it can be measured on its own; see
+/// [`WindowedApp::sketch_marquee_box_px`](struct.WindowedApp.html) for why one rectangle serves
+/// both the band and the selection.
+fn marquee_box_px(viewport_px: [u32; 4], from: (f64, f64), to: (f64, f64)) -> egui::Rect {
+    let [left, top, width, height] = viewport_px;
+    let viewport = egui::Rect::from_min_size(
+        egui::Pos2::new(left as f32, top as f32),
+        egui::Vec2::new(width as f32, height as f32),
+    );
+    egui::Rect::from_two_pos(
+        egui::Pos2::new(from.0 as f32, from.1 as f32),
+        egui::Pos2::new(to.0 as f32, to.1 as f32),
+    )
+    .intersect(viewport)
+}
+
 fn circle_marquee_hit(ring: &[egui::Pos2], rect: egui::Rect, window: bool) -> bool {
     if window {
         ring.iter().all(|point| rect.contains(*point))
@@ -8351,7 +8379,7 @@ mod tests {
         advance_circle_center_diameter_gesture, aggregate_marquee_picks, angle_arc_radius,
         angle_legs, apply_sketch_snap, circle_gesture_is_current, circle_marquee_hit, circle_ring,
         closest_point_on_segment, complete_circle_center_diameter, concentric_badge_anchor,
-        nearest_sketch_edge_for_requirement, nearest_sketch_edge_from_candidates,
+        marquee_box_px, nearest_sketch_edge_for_requirement, nearest_sketch_edge_from_candidates,
         nearest_tangent_lever, point_in_screen_polygon, point_to_segment_distance,
         pointer_left_the_press, polygon_double_area, reset_failed_sketch_constraint_completion,
         reset_refused_sketch_constraint_completion, segment_touches_rect, segments_intersect,
@@ -8366,6 +8394,46 @@ mod tests {
     use egui::{pos2, Rect};
     use std::num::NonZeroU32;
     use ui::panel::PositionSnap;
+
+    /// **A marquee cannot select what the viewport does not show.**
+    ///
+    /// The band is drawn clipped to the viewport like every other sketch mark, and this file's own
+    /// law is that what is clickable is exactly what is drawn. A box the author drags out past the
+    /// side panel would otherwise sweep up the geometry hidden under it — a selection with no
+    /// visible cause, which is the worst kind. One clamped rectangle is minted here and read by
+    /// both the band and the release.
+    ///
+    /// **Seen red**: with the `.intersect(viewport)` dropped, the box came back
+    /// `[[100 100] - [900 700]]` and swept the point at `(850, 400)` that sits under the panel.
+    #[test]
+    fn a_marquee_box_stops_at_the_edge_of_the_viewport() {
+        // A 1200×800 window with a 400-point side panel on the right and a 60-point top bar.
+        let viewport = [0_u32, 60, 800, 740];
+        let hidden = pos2(850.0, 400.0);
+        let shown = pos2(400.0, 400.0);
+
+        let dragged_past_the_panel = marquee_box_px(viewport, (100.0, 100.0), (900.0, 700.0));
+        assert!(
+            !dragged_past_the_panel.contains(hidden),
+            "the box reached under the side panel: {dragged_past_the_panel:?}"
+        );
+        assert!(
+            dragged_past_the_panel.contains(shown),
+            "the box lost what the author could see: {dragged_past_the_panel:?}"
+        );
+
+        // Above the viewport's top edge, which the top bar occupies, clamps the same way.
+        let dragged_into_the_top_bar = marquee_box_px(viewport, (100.0, 10.0), (300.0, 300.0));
+        assert_eq!(dragged_into_the_top_bar.min.y, 60.0);
+
+        // A box wholly inside is untouched — the clamp must not cost the ordinary gesture
+        // anything.
+        let ordinary = marquee_box_px(viewport, (100.0, 100.0), (300.0, 300.0));
+        assert_eq!(
+            ordinary,
+            Rect::from_min_max(pos2(100.0, 100.0), pos2(300.0, 300.0))
+        );
+    }
 
     fn tangent_ready_sketch() -> (
         Sketch,
