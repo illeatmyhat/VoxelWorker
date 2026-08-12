@@ -183,6 +183,10 @@ impl WindowedState {
         let orbit_center_marker = self.orbit_center_marker(pixels_per_point);
         let orbit_reticle = self.orbit_reticle_visible();
         let sketch_face_at_menu = self.sketch_menu_face_is_picked();
+        // Registered on the first frame and reused; the cube's square never resizes.
+        let cube_texture = self
+            .egui_bridge
+            .view_cube_texture(&self.gpu.device, self.view_cube_renderer.standing_texture());
         let mut prepared = {
             profiling::scope!("egui_frame");
             run_egui_frame(
@@ -241,6 +245,7 @@ impl WindowedState {
                 // Whether the orbit mode's targeting reticle draws — it fills the
                 // viewport rect the frame computes, so no position travels with the flag.
                 orbit_reticle,
+                cube_texture,
             )
         };
 
@@ -1010,10 +1015,6 @@ impl WindowedState {
             // #13 Step 6 follow-up: the rotate arrows are a standing affordance whenever the view
             // is face-constrained (not hover-gated).
             cube_rotate_arrows_visible: self.app_core.camera.is_face_constrained(),
-            // Signal (issue #88): slide the cube left of the floating display stack.
-            view_cube_right_inset_px: prepared.view_cube_right_inset_px,
-            target_width: self.surface_config.width,
-            target_height: self.surface_config.height,
         };
 
         // M6: an applied VS block overrides the procedural material selection.

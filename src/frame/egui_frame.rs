@@ -6,6 +6,29 @@
 
 use crate::*;
 
+/// The central 3D viewport in physical pixels, clamped inside the target.
+///
+/// Called twice per frame and it has to answer the same both times: once inside the pass, to ask
+/// [`view_cube_corner`] where the cube stands, and once after it, for the value the shell caches
+/// and hit-tests against next frame. A viewport of at least one pixel each way, so `set_viewport`
+/// is never handed a zero.
+fn viewport_in_pixels(
+    central_rect_points: egui::Rect,
+    pixels_per_point: f32,
+    size_in_pixels: [u32; 2],
+) -> [u32; 4] {
+    let to_px = |value: f32| (value * pixels_per_point).round();
+    let left = to_px(central_rect_points.min.x).max(0.0) as u32;
+    let top = to_px(central_rect_points.min.y).max(0.0) as u32;
+    let right = to_px(central_rect_points.max.x).max(0.0) as u32;
+    let bottom = to_px(central_rect_points.max.y).max(0.0) as u32;
+    let x = left.min(size_in_pixels[0]);
+    let y = top.min(size_in_pixels[1]);
+    let width = right.min(size_in_pixels[0]).saturating_sub(x).max(1);
+    let height = bottom.min(size_in_pixels[1]).saturating_sub(y).max(1);
+    [x, y, width, height]
+}
+
 /// Width (egui points) of the rail's orbit-type menu. The menu opens LEFTWARD off its button, so
 /// this is also how far left of the rail it reaches.
 const MENU_WIDTH: f32 = 160.0;
@@ -15,6 +38,8 @@ const MENU_WIDTH: f32 = 160.0;
 pub struct EguiPaintBridge {
     pub context: egui::Context,
     pub renderer: egui_wgpu::Renderer,
+    /// The id egui paints the view cube's square through, registered on first use.
+    view_cube_texture: Option<egui::TextureId>,
 }
 
 impl EguiPaintBridge {
@@ -37,6 +62,32 @@ impl EguiPaintBridge {
         Self {
             context: egui::Context::default(),
             renderer,
+            view_cube_texture: None,
+        }
+    }
+
+    /// The id for the view cube's standing square, registering it the first time it is asked for.
+    ///
+    /// Once, for the life of the app: the cube's square is a constant number of physical pixels
+    /// whatever the window does, so the texture behind this id never resizes and never has to be
+    /// re-registered. `Nearest` because the rect it lands on is whole pixels at a device ratio of
+    /// one, and the blit should then be exact rather than nearly so.
+    pub fn view_cube_texture(
+        &mut self,
+        device: &wgpu::Device,
+        standing: &wgpu::TextureView,
+    ) -> egui::TextureId {
+        match self.view_cube_texture {
+            Some(already) => already,
+            None => {
+                let registered = self.renderer.register_native_texture(
+                    device,
+                    standing,
+                    wgpu::FilterMode::Nearest,
+                );
+                self.view_cube_texture = Some(registered);
+                registered
+            }
         }
     }
 }
@@ -275,6 +326,10 @@ pub fn run_egui_frame(
     // flag — and the shell clears it while a TURN is in flight, so the model comes round against
     // an unobstructed view. Always `false` on the headless `shot` path.
     orbit_reticle: bool,
+    // The id of the view cube's rendered square. The cube is drawn on the GPU into its own
+    // texture before this pass and painted here as an image, so that where it sits in the stack is
+    // decided by its egui tier rather than by which render pass ran first.
+    view_cube_texture: egui::TextureId,
 ) -> PreparedEguiFrame {
     let mut panel_response = PanelResponse::default();
     let mut cube_menu_request: Option<ViewCubeMenuRequest> = None;
@@ -327,7 +382,7 @@ pub fn run_egui_frame(
             );
             let context = ui.ctx().clone();
             let area = egui::Area::new(egui::Id::new("view_cube_context_menu"))
-                .order(egui::Order::Foreground)
+                .order(ui::chrome::MENU_ORDER)
                 .fixed_pos(menu_pos)
                 .show(&context, |ui| {
                     egui::Frame::menu(ui.style()).show(ui, |ui| {
@@ -402,7 +457,7 @@ pub fn run_egui_frame(
             // Cloned out of the state the rows also mutate — the bindings are read-only here.
             let shortcuts = panel_state.shortcuts.clone();
             let area = egui::Area::new(egui::Id::new("viewport_context_menu"))
-                .order(egui::Order::Foreground)
+                .order(ui::chrome::MENU_ORDER)
                 .fixed_pos(menu_pos)
                 .show(&context, |ui| {
                     egui::Frame::menu(ui.style()).show(ui, |ui| {
@@ -613,18 +668,37 @@ pub fn run_egui_frame(
         // inset from the central edge is the stack's current width (issue #88); `cube_fits`
         // mirrors `view_cube_corner`'s minimum-size rule (viewport ≥ inset + cube wide, ≥
         // margin + cube tall) — below it the cube isn't drawn, so the rail hides too.
-        let cube_margin = display::renderer::VIEW_CUBE_VIEWPORT_MARGIN as f32 / pixels_per_point;
         let cube_size = VIEW_CUBE_VIEWPORT_PIXELS as f32 / pixels_per_point;
         let cube_right_inset = cube_right_inset_points(stack_folded_drawn);
-        let cube_left = central_rect_points.right() - cube_right_inset - cube_size;
-        let cube_bottom = central_rect_points.top() + cube_margin + cube_size;
         let cube_right_inset_px = (cube_right_inset * pixels_per_point).round() as u32;
         view_cube_right_inset_px = cube_right_inset_px;
-        let cube_fits = central_rect_points.width() * pixels_per_point
-            >= cube_right_inset_px as f32 + VIEW_CUBE_VIEWPORT_PIXELS as f32
-            && central_rect_points.height() * pixels_per_point
-                >= (display::renderer::VIEW_CUBE_VIEWPORT_MARGIN + VIEW_CUBE_VIEWPORT_PIXELS)
-                    as f32;
+        // Where the cube stands is [`view_cube_corner`]'s answer and nobody else's. The rail, the
+        // readout and the shell's hit-rects all hang off this corner, and the shell asks the same
+        // function with the same arguments next frame. The rule used to be written twice — once
+        // there in pixels and once here in points, the second copy openly labelled a mirror of the
+        // first — which is one edit away from a cube whose picture and hit-rect disagree.
+        let cube_corner_px = view_cube_corner(
+            viewport_in_pixels(central_rect_points, pixels_per_point, size_in_pixels),
+            cube_right_inset_px,
+        );
+        let (cube_left, cube_bottom) = match cube_corner_px {
+            Some((corner_x, corner_y)) => (
+                corner_x as f32 / pixels_per_point,
+                corner_y as f32 / pixels_per_point + cube_size,
+            ),
+            None => (central_rect_points.right(), central_rect_points.top()),
+        };
+        let cube_fits = cube_corner_px.is_some();
+        if cube_fits {
+            ui::chrome::view_cube_image(
+                ui,
+                egui::Rect::from_min_size(
+                    egui::pos2(cube_left, cube_bottom - cube_size),
+                    egui::vec2(cube_size, cube_size),
+                ),
+                view_cube_texture,
+            );
+        }
 
         // Signal: the icon rail directly under the cube (Home / Fit / viewport-mode
         // cycle). Home/Fit reuse the shell's `ChromeClickAction`; a mode-cycle click
@@ -674,7 +748,7 @@ pub fn run_egui_frame(
                 let button = ui::chrome::orbit_type_button_rect(cube_left, cube_bottom, cube_size);
                 let context = ui.ctx().clone();
                 let area = egui::Area::new(egui::Id::new("orbit_type_menu"))
-                    .order(egui::Order::Foreground)
+                    .order(ui::chrome::MENU_ORDER)
                     .fixed_pos(egui::pos2(button.left() - MENU_WIDTH, button.top()))
                     .show(&context, |ui| {
                         egui::Frame::menu(ui.style()).show(ui, |ui| {
@@ -829,21 +903,7 @@ pub fn run_egui_frame(
         }
     });
 
-    // Convert the central rect from egui points to physical pixels, then clamp it
-    // inside the target so the viewport/scissor below are always valid.
-    let viewport_px = {
-        let to_px = |value: f32| (value * pixels_per_point).round();
-        let left = to_px(central_rect_points.min.x).max(0.0) as u32;
-        let top = to_px(central_rect_points.min.y).max(0.0) as u32;
-        let right = to_px(central_rect_points.max.x).max(0.0) as u32;
-        let bottom = to_px(central_rect_points.max.y).max(0.0) as u32;
-        let x = left.min(size_in_pixels[0]);
-        let y = top.min(size_in_pixels[1]);
-        // Always leave at least a 1×1 viewport so set_viewport never gets 0 dims.
-        let width = right.min(size_in_pixels[0]).saturating_sub(x).max(1);
-        let height = bottom.min(size_in_pixels[1]).saturating_sub(y).max(1);
-        [x, y, width, height]
-    };
+    let viewport_px = viewport_in_pixels(central_rect_points, pixels_per_point, size_in_pixels);
 
     // The chrome hit-rects, points → physical pixels (same conversion as `viewport_px`).
     let chrome_rects_px: Vec<[f32; 4]> = chrome_rects_points

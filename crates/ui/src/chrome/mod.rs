@@ -105,6 +105,7 @@ mod rail;
     clippy::wildcard_imports
 )]
 mod sketch_overlay;
+mod view_cube;
 
 /// The layer every INSTRUMENT draws on — one door, so the tier is auditable.
 ///
@@ -127,6 +128,21 @@ pub(crate) fn chrome_layer(id: &'static str) -> egui::LayerId {
     egui::LayerId::new(egui::Order::Foreground, egui::Id::new(id))
 }
 
+/// The tier a MENU is raised on — the third door, above the instruments.
+///
+/// A menu has to cover the instrument that opened it, and on the chrome tier it would not. Within
+/// one order `GraphicLayers::drain` empties the AREAS first and every other layer after them, so a
+/// menu — which is an `Area` — comes out UNDER a bare instrument layer sharing its order. That is
+/// backwards for the two pairs that matter (the cube's context menu over the cube, the rail's
+/// orbit-type menu over the rail), and it is not luck that can be left alone: it is a guarantee
+/// pointing the wrong way.
+///
+/// So menus take the next tier up. There is nothing between `Foreground` and `Tooltip` to take
+/// instead — the enum has five values and this application already occupies three of them.
+/// Sharing the tier with egui's own tooltips is harmless: both are areas, and areas within a tier
+/// ARE ordered, by which one the pointer last touched.
+pub const MENU_ORDER: egui::Order = egui::Order::Tooltip;
+
 pub use notice::viewport_notice;
 pub use rail::{icon_rail, orbit_type_button_rect, rail_height, rail_rect, rail_top, RailClick};
 pub use sketch_overlay::{
@@ -139,3 +155,4 @@ pub use sketch_overlay::{
     SKETCH_PREVIEW_POINT_HALF, SKETCH_SEGMENT_GRAB_PAD, SKETCH_SNAP_MARKER_INNER,
     SKETCH_SNAP_MARKER_OUTER, SKETCH_SNAP_REACH,
 };
+pub use view_cube::view_cube_image;

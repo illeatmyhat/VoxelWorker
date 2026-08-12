@@ -128,12 +128,25 @@ pub struct ViewCubeRenderer {
     uniform_buffer: wgpu::Buffer,
     uniform_bind_group: wgpu::BindGroup,
     label_bind_group: wgpu::BindGroup,
-    // Composite the resolved MSAA cube over the scene.
-    composite_pipeline: wgpu::RenderPipeline,
-    composite_bind_group_layout: wgpu::BindGroupLayout,
-    composite_sampler: wgpu::Sampler,
-    /// The color target format, for building the transient offscreen MSAA + resolve
-    /// textures the cube renders into.
+    /// The square the cube stands in, and the view egui samples it through.
+    ///
+    /// Created ONCE. The cube's edge is [`VIEW_CUBE_VIEWPORT_PIXELS`], a constant number of
+    /// physical pixels whatever the window does, so this never resizes and the shell registers it
+    /// with egui exactly once for the life of the app. The texture is held beside the view because
+    /// dropping it would take the view's contents with it.
+    _resolve_texture: wgpu::Texture,
+    resolve_view: wgpu::TextureView,
+    /// The same square seen as a NON-sRGB texture, which is the view egui has to sample.
+    ///
+    /// egui works in gamma space and de-gammas whatever it samples on its way to a linear
+    /// framebuffer. Handed the sRGB view, the hardware has ALREADY de-gammaed on the sample and
+    /// egui does it a second time — a cube whose every lit face and lit edge comes out an eighth
+    /// of its brightness, which is uniform enough across the square to read as a design choice
+    /// rather than a bug. The pass still writes through the sRGB view, so the shading is encoded
+    /// exactly once and read back exactly once.
+    sampled_view: wgpu::TextureView,
+    /// The color target format, for building the transient offscreen MSAA texture the cube
+    /// renders through.
     color_format: wgpu::TextureFormat,
     // --- #13 Step 2: screen-space chrome overlay (rotate + roll arrows) ---
     chrome_pipeline: wgpu::RenderPipeline,
@@ -395,37 +408,27 @@ impl ViewCubeRenderer {
         let (chrome_pipeline, chrome_bind_group) =
             build_chrome_overlay(device, queue, color_format, MSAA_SAMPLE_COUNT);
 
-        // --- Composite pipeline: blend the resolved MSAA cube on top ---
-        let composite_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("view cube composite layout"),
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            multisampled: false,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                        count: None,
-                    },
-                ],
-            });
-        let composite_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("view cube composite sampler"),
-            mag_filter: wgpu::FilterMode::Nearest,
-            min_filter: wgpu::FilterMode::Nearest,
+        // The square the cube stands in. Built here rather than per frame because its size is a
+        // constant and because egui has to be handed a view that outlives the frame.
+        let resolve_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("view cube resolve texture"),
+            size: wgpu::Extent3d {
+                width: VIEW_CUBE_VIEWPORT_PIXELS,
+                height: VIEW_CUBE_VIEWPORT_PIXELS,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: color_format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[color_format.remove_srgb_suffix()],
+        });
+        let resolve_view = resolve_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let sampled_view = resolve_texture.create_view(&wgpu::TextureViewDescriptor {
+            format: Some(color_format.remove_srgb_suffix()),
             ..Default::default()
         });
-        let composite_pipeline =
-            build_cube_composite_pipeline(device, color_format, &composite_bind_group_layout);
         // Cap: the four persistent rotate arrows + one hovered roll arrow on screen at
         // once; size generously for all glyph quads (6 verts each).
         let chrome_vertex_capacity = 12 * 6;
@@ -449,9 +452,9 @@ impl ViewCubeRenderer {
             uniform_buffer,
             uniform_bind_group,
             label_bind_group,
-            composite_pipeline,
-            composite_bind_group_layout,
-            composite_sampler,
+            _resolve_texture: resolve_texture,
+            resolve_view,
+            sampled_view,
             color_format,
             chrome_pipeline,
             chrome_bind_group,
@@ -502,16 +505,25 @@ impl ViewCubeRenderer {
     /// NOT rotate with the cube), laid out in the same `rect.size` fractions Step 1
     /// hit-tests against.
     #[allow(clippy::too_many_arguments)]
-    pub fn draw(
+    /// The view egui samples the cube through, for the shell to register once.
+    ///
+    /// The cube does not composite itself onto the target, because WHERE IT SITS IN THE STACK IS
+    /// NOT A FACT ABOUT PASS ORDER. A composited corner lands under every egui shape in the frame
+    /// unconditionally, so a sketch mark that reaches the corner paints straight over it — the
+    /// cube is not in egui's z-order at all and has no tier to lose in. Painted as an egui image
+    /// it does: over the marks and under a menu, decided by [`egui::Order`], which is the only
+    /// thing in that API that is a guarantee rather than which layer the hash map reached first.
+    pub fn standing_texture(&self) -> &wgpu::TextureView {
+        &self.sampled_view
+    }
+
+    /// Render the cube into [`Self::standing_texture`]. Where that square then goes on screen is
+    /// the egui side's business, and it is the only side that decides.
+    pub fn render_offscreen(
         &self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
-        target_view: &wgpu::TextureView,
-        target_width: u32,
-        target_height: u32,
-        viewport: [u32; 4],
-        right_inset_px: u32,
         hovered_zone: Option<camera::CubeChromeZone>,
         rotate_arrows_visible: bool,
     ) {
@@ -531,43 +543,19 @@ impl ViewCubeRenderer {
         queue.write_buffer(&self.uniform_buffer, 64, bytemuck::bytes_of(&highlight));
 
         let size = VIEW_CUBE_VIEWPORT_PIXELS;
-        // Signal: top-RIGHT placement (shared with the shell's hit-testing). The helper
-        // also enforces the minimum on-screen size (bails when the viewport is too small).
-        let Some((corner_x, corner_y)) = view_cube_corner(viewport, right_inset_px) else {
-            return;
-        };
-        // Bail if the cube would fall outside the actual target (defensive).
-        if corner_x + size > target_width || corner_y + size > target_height {
-            return;
-        }
-        // Render the cube into its own small 4× MSAA offscreen target
-        // (cleared transparent), resolve it to a single-sample texture with coverage-AA'd
-        // silhouettes, then composite that over the scene in the corner. This anti-aliases
-        // the opaque FACE silhouettes as well as the linework — the whole cube reads clean.
+        // Render the cube through a small 4x MSAA target (cleared transparent) and resolve it into
+        // the standing square with coverage-AA'd silhouettes. This anti-aliases the opaque FACE
+        // silhouettes as well as the linework — the whole cube reads clean.
         let msaa_color = create_msaa_color_view(device, size, size, self.color_format);
         let msaa_depth = create_depth_view(device, size, size);
-        let resolve_texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("view cube resolve texture"),
-            size: wgpu::Extent3d {
-                width: size,
-                height: size,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: self.color_format,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
-        });
-        let resolve_view = resolve_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let resolve_view = &self.resolve_view;
 
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("view cube msaa pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &msaa_color,
-                    resolve_target: Some(&resolve_view),
+                    resolve_target: Some(resolve_view),
                     depth_slice: None,
                     ops: wgpu::Operations {
                         // Transparent clear: the corners of the square around the cube stay
@@ -619,50 +607,6 @@ impl ViewCubeRenderer {
                 pass.draw(0..count as u32, 0..1);
             }
         }
-
-        // Composite the resolved cube over the scene at the corner (premultiplied OVER).
-        let composite_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("view cube composite bind group"),
-            layout: &self.composite_bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&resolve_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&self.composite_sampler),
-                },
-            ],
-        });
-        let mut composite_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("view cube composite pass"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: target_view,
-                resolve_target: None,
-                depth_slice: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        });
-        composite_pass.set_viewport(
-            corner_x as f32,
-            corner_y as f32,
-            size as f32,
-            size as f32,
-            0.0,
-            1.0,
-        );
-        composite_pass.set_scissor_rect(corner_x, corner_y, size, size);
-        composite_pass.set_pipeline(&self.composite_pipeline);
-        composite_pass.set_bind_group(0, &composite_bind_group, &[]);
-        composite_pass.draw(0..3, 0..1);
     }
 }
 
@@ -779,75 +723,6 @@ fn build_cube_line_pipeline(
         }),
         multisample: wgpu::MultisampleState {
             count: MSAA_SAMPLE_COUNT,
-            mask: !0,
-            alpha_to_coverage_enabled: false,
-        },
-        multiview_mask: None,
-        cache: None,
-    })
-}
-
-/// Build the composite pipeline: a fullscreen textured quad that blends
-/// the resolved MSAA cube over the scene in the corner with premultiplied-alpha blending.
-fn build_cube_composite_pipeline(
-    device: &wgpu::Device,
-    color_format: wgpu::TextureFormat,
-    bind_group_layout: &wgpu::BindGroupLayout,
-) -> wgpu::RenderPipeline {
-    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("view cube composite shader"),
-        source: wgpu::ShaderSource::Wgsl(
-            include_str!("../../shaders/viewcube_composite.wgsl").into(),
-        ),
-    });
-    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some("view cube composite pipeline layout"),
-        bind_group_layouts: &[Some(bind_group_layout)],
-        immediate_size: 0,
-    });
-    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some("view cube composite pipeline"),
-        layout: Some(&pipeline_layout),
-        vertex: wgpu::VertexState {
-            module: &shader,
-            entry_point: Some("vertex_main"),
-            buffers: &[],
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-        },
-        fragment: Some(wgpu::FragmentState {
-            module: &shader,
-            entry_point: Some("fragment_main"),
-            targets: &[Some(wgpu::ColorTargetState {
-                format: color_format,
-                // Premultiplied-alpha OVER: dst = src + dst·(1 − src.a).
-                blend: Some(wgpu::BlendState {
-                    color: wgpu::BlendComponent {
-                        src_factor: wgpu::BlendFactor::One,
-                        dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
-                        operation: wgpu::BlendOperation::Add,
-                    },
-                    alpha: wgpu::BlendComponent {
-                        src_factor: wgpu::BlendFactor::One,
-                        dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
-                        operation: wgpu::BlendOperation::Add,
-                    },
-                }),
-                write_mask: wgpu::ColorWrites::ALL,
-            })],
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-        }),
-        primitive: wgpu::PrimitiveState {
-            topology: wgpu::PrimitiveTopology::TriangleList,
-            strip_index_format: None,
-            front_face: wgpu::FrontFace::Ccw,
-            cull_mode: None,
-            unclipped_depth: false,
-            polygon_mode: wgpu::PolygonMode::Fill,
-            conservative: false,
-        },
-        depth_stencil: None,
-        multisample: wgpu::MultisampleState {
-            count: 1,
             mask: !0,
             alpha_to_coverage_enabled: false,
         },

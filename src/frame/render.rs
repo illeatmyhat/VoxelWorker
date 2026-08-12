@@ -80,13 +80,6 @@ pub struct FramePhases<'a> {
     /// when the view is face-constrained), with the hovered one brightened. `false`
     /// (off-face view) draws no rotate arrows.
     pub cube_rotate_arrows_visible: bool,
-    /// The view cube's right inset (physical px) equals the floating display
-    /// stack's current width, so the GPU-drawn cube slides left of the stack. From
-    /// `PreparedEguiFrame`.
-    pub view_cube_right_inset_px: u32,
-    /// Target dimensions (needed to place the view-cube corner viewport).
-    pub target_width: u32,
-    pub target_height: u32,
 }
 
 /// Upload the per-frame **scene scaffold** uniforms shared by the windowed shell and `shot`.
@@ -416,18 +409,14 @@ pub fn render_frame(
         selection_outline.draw_composite(&mut encoder, target_view, prepared.viewport_px);
     }
 
-    // === Pass 1b: view cube into a scissored top-left corner (its own depth).
-    // Drawn after the 3D resolve, before egui (render layering).
+    // === Pass 1b: the view cube, into its own square rather than onto the target. Before the
+    // egui pass, which samples that square as an image and is where the cube's placement and its
+    // standing in the stack are both decided.
     if let Some(view_cube) = phases.view_cube {
-        view_cube.draw(
+        view_cube.render_offscreen(
             device,
             queue,
             &mut encoder,
-            target_view,
-            phases.target_width,
-            phases.target_height,
-            prepared.viewport_px,
-            phases.view_cube_right_inset_px,
             phases.cube_hovered_zone,
             phases.cube_rotate_arrows_visible,
         );

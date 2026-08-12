@@ -1135,6 +1135,10 @@ pub(crate) async fn run_capture(options: ShotOptions) {
     // The armed "Add <shape>" dialog reads `panel_state.armed_shape()` straight off the
     // armed tool — the dump/`--placement-ghost` seed above already armed it, so no mirror
     // needs seeding here; unarmed, the dialog stays off and the goldens are unchanged.
+    // The cube's square, registered with egui once. The headless path runs one frame, so
+    // "once" and "this frame" coincide — the call is the same one the shell makes.
+    let cube_texture =
+        egui_bridge.view_cube_texture(&gpu.device, view_cube_renderer.standing_texture());
     let prepared = run_egui_frame(
         &mut egui_bridge,
         &gpu.device,
@@ -1188,6 +1192,7 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         // nor the orbit-mode reticle — the explicit orbit mode is entered by a click
         // the headless path never makes.
         false,
+        cube_texture,
     );
 
     // Issue #25: now that egui has laid out its panels, derive the camera aspect
@@ -1387,9 +1392,6 @@ pub(crate) async fn run_capture(options: ShotOptions) {
                 options.cube_hover,
                 Some(camera::CubeChromeZone::RotateArrow(_))
             ),
-        view_cube_right_inset_px: prepared.view_cube_right_inset_px,
-        target_width: options.width,
-        target_height: options.height,
     };
 
     // Paint via the exact same render-target-agnostic core the window uses.
