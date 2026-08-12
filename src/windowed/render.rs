@@ -4302,7 +4302,7 @@ impl WindowedState {
                     else {
                         return None;
                     };
-                    if a_plane_too_edge_on_to_dimension(run, at_tail) {
+                    if a_plane_too_edge_on_to_dimension(run, [at_tail, at_head]) {
                         return None;
                     }
                     // Where the author put the text IS the placement, in both directions at once:
@@ -4356,7 +4356,7 @@ impl WindowedState {
                     ) else {
                         return None;
                     };
-                    if a_plane_too_edge_on_to_dimension(run_at_tail, at_tail) {
+                    if a_plane_too_edge_on_to_dimension(run_at_tail, [at_tail, at_head]) {
                         return None;
                     }
                     let anchor = placed.unwrap_or_else(|| from + (to - from) / 2.0);
@@ -4411,7 +4411,7 @@ impl WindowedState {
                     ) else {
                         return None;
                     };
-                    if a_plane_too_edge_on_to_dimension(square_at_point, at_point) {
+                    if a_plane_too_edge_on_to_dimension(square_at_point, [at_point, at_foot]) {
                         return None;
                     }
                     let anchor = placed.unwrap_or_else(|| {
@@ -8169,10 +8169,12 @@ const A_PROJECTION_TOO_FLAT_TO_CONVERGE: f32 = 1.0e-4;
 /// of the sketch it annotates.
 ///
 /// Taken at a point because the map DIVIDES: one plane direction runs a different way on screen at
-/// every place, by 13 degrees across a strongly perspective view. The step is taken at unit plane
-/// length however long the one handed in is — a direction is what is being asked for, and a step
-/// the length of the whole span could land behind the camera and answer nothing where the short one
-/// beside it answers fine.
+/// every place, by 13 degrees across a strongly perspective view.
+///
+/// The step is taken at unit plane length however long the one handed in is, and the reason is the
+/// CULL rather than accuracy — a plane line images as a straight line, so both samples lie on it and
+/// the chord IS the direction at any step length. A step as long as the whole span can land behind
+/// the camera and answer nothing where the short one beside it answers fine.
 fn a_plane_direction_on_screen<F>(at: [f64; 2], step: [f64; 2], to_px: &F) -> Option<egui::Vec2>
 where
     F: Fn([f64; 2]) -> Option<egui::Pos2>,
@@ -8242,18 +8244,29 @@ where
     })
 }
 
-/// Whether a dimension's two projected directions have collapsed together — see
+/// Whether a dimension's projected directions have collapsed together at EITHER END — see
 /// [`A_PLANE_TOO_EDGE_ON_TO_DIMENSION`].
+///
+/// Both ends, because a projection that divides answers one plane direction differently at each of
+/// them — by up to 13 degrees on a strongly perspective view, which is more than twice this band.
+/// A run receding toward the horizon can stand square at the tail and near-parallel at the head, and
+/// the head's foot is then the meeting of two lines that barely cross: the drawing passes the guard
+/// and puts its far extension somewhere the geometry never went.
 ///
 /// A degenerate direction is NOT edge-on and does not decline here: a span whose two points the
 /// solver has driven together still wants its number on screen so the author can see what to fix,
 /// and the gizmo already draws that case finitely.
-fn a_plane_too_edge_on_to_dimension(along: egui::Vec2, across: egui::Vec2) -> bool {
-    let (along, across) = (along.normalized(), across.normalized());
-    if along.length() <= f32::EPSILON || across.length() <= f32::EPSILON {
+fn a_plane_too_edge_on_to_dimension(along: egui::Vec2, across: [egui::Vec2; 2]) -> bool {
+    let along = along.normalized();
+    if along.length() <= f32::EPSILON {
         return false;
     }
-    across.x.mul_add(-along.y, along.x * across.y).abs() < A_PLANE_TOO_EDGE_ON_TO_DIMENSION
+    across.into_iter().any(|across| {
+        let across = across.normalized();
+        across.length() > f32::EPSILON
+            && across.x.mul_add(-along.y, along.x * across.y).abs()
+                < A_PLANE_TOO_EDGE_ON_TO_DIMENSION
+    })
 }
 
 /// Where a rim dimension's leader ends when the author never said — out and up from the center,
@@ -8609,7 +8622,7 @@ fn curve_ink(construction: bool) -> ui::chrome::SketchCurveInk {
 #[allow(clippy::expect_used, clippy::float_cmp)]
 mod tests {
     use super::{
-        a_dimension_lines_direction, a_plane_direction_on_screen,
+        a_dimension_lines_direction, a_plane_direction_on_screen, a_plane_too_edge_on_to_dimension,
         advance_circle_center_diameter_gesture, aggregate_marquee_picks, angle_arc_radius,
         angle_legs, apply_sketch_snap, circle_gesture_is_current, circle_marquee_hit, circle_ring,
         closest_point_on_segment, complete_circle_center_diameter, concentric_badge_anchor,
@@ -8635,19 +8648,21 @@ mod tests {
     /// screen; the value used below puts the far end of a forty-unit drawing at about two thirds
     /// the scale of the near one, which is a strong perspective rather than a token one.
     #[allow(clippy::cast_possible_truncation)]
-    fn a_tilted_camera(depth: f64) -> impl Fn([f64; 2]) -> Option<egui::Pos2> {
+    fn a_tilted_camera(elevation: f64, depth: f64) -> impl Fn([f64; 2]) -> Option<egui::Pos2> {
         move |at| {
-            let (turn, up) = (
-                std::f64::consts::FRAC_PI_4.sin_cos(),
-                std::f64::consts::FRAC_PI_6.sin(),
-            );
+            let (turn, up) = (std::f64::consts::FRAC_PI_4.sin_cos(), elevation.sin());
             let across = at[1].mul_add(turn.1, -(at[0] * turn.0));
             let into = at[0].mul_add(turn.1, at[1] * turn.0);
             let divide = depth.mul_add(into, 1.0);
-            Some(egui::pos2(
-                3.0f64.mul_add(across / divide, 300.0) as f32,
-                (3.0 * up).mul_add(into / divide, 200.0) as f32,
-            ))
+            // What stands behind the eye is not on screen, and `to_px` answers nothing for it. A
+            // fixture without this cull can be handed cameras the shell would never reach, which
+            // makes any failure it finds unfalsifiable.
+            (divide > 0.0).then(|| {
+                egui::pos2(
+                    3.0f64.mul_add(across / divide, 300.0) as f32,
+                    (3.0 * up).mul_add(into / divide, 200.0) as f32,
+                )
+            })
         }
     }
 
@@ -8683,7 +8698,7 @@ mod tests {
     fn a_dimension_line_runs_the_way_the_plane_does_where_it_was_dropped() {
         let (run, feature, dropped) = ([1.0, 0.0], [0.0, 0.0], [20.0, 12.0]);
 
-        let flat = a_tilted_camera(0.0);
+        let flat = a_tilted_camera(std::f64::consts::FRAC_PI_6, 0.0);
         let anchor = flat(dropped).expect("the anchor projects");
         let at_the_feature =
             a_plane_direction_on_screen(feature, run, &flat).expect("the run projects");
@@ -8694,7 +8709,7 @@ mod tests {
             "with nothing to converge on, the answer is the direction at the feature"
         );
 
-        let deep = a_tilted_camera(0.008);
+        let deep = a_tilted_camera(std::f64::consts::FRAC_PI_6, 0.008);
         let anchor = deep(dropped).expect("the anchor projects");
         let at_the_feature =
             a_plane_direction_on_screen(feature, run, &deep).expect("the run projects");
@@ -8712,6 +8727,51 @@ mod tests {
         assert!(
             off < 0.01,
             "the dimension line runs {off} degrees off the plane line through the anchor"
+        );
+    }
+
+    /// **A dimension declines when EITHER of its ends has gone edge-on, not just the first.**
+    ///
+    /// The guard exists because two projected directions that have collapsed together have no
+    /// well-conditioned meeting point, and a foot struck between them lands wherever the arithmetic
+    /// takes it. Under a projection that divides, the two ends of one run answer the plane's square
+    /// differently — by more than twice this guard's whole band — so a run receding toward the
+    /// horizon can stand square at the tail and near-parallel at the head. Reading the tail alone
+    /// passes that drawing and puts its far extension line somewhere the geometry never went.
+    ///
+    /// The camera here is a real one in the sense that matters: every point it is asked about stands
+    /// in front of the eye, so it is a view the shell can actually be in rather than an arithmetic
+    /// curiosity behind the near plane.
+    #[test]
+    fn a_dimension_declines_when_either_end_has_gone_edge_on() {
+        let (tail, head, square) = ([0.0, 0.0], [40.0, 0.0], [0.0, 40.0]);
+        // Steep, and diving hard enough that the head sits just short of the horizon.
+        let camera = a_tilted_camera(std::f64::consts::FRAC_PI_3, -0.034);
+        let (from, to) = (
+            camera(tail).expect("the tail stands in front of the eye"),
+            camera(head).expect("and so does the head, or this is not a view the shell can be in"),
+        );
+        let at_tail = a_plane_direction_on_screen(tail, square, &camera).expect("the square shows");
+        let at_head = a_plane_direction_on_screen(head, square, &camera).expect("and at the head");
+
+        let run = (to - from).normalized();
+        let (standing, collapsed) = (
+            apart_in_degrees(run, at_tail),
+            apart_in_degrees(run, at_head),
+        );
+        assert!(
+            standing > 30.0 && collapsed < 5.0,
+            "this view has to stand square at one end and collapse at the other to say anything: \
+             {standing} degrees at the tail, {collapsed} at the head"
+        );
+
+        assert!(
+            !a_plane_too_edge_on_to_dimension(run, [at_tail, at_tail]),
+            "read at the tail alone, this drawing looks perfectly square"
+        );
+        assert!(
+            a_plane_too_edge_on_to_dimension(run, [at_tail, at_head]),
+            "the head has collapsed, so the drawing has no far foot worth striking"
         );
     }
 
