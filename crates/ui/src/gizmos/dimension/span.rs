@@ -190,6 +190,12 @@ fn measured_between(
         // It leaves by the end it was dropped past, on a leader that REACHES it — never a naked
         // line running off to a number floating somewhere past its end, and never a number left
         // behind at the line when the hand carried it further.
+        //
+        // The SCREEN middle on purpose, and the one station in this file that is: which end a
+        // label escapes by is a tie-break, and it diverges from the plane's middle only for a
+        // label seated inside the drift band around it, where both ends read the same. Every
+        // other fraction here names a place on the drawing and is the plane's — see
+        // `PlaneFrame::along`.
         let by_the_near_end = put < length / 2.0;
         let (end, direction, dropped) = if by_the_near_end {
             (near, -along, -put)
