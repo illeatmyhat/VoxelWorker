@@ -31,13 +31,22 @@ use super::{
 ///
 /// `along` is that direction in screen pixels, and `through` a point the dimension line passes
 /// through: where the author dropped the annotation. Each end reaches the line by its own
-/// perpendicular, which is what distinguishes this drawing from an aligned one — for a diagonal run
+/// extension, which is what distinguishes this drawing from an aligned one — for a diagonal run
 /// the two extension lines have different lengths, and for an axis-aligned run one of them vanishes
 /// because the point is already on the line.
+///
+/// **`across` is the direction those extensions run, and the caller states it.** It is not
+/// `perp(along)`: a sketch plane the camera is not square to projects by a homography, and the
+/// screen perpendicular of a projected direction is the image of some OTHER plane direction
+/// entirely. At a three-quarter view the two are 31 degrees apart, and extension lines are the one
+/// part of the drawing whose whole job is to read square — so a dimension laid out on the screen's
+/// perpendicular reads as leaning out of the plane it annotates. A caller drawing on a flat page
+/// passes `perp(along)` and gets exactly the drawing it always did.
 pub fn axis_span(
     from: Pos2,
     to: Pos2,
     along: Vec2,
+    across: Vec2,
     through: Pos2,
     value: &str,
     rank: Rank,
@@ -48,9 +57,30 @@ pub fn axis_span(
     } else {
         Vec2::X
     };
-    let normal = Vec2::new(unit.y, -unit.x);
-    // Where a feature point meets the dimension line, measured straight across it.
-    let foot = |point: Pos2| point + normal * (through - point).dot(normal);
+    // The screen's own square, which is what `across` reduces to on a plane facing the camera and
+    // what the drawing falls back on when the caller hands in nothing usable.
+    let screens_own = Vec2::new(unit.y, -unit.x);
+    let reach = across.length();
+    let sideways = if reach > f32::EPSILON {
+        across / reach
+    } else {
+        screens_own
+    };
+    // How far from parallel the two directions are. Seen edge-on they collapse together and no
+    // meeting point exists; the caller declines before that, and the fallback here only has to keep
+    // the drawing finite.
+    let apart = unit.x.mul_add(sideways.y, -(unit.y * sideways.x));
+    // Where a feature point meets the dimension line: the line struck through it along `across`,
+    // met with the line struck through the anchor along `along`. Both are images of plane lines, so
+    // the meeting point is the image of where they meet IN THE PLANE — which is the whole reason
+    // the direction is handed in rather than turned out of `along` here.
+    let foot = move |point: Pos2| {
+        let toward = through - point;
+        if apart.abs() <= f32::EPSILON {
+            return point + screens_own * toward.dot(screens_own);
+        }
+        point + sideways * (toward.x.mul_add(unit.y, -(toward.y * unit.x)) / -apart)
+    };
 
     let (near, far) = (foot(from), foot(to));
     let extensions = [(from, near), (to, far)]

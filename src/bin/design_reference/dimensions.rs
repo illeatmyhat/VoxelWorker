@@ -32,7 +32,15 @@ fn aligned(from: Pos2, to: Pos2, offset: f32, value: &str, rank: Rank) -> dimens
     // Offset from the MIDDLE of the run, which is where a span with nothing placed
     // has always carried its value.
     let middle = from + run / 2.0;
-    dimension::axis_span(from, to, along, middle + normal * offset, value, rank)
+    dimension::axis_span(
+        from,
+        to,
+        along,
+        normal,
+        middle + normal * offset,
+        value,
+        rank,
+    )
 }
 
 /// An arm running from the corner out to `reach`, which is the case where the two lines meet.
@@ -185,6 +193,7 @@ impl Sheet {
                     run.0,
                     run.1,
                     Vec2::X,
+                    Vec2::Y,
                     Pos2::new(s.left() + 52.0, s.top() + 16.0),
                     "64",
                     Rank::Driving,
@@ -200,6 +209,7 @@ impl Sheet {
                     same.0,
                     same.1,
                     Vec2::Y,
+                    Vec2::X,
                     Pos2::new(s.left() + 116.0, s.center().y),
                     "42",
                     Rank::Driving,
@@ -228,6 +238,7 @@ impl Sheet {
                     stood,
                     Pos2::new(stood.x, rail.0.y),
                     Vec2::Y,
+                    Vec2::X,
                     Pos2::new(s.left() + 30.0, s.bottom() - 48.0),
                     "44",
                     Rank::Driving,
@@ -248,6 +259,7 @@ impl Sheet {
                     upper,
                     foot,
                     across,
+                    along,
                     upper - across * 13.0 - along * 22.0,
                     "26",
                     Rank::Driving,
@@ -275,6 +287,7 @@ impl Sheet {
                     center + Vec2::X * 12.0,
                     center + Vec2::X * 30.0,
                     Vec2::X,
+                    Vec2::Y,
                     center + Vec2::X * 21.0,
                     "18",
                     Rank::Driving,
@@ -308,6 +321,7 @@ impl Sheet {
                     drawn[0].touch(bearing),
                     drawn[1].touch(bearing),
                     out,
+                    Vec2::new(out.y, -out.x),
                     hub + Vec2::angled(dropped) * 21.0,
                     "18",
                     Rank::Driving,
@@ -453,11 +467,13 @@ impl Sheet {
                 arm(p, wide, to, whole_arm(62.0));
                 // 48, not 40: at 40 the arc is 42.8 long and the value is evicted onto a leader,
                 // which is the tight drawing — this row is here to show the wide one.
+                let arc = round(wide, 48.0);
                 dimension::angle(
                     wide,
                     from,
                     to,
                     48.0,
+                    whole(&arc),
                     [whole_arm(62.0); 2],
                     "62°",
                     Rank::Driving,
@@ -468,11 +484,13 @@ impl Sheet {
                 let (from, to) = (-1.78_f32, -1.36_f32);
                 arm(p, tight, from, whole_arm(56.0));
                 arm(p, tight, to, whole_arm(56.0));
+                let arc = round(tight, 34.0);
                 dimension::angle(
                     tight,
                     from,
                     to,
                     34.0,
+                    whole(&arc),
                     [whole_arm(56.0); 2],
                     "24°",
                     Rank::Driving,
@@ -504,7 +522,8 @@ impl Sheet {
                 );
                 arm(p, inside, from, near);
                 arm(p, inside, to, far);
-                dimension::angle(inside, from, to, 24.0, [near, far], "60°", Rank::Driving).paint(p);
+                let arc = round(inside, 24.0);
+                dimension::angle(inside, from, to, 24.0, whole(&arc), [near, far], "60°", Rank::Driving).paint(p);
 
                 let across = Pos2::new(s.left() + 126.0, s.bottom() - 14.0);
                 let (from, to) = (-1.60_f32, -0.30_f32);
@@ -520,11 +539,13 @@ impl Sheet {
                 );
                 arm(p, across, from, stops_short);
                 arm(p, across, to, runs_past);
+                let arc = round(across, 40.0);
                 dimension::angle(
                     across,
                     from,
                     to,
                     40.0,
+                    whole(&arc),
                     [stops_short, runs_past],
                     "74°",
                     Rank::Driving,
@@ -552,11 +573,13 @@ impl Sheet {
                 };
                 arm(p, vertex, line, straight);
                 let tangent = tangent_arm(p, vertex, curve, 62.0, 16.0, 1.0);
+                let arc = round(vertex, 46.0);
                 dimension::angle(
                     vertex,
                     line,
                     curve,
                     46.0,
+                    whole(&arc),
                     [straight, tangent],
                     "63\u{b0}",
                     Rank::Driving,
@@ -571,11 +594,13 @@ impl Sheet {
                 };
                 arm(p, vertex, line, straight);
                 let tangent = tangent_arm(p, vertex, curve, 68.0, 14.0, -1.0);
+                let arc = round(vertex, 54.0);
                 dimension::angle(
                     vertex,
                     line,
                     curve,
                     54.0,
+                    whole(&arc),
                     [straight, tangent],
                     "54\u{b0}",
                     Rank::Driving,

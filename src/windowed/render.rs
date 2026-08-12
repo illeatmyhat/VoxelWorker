@@ -4217,6 +4217,32 @@ impl WindowedState {
                 .find(|point| point.id == id)
                 .map(|point| point.at.in_plane())
         };
+        // Which way a PLANE direction runs on screen. The step is taken in the plane and only then
+        // projected, so what comes back is the image of a plane line rather than a direction the
+        // screen invented for itself.
+        //
+        // The distinction is the whole of this pass. Plane to screen is a homography, so the screen
+        // perpendicular of a projected direction is the image of some OTHER plane direction — at a
+        // three-quarter view, one 31 degrees away. Every direction a dimension is built from has to
+        // come through here or the drawing reads as leaning out of the sketch it annotates.
+        //
+        // The step is taken at UNIT plane length however long the one handed in is: a direction is
+        // asked for, and under perspective a step the length of the whole span could land behind
+        // the camera and answer nothing where the short one beside it answers fine.
+        let along_the_plane = |at: [f64; 2], step: [f64; 2]| {
+            let span = step[0].hypot(step[1]);
+            if span <= f64::EPSILON {
+                return None;
+            }
+            let (Some(here), Some(there)) = (
+                to_px(at),
+                to_px([at[0] + step[0] / span, at[1] + step[1] / span]),
+            ) else {
+                return None;
+            };
+            let reach = there - here;
+            (reach.length() > f32::EPSILON).then(|| reach / reach.length())
+        };
         // Everything a dimension needs of a rim: where it stands on screen, how much of itself it
         // draws, and the one nominal radius the layout reasons in. Asked once per drawing, because
         // projecting the ring is the expensive part and all three answers come off it.
@@ -4224,17 +4250,7 @@ impl WindowedState {
             let form = producer.sketch.circular_form(curve, context)?;
             let standing = ProjectedRim::project(form.center, form.radius, &to_px)?;
             let (from, turn) = drawn_turn(&producer.sketch, curve, standing.center, &to_px)?;
-            // The nominal radius is the ring's own mean reach, not one sample along the plane's
-            // first axis: on an ellipse that sample is right in one direction and wrong in every
-            // other, and this is a length the fit tests weigh rather than a distance anything
-            // steps out by.
-            #[allow(clippy::cast_precision_loss)]
-            let radius_px = standing
-                .ring
-                .iter()
-                .map(|at| standing.center.distance(*at))
-                .sum::<f32>()
-                / standing.ring.len().max(1) as f32;
+            let radius_px = standing.mean_reach();
             Some((standing, from, turn, radius_px))
         };
         let ends_in_plane = |id: document::sketch::EntityId| {
@@ -4286,24 +4302,41 @@ impl WindowedState {
             let rank = ui::gizmos::dimension::Rank::Driving;
             let drawing = match dimension {
                 document::sketch::Dimension::Span { from, to, length } => {
-                    let (Some(from), Some(to)) = (
-                        in_plane(from).and_then(&to_px),
-                        in_plane(to).and_then(&to_px),
-                    ) else {
+                    let (Some(tail), Some(head)) = (in_plane(from), in_plane(to)) else {
+                        return None;
+                    };
+                    let (Some(from), Some(to)) = (to_px(tail), to_px(head)) else {
                         return None;
                     };
                     let run = to - from;
-                    let normal = egui::vec2(run.y, -run.x).normalized();
+                    // Square to the run IN THE PLANE, then projected — the direction the extension
+                    // lines stand along and the one the drawing steps off by.
+                    let Some(across) =
+                        along_the_plane(tail, [tail[1] - head[1], head[0] - tail[0]])
+                    else {
+                        return None;
+                    };
+                    if a_plane_too_edge_on_to_dimension(run, across) {
+                        return None;
+                    }
                     // Where the author put the text IS the placement, in both directions at once:
                     // how far off the run the dimension line sits, and how far along it the value
                     // rides. Unplaced it stands off ABOVE the span on screen whichever way the run
                     // is drawn, so two spans on one drawing do not sit on opposite sides of
                     // geometry that merely happens to have been drawn the other way round.
                     let anchor = placed.unwrap_or_else(|| {
-                        let side = if normal.y > 0.0 { -1.0 } else { 1.0 };
-                        from + (to - from) / 2.0 + normal * side * DIMENSION_STANDOFF_PX
+                        let side = if across.y > 0.0 { -1.0 } else { 1.0 };
+                        from + (to - from) / 2.0 + across * side * DIMENSION_STANDOFF_PX
                     });
-                    ui::gizmos::dimension::axis_span(from, to, run, anchor, &voxels(length), rank)
+                    ui::gizmos::dimension::axis_span(
+                        from,
+                        to,
+                        run,
+                        across,
+                        anchor,
+                        &voxels(length),
+                        rank,
+                    )
                 }
                 document::sketch::Dimension::SpanAlong {
                     from,
@@ -4325,11 +4358,23 @@ impl WindowedState {
                     else {
                         return None;
                     };
+                    // The plane's OTHER direction, which is what square to this one means here —
+                    // the two coordinates of a plane are perpendicular in it whatever the camera
+                    // makes of them.
+                    let mut sideways = tail;
+                    sideways[1 - axis.coordinate()] += 1.0;
+                    let Some(sideways) = to_px(sideways) else {
+                        return None;
+                    };
+                    if a_plane_too_edge_on_to_dimension(step - from, sideways - from) {
+                        return None;
+                    }
                     let anchor = placed.unwrap_or_else(|| from + (to - from) / 2.0);
                     ui::gizmos::dimension::axis_span(
                         from,
                         to,
                         step - from,
+                        sideways - from,
                         anchor,
                         &voxels(length),
                         rank,
@@ -4340,37 +4385,50 @@ impl WindowedState {
                     segment,
                     length,
                 } => {
-                    let (Some(stood), Some((tail, head))) =
+                    let (Some(standing), Some((tail, head))) =
                         (in_plane(point), ends_in_plane(segment))
                     else {
                         return None;
                     };
-                    let (Some(stood), Some(tail), Some(head)) =
-                        (to_px(stood), to_px(tail), to_px(head))
-                    else {
-                        return None;
-                    };
-                    let run = head - tail;
-                    let reach = run.length();
-                    if reach <= f32::EPSILON {
+                    let run = [head[0] - tail[0], head[1] - tail[1]];
+                    let reach = run[0].hypot(run[1]);
+                    if reach <= f64::EPSILON {
                         return None;
                     }
+                    // The point's own place on the line, so the drawing hangs off the nearest part
+                    // of the run rather than off whichever end the author happened to draw first.
+                    // Dropped IN THE PLANE: where a perpendicular lands is a fact about the
+                    // drawing, and finding it after the projection would make it one about the
+                    // camera — the two disagree by the tilt.
+                    let carried = ((standing[0] - tail[0]) * run[0]
+                        + (standing[1] - tail[1]) * run[1])
+                        / (reach * reach);
+                    let stands = [tail[0] + run[0] * carried, tail[1] + run[1] * carried];
+                    let (Some(stood), Some(foot)) = (to_px(standing), to_px(stands)) else {
+                        return None;
+                    };
                     // The dimension line lies ACROSS the line, which is the one direction the
                     // distance is measured in. Each end then reaches it by running parallel to the
                     // line — which for the line's own end is the line carried on, and for the point
-                    // is the same rule read the other way.
-                    let along = run / reach;
-                    let across = egui::vec2(along.y, -along.x);
-                    // The point's own place on the line, so the drawing hangs off the nearest part
-                    // of the run rather than off whichever end the author happened to draw first.
-                    let foot = tail + along * (stood - tail).dot(along);
+                    // is the same rule read the other way. Both directions are the plane's, not the
+                    // screen's.
+                    let (Some(along), Some(measured)) = (
+                        along_the_plane(standing, run),
+                        along_the_plane(standing, [-run[1], run[0]]),
+                    ) else {
+                        return None;
+                    };
+                    if a_plane_too_edge_on_to_dimension(measured, along) {
+                        return None;
+                    }
                     let anchor = placed.unwrap_or_else(|| {
                         stood + (foot - stood) / 2.0 + along * DIMENSION_STANDOFF_PX
                     });
                     ui::gizmos::dimension::axis_span(
                         stood,
                         foot,
-                        across,
+                        measured,
+                        along,
                         anchor,
                         &voxels(length),
                         rank,
@@ -4413,10 +4471,15 @@ impl WindowedState {
                     // the tangent at the rim it leaves — the same drawing a gap across a line
                     // makes, read on a curve. Each end is asked of its OWN rim: on a plane the
                     // camera is not square to, a screen radius is right in one direction only.
+                    // Each extension leaves its rim along the TANGENT there — the projected plane
+                    // tangent, taken as the square of the outward normal the rim already answers,
+                    // rather than the screen's square of the radius.
+                    let facing = first_rim.aim(bearing);
                     ui::gizmos::dimension::axis_span(
                         first_rim.touch(bearing),
                         second_rim.touch(bearing),
                         out,
+                        egui::vec2(-facing.y, facing.x),
                         anchor,
                         &voxels(length),
                         rank,
@@ -4468,17 +4531,53 @@ impl WindowedState {
                     // The vertex is found in PLANE coordinates and only then projected: a virtual
                     // intersection is a fact about the drawing, and finding it after a perspective
                     // divide would make it a fact about the camera.
-                    let vertex =
-                        substrate::geom2d::line_intersection(first.0, first.1, second.0, second.1)
-                            .and_then(&to_px)?;
+                    let corner_at =
+                        substrate::geom2d::line_intersection(first.0, first.1, second.0, second.1)?;
+                    let vertex = to_px(corner_at)?;
                     let (from, to, legs) =
                         angle_legs(vertex, &to_px, first, second, corner, placed)?;
                     // The shorter leg sets the default arc: it is the one that decides whether an
                     // extension line is needed at all.
                     let reach = legs[0].furthest.min(legs[1].furthest);
                     let radius = angle_arc_radius(vertex, placed, reach);
+                    // The arc is struck IN THE PLANE and projected, so it comes out the ellipse the
+                    // plane actually draws rather than a circle about the vertex's image. The
+                    // radius is asked for in screen points, so it is first turned into the plane
+                    // length that projects to about that much, measured off a unit ring.
+                    //
+                    // Along ONE bearing, not the ring's mean: a projection reaches a different
+                    // distance in every direction, and the bearing that matters is the one the
+                    // screen radius was asked at — the anchor's own, so the arc still runs under
+                    // the text the author dropped. Unplaced there is no such bearing and the mean
+                    // stands in.
+                    let unit = ProjectedRim::project(corner_at, 1.0, &to_px)?;
+                    let per_unit = placed
+                        .map(|at| at - vertex)
+                        .filter(|reach| reach.length() > f32::EPSILON)
+                        .map_or_else(
+                            || unit.mean_reach(),
+                            |reach| unit.center.distance(unit.touch(reach.y.atan2(reach.x))),
+                        );
+                    if per_unit <= f32::EPSILON {
+                        return None;
+                    }
+                    let struck =
+                        ProjectedRim::project(corner_at, f64::from(radius / per_unit), &to_px)?;
                     let value = format!("{}\u{b0}", trim_number(degrees.to_degrees_f64()));
-                    ui::gizmos::dimension::angle(vertex, from, to, radius, legs, &value, rank)
+                    ui::gizmos::dimension::angle(
+                        vertex,
+                        from,
+                        to,
+                        radius,
+                        ui::gizmos::dimension::Rim {
+                            from: 0.0,
+                            turn: std::f32::consts::TAU,
+                            at: &|bearing| struck.touch(bearing),
+                        },
+                        legs,
+                        &value,
+                        rank,
+                    )
                 }
             };
             Some(drawing)
@@ -8049,6 +8148,30 @@ where
 /// angle's arc all sit the same distance out and read as one drawing rather than three.
 const DIMENSION_STANDOFF_PX: f32 = 26.0;
 
+/// How nearly parallel a dimension's two projected directions may come before it declines to draw,
+/// as the sine of the angle between them.
+///
+/// A linear dimension is built from two plane directions — the one it measures along and the one
+/// its extension lines stand on. Seen edge-on, every direction in the plane projects onto one
+/// screen line and those two collapse together: the meeting point of the dimension line and an
+/// extension line stops being defined, and any answer is the camera's rather than the drawing's.
+/// Declining there is the drawing's own answer, the same one a corner too square to read gives.
+const A_PLANE_TOO_EDGE_ON_TO_DIMENSION: f32 = 0.1;
+
+/// Whether a dimension's two projected directions have collapsed together — see
+/// [`A_PLANE_TOO_EDGE_ON_TO_DIMENSION`].
+///
+/// A degenerate direction is NOT edge-on and does not decline here: a span whose two points the
+/// solver has driven together still wants its number on screen so the author can see what to fix,
+/// and the gizmo already draws that case finitely.
+fn a_plane_too_edge_on_to_dimension(along: egui::Vec2, across: egui::Vec2) -> bool {
+    let (along, across) = (along.normalized(), across.normalized());
+    if along.length() <= f32::EPSILON || across.length() <= f32::EPSILON {
+        return false;
+    }
+    across.x.mul_add(-along.y, along.x * across.y).abs() < A_PLANE_TOO_EDGE_ON_TO_DIMENSION
+}
+
 /// Where a rim dimension's leader ends when the author never said — out and up from the center,
 /// the direction a badge on a point already goes.
 ///
@@ -8135,6 +8258,22 @@ impl ProjectedRim {
             })
             .collect::<Option<Vec<_>>>()?;
         Some(Self { center, ring })
+    }
+
+    /// The ring's own mean reach from its center, in screen points.
+    ///
+    /// The one nominal radius a layout reasons in — how much room an arc has for its arrows and its
+    /// value. Not one sample along the plane's first axis: on the ellipse a tilted plane draws,
+    /// that sample is right in one direction and wrong in every other, and this is a length weighed
+    /// against text widths rather than a distance anything steps out by.
+    fn mean_reach(&self) -> f32 {
+        #[allow(clippy::cast_precision_loss)]
+        let count = self.ring.len().max(1) as f32;
+        self.ring
+            .iter()
+            .map(|at| self.center.distance(*at))
+            .sum::<f32>()
+            / count
     }
 
     /// Where the rim stands at a screen bearing, by striking the ray out of the center against the

@@ -26,7 +26,7 @@ fn heads(drawing: &Drawing) -> Vec<[Pos2; 4]> {
         .iter()
         .filter_map(|piece| match piece {
             Piece::Head(points) => Some(*points),
-            _ => None,
+            Piece::Polyline(_) => None,
         })
         .collect()
 }
@@ -45,7 +45,15 @@ fn span(from: Pos2, to: Pos2, offset: f32, value: &str, rank: Rank) -> Drawing {
     // Offset from the MIDDLE of the run, which is where a span with nothing placed
     // has always carried its value.
     let middle = from + run / 2.0;
-    axis_span(from, to, along, middle + normal * offset, value, rank)
+    axis_span(
+        from,
+        to,
+        along,
+        normal,
+        middle + normal * offset,
+        value,
+        rank,
+    )
 }
 
 /// A head's nose: the midpoint of the flat its point was cut off at.
@@ -70,6 +78,13 @@ fn points_at(head: [Pos2; 4]) -> Pos2 {
 /// app cannot make, and the reason a rim is asked rather than stepped out to.
 fn round(center: Pos2, radius: f32) -> impl Fn(f32) -> Pos2 {
     move |bearing| center + Vec2::angled(bearing) * radius
+}
+
+/// The arc an angle is drawn on, on a flat page. A circle really is a circle here, which is what a
+/// sketch plane facing the camera projects to, and the one view that cannot tell an arc asked of
+/// its rim apart from one struck at a screen radius.
+fn struck(vertex: Pos2, radius: f32) -> impl Fn(f32) -> Pos2 {
+    round(vertex, radius)
 }
 
 /// A rim that draws the whole of its own circle, so it falls short of nothing.
@@ -197,6 +212,7 @@ fn an_extent_reaches_its_dimension_line_by_a_different_amount_at_each_end() {
         Pos2::new(20.0, 100.0),
         Pos2::new(100.0, 60.0),
         Vec2::X,
+        Vec2::Y,
         Pos2::new(60.0, 30.0),
         "80",
         Rank::Driving,
@@ -244,6 +260,7 @@ fn an_end_on_the_dimension_line_grows_no_extension() {
         Pos2::new(20.0, 30.0),
         Pos2::new(100.0, 60.0),
         Vec2::X,
+        Vec2::Y,
         Pos2::new(60.0, 30.0),
         "80",
         Rank::Driving,
@@ -560,7 +577,7 @@ fn a_diameter_carries_both_of_the_ends_it_lands_on() {
                             .iter()
                             .all(|at| ((*at - center).length() - 30.0).abs() < 1e-2)
                 }
-                _ => false,
+                Piece::Head(_) => false,
             })
             .count()
     };
@@ -695,11 +712,13 @@ fn from_the_vertex(reach: f32) -> Leg {
 
 #[test]
 fn a_wide_angle_puts_its_value_on_the_arc() {
+    let arc = struck(Pos2::new(70.0, 106.0), 54.0);
     let drawing = angle(
         Pos2::new(70.0, 106.0),
         -std::f32::consts::FRAC_PI_2,
         -0.5,
         54.0,
+        whole(&arc),
         [from_the_vertex(80.0); 2],
         "62°",
         Rank::Driving,
@@ -716,11 +735,13 @@ fn a_wide_angle_puts_its_value_on_the_arc() {
 fn a_tight_angle_makes_the_same_reversal_the_span_does() {
     let vertex = Pos2::new(96.0, 108.0);
     let (from, to) = (-1.78, -1.36);
+    let arc = struck(vertex, 34.0);
     let drawing = angle(
         vertex,
         from,
         to,
         34.0,
+        whole(&arc),
         [from_the_vertex(60.0); 2],
         "24°",
         Rank::Driving,
@@ -743,11 +764,13 @@ fn a_tight_angle_makes_the_same_reversal_the_span_does() {
 fn a_leg_that_already_reaches_the_arc_grows_no_extension() {
     let vertex = Pos2::new(120.0, 116.0);
     let (from, to) = (-2.7, -0.7);
+    let arc = struck(vertex, 46.0);
     let short = angle(
         vertex,
         from,
         to,
         46.0,
+        whole(&arc),
         [from_the_vertex(40.0); 2],
         "115°",
         Rank::Driving,
@@ -757,6 +780,7 @@ fn a_leg_that_already_reaches_the_arc_grows_no_extension() {
         from,
         to,
         46.0,
+        whole(&arc),
         [from_the_vertex(90.0); 2],
         "115°",
         Rank::Driving,
@@ -781,11 +805,13 @@ fn an_arm_the_arc_falls_short_of_is_carried_inward_to_meet_it() {
     let vertex = Pos2::new(100.0, 100.0);
     let (from, to) = (0.0, std::f32::consts::FRAC_PI_2);
     // The second arm starts 70 out and the arc is struck at 20, well inside it.
+    let arc = struck(vertex, 20.0);
     let drawing = angle(
         vertex,
         from,
         to,
         20.0,
+        whole(&arc),
         [
             from_the_vertex(60.0),
             Leg {
@@ -858,6 +884,7 @@ fn every_piece_is_finite_at_a_degenerate_input() {
             Pos2::ZERO,
             Pos2::ZERO,
             Vec2::ZERO,
+            Vec2::ZERO,
             Pos2::ZERO,
             "0",
             Rank::Driving,
@@ -883,6 +910,7 @@ fn every_piece_is_finite_at_a_degenerate_input() {
             1.0,
             1.0,
             20.0,
+            whole(&none),
             [from_the_vertex(30.0); 2],
             "0°",
             Rank::Driving,
@@ -897,17 +925,6 @@ fn every_piece_is_finite_at_a_degenerate_input() {
                 Piece::Head(points) => {
                     assert!(points.iter().all(|p| p.x.is_finite() && p.y.is_finite()))
                 }
-                Piece::Arc {
-                    center,
-                    radius,
-                    from,
-                    to,
-                } => assert!(
-                    center.x.is_finite()
-                        && radius.is_finite()
-                        && from.is_finite()
-                        && to.is_finite()
-                ),
             }
         }
         assert!(drawing.labels.iter().all(|l| l.radians.is_finite()));
@@ -970,6 +987,7 @@ fn a_value_rides_where_it_was_dropped_and_leaves_by_the_end_it_was_carried_past(
             near,
             far,
             Vec2::X,
+            Vec2::Y,
             Pos2::new(x, 100.0),
             "200",
             Rank::Driving,
@@ -1028,4 +1046,231 @@ fn a_value_rides_where_it_was_dropped_and_leaves_by_the_end_it_was_carried_past(
                 && (points[0].x - near.x).abs() < 1e-4
                 && (points[1].x + 60.0).abs() < 1e-4
     )));
+}
+
+/// A sketch plane seen from off to one side, as the door the shell hands these gizmos.
+///
+/// Orthographic on purpose. The map only has to be a HOMOGRAPHY for the bug to exist — the screen
+/// perpendicular of a projected direction is the image of some other plane direction under any of
+/// them — and an orthographic one keeps the inverse an exact 2x2 solve, so unprojecting a drawn
+/// point back to the plane launders nothing. Perspective would add a sub-pixel kink at a
+/// diameter's center that has no bearing on the claim.
+#[derive(Clone, Copy)]
+struct Tilted {
+    /// Which way the plane is turned under the camera, radians.
+    azimuth: f32,
+    /// How far the camera stands above the plane, radians. A quarter turn looks straight down and
+    /// the projection becomes a similarity, which is the one view that cannot tell this bug apart.
+    elevation: f32,
+}
+
+/// Where the drawing sits on screen, so the fixture's numbers read like a viewport's.
+const ORIGIN: Pos2 = Pos2::new(300.0, 200.0);
+
+/// Screen points per plane unit, before the foreshortening.
+const SCALE: f32 = 3.0;
+
+impl Tilted {
+    /// Which way a step IN THE PLANE runs on screen. Linear, so it needs no point to be taken at.
+    fn direction(self, step: [f32; 2]) -> Vec2 {
+        let (turn, up) = (self.azimuth.sin_cos(), self.elevation.sin());
+        Vec2::new(
+            SCALE * step[1].mul_add(turn.1, -(step[0] * turn.0)),
+            SCALE * up * step[0].mul_add(turn.1, step[1] * turn.0),
+        )
+    }
+
+    /// Where a plane coordinate lands on screen.
+    fn at(self, plane: [f32; 2]) -> Pos2 {
+        ORIGIN + self.direction(plane)
+    }
+
+    /// Back to the plane, exactly. The 2x2 part is a reflection, so it is its own inverse.
+    fn back(self, screen: Pos2) -> [f32; 2] {
+        let (turn, up) = (self.azimuth.sin_cos(), self.elevation.sin());
+        let (across, into) = (
+            (screen.x - ORIGIN.x) / SCALE,
+            (screen.y - ORIGIN.y) / SCALE / up,
+        );
+        [
+            into.mul_add(turn.1, -(across * turn.0)),
+            across.mul_add(turn.1, into * turn.0),
+        ]
+    }
+}
+
+/// A three-quarter view: turned 45 degrees and looked at from 30 up. The lean this catches is 31
+/// degrees there, and the table across elevations 15 to 60 never falls below 6.
+fn three_quarters() -> Tilted {
+    Tilted {
+        azimuth: std::f32::consts::FRAC_PI_4,
+        elevation: std::f32::consts::FRAC_PI_6,
+    }
+}
+
+/// **A dimension's extension lines stand square to it IN THE PLANE, not on the screen.**
+///
+/// They are the one part of the drawing whose whole job is to read square, so when they are struck
+/// on the screen's perpendicular instead of the plane's, a sketch looked at from an angle grows
+/// dimensions that lean out of it. The owner's words: "the dimensions were not coplanar with the
+/// sketch plane. They moved into the third dimension."
+///
+/// The first assertion is about the FIXTURE, not the code: seen square on, a plane's perpendicular
+/// projects to the screen's own and the broken layout passes for free. A camera that cannot tell
+/// the two apart makes every assertion below vacuous, so it has to be shown to tell them apart
+/// before any of them is allowed to count.
+#[test]
+fn extension_lines_stand_square_in_the_plane_not_on_the_screen() {
+    let view = three_quarters();
+    let (tail, head) = ([0.0_f32, 0.0], [40.0, 0.0]);
+    let (run, square) = ([1.0_f32, 0.0], [0.0_f32, 1.0]);
+    let along = view.direction(run).normalized();
+    let across = view.direction(square).normalized();
+
+    let screens_own = Vec2::new(along.y, -along.x);
+    let apart = screens_own
+        .x
+        .mul_add(across.y, -(screens_own.y * across.x))
+        .abs();
+    assert!(
+        apart > 0.4,
+        "this view cannot tell the plane's square from the screen's ({apart}), so nothing below \
+         would mean anything"
+    );
+
+    let drawing = axis_span(
+        view.at(tail),
+        view.at(head),
+        along,
+        across,
+        view.at([20.0, 12.0]),
+        "40",
+        Rank::Driving,
+    );
+    // Both ends stand off the dimension line, so both grow an extension, and `axis_span` collects
+    // them before anything else it draws.
+    assert!(drawing.pieces.len() > 2, "{:?}", drawing.pieces);
+    for piece in drawing.pieces.iter().take(2) {
+        let Piece::Polyline(points) = piece else {
+            panic!("the two extension lines come first: {piece:?}");
+        };
+        assert_eq!(points.len(), 2, "{points:?}");
+        let (one, other) = (view.back(points[0]), view.back(points[1]));
+        let reach = [other[0] - one[0], other[1] - one[1]];
+        let length = reach[0].hypot(reach[1]);
+        assert!(length > 1.0, "an extension line of nothing: {reach:?}");
+        let leaning = reach[0].mul_add(run[0], reach[1] * run[1]) / length;
+        assert!(
+            leaning.abs() < 1.0e-3,
+            "an extension line leans {} degrees off square in the plane",
+            90.0 - leaning.abs().acos().to_degrees()
+        );
+    }
+}
+
+/// Where a circle drawn IN THE PLANE stands on screen, asked by screen bearing.
+///
+/// The shell's own door, spelled here in the small: sample the plane circle, project it point by
+/// point, and strike the ray out of the projected center against the ring. That is the only way to
+/// answer a bearing on a curve whose image is an ellipse, and it needs no inverse of the projection.
+fn projected(view: Tilted, center: [f32; 2], radius: f32) -> impl Fn(f32) -> Pos2 {
+    const STEPS: usize = 72;
+    let middle = view.at(center);
+    let ring: Vec<Pos2> = (0..STEPS)
+        .map(|step| {
+            #[allow(clippy::cast_precision_loss)]
+            let turn = std::f32::consts::TAU * step as f32 / STEPS as f32;
+            view.at([
+                radius.mul_add(turn.cos(), center[0]),
+                radius.mul_add(turn.sin(), center[1]),
+            ])
+        })
+        .collect();
+    move |bearing| {
+        let out = Vec2::angled(bearing);
+        let across = Vec2::new(out.y, -out.x);
+        for index in 0..STEPS {
+            let (here, next) = (ring[index], ring[(index + 1) % STEPS]);
+            let (side, other) = ((here - middle).dot(across), (next - middle).dot(across));
+            if (side <= 0.0) == (other <= 0.0) {
+                continue;
+            }
+            let hit = here + (next - here) * (side / (side - other));
+            if (hit - middle).dot(out) >= 0.0 {
+                return hit;
+            }
+        }
+        middle + out
+    }
+}
+
+/// **An angle's arc is a circle IN THE PLANE, so on screen it is the ellipse the plane draws.**
+///
+/// This is the one mark in the family that genuinely leaves the plane when it is struck on the
+/// screen instead of asked of its rim. A straight piece cannot: plane to screen is a homography, so
+/// every screen line through the image of an on-plane point is the image of SOME plane line, and a
+/// span's dimension line only ever reads the wrong metric. A circle has no such excuse — a plane
+/// circle images as an ellipse, and a screen circle drawn over it is a different curve.
+///
+/// As with the extension lines, the fixture is made to prove its own discriminating power first:
+/// the projected ring has to be visibly out of round, or an arc struck at a screen radius would
+/// draw the same thing and the assertion below would hold for the broken drawing too.
+#[test]
+fn an_angles_arc_is_a_circle_in_the_plane_not_on_the_screen() {
+    let view = three_quarters();
+    let corner = [0.0_f32, 0.0];
+    let vertex = view.at(corner);
+    let in_plane = 14.0_f32;
+    let standing = projected(view, corner, in_plane);
+    let rim = whole(&standing);
+
+    #[allow(clippy::cast_precision_loss)]
+    let reaches: Vec<f32> = (0..8)
+        .map(|step| (rim.touch(step as f32 * std::f32::consts::FRAC_PI_4) - vertex).length())
+        .collect();
+    let out_of_round = reaches.iter().fold(0.0_f32, |most, at| most.max(*at))
+        / reaches.iter().fold(f32::MAX, |least, at| least.min(*at));
+    assert!(
+        out_of_round > 1.5,
+        "this view draws the plane's circle nearly round ({out_of_round}), so a screen arc would \
+         pass for it: {reaches:?}"
+    );
+    #[allow(clippy::cast_precision_loss)]
+    let nominal = reaches.iter().sum::<f32>() / reaches.len() as f32;
+
+    let drawing = angle(
+        vertex,
+        -1.2,
+        0.4,
+        nominal,
+        rim,
+        [from_the_vertex(60.0); 2],
+        "92",
+        Rank::Driving,
+    );
+
+    // The arc is the one piece drawn as a run of many points; an extension line has two and the
+    // leader three.
+    let drawn: Vec<&Vec<Pos2>> = drawing
+        .pieces
+        .iter()
+        .filter_map(|piece| match piece {
+            Piece::Polyline(points) if points.len() > 3 => Some(points),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(drawn.len(), 1, "one arc: {:?}", drawing.pieces);
+
+    // The ring is sampled at 72 steps and a bearing is answered on the chord between two of them,
+    // so the drawing sits up to one half-step's sag inside the circle it means — 0.013 of 14 here.
+    // That is the curve the shell draws too, so it is the tolerance rather than an error.
+    let sag = in_plane * (1.0 - (std::f32::consts::TAU / 144.0).cos());
+    for point in drawn[0] {
+        let back = view.back(*point);
+        let reach = (back[0] - corner[0]).hypot(back[1] - corner[1]);
+        assert!(
+            (reach - in_plane).abs() < sag * 1.5,
+            "the arc stands {reach} from the vertex in the plane where it should stand {in_plane}"
+        );
+    }
 }

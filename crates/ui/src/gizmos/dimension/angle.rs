@@ -9,10 +9,18 @@
 //! virtual: thin extension lines carry each leg out to the arc, and the vertex stays absent
 //! because it is not an entity the sketch contains. Drawing it would put a point on screen that no
 //! pick can ever land on.
+//!
+//! **The arc is asked of a [`Rim`], never struck at the vertex.** A circle drawn in a sketch plane
+//! is not a circle on screen: unless the plane faces the camera the drawing is an ellipse, and an
+//! angle struck at a screen radius is the one mark in the family that visibly leaves the plane
+//! rather than merely mis-reading its metric. The radius handed in is a LENGTH the layout reasons
+//! about — how much room the arc has for its arrows and its value — and never a distance anything
+//! steps out by. That is the same split [`radius`](super::radius()) and
+//! [`diameter`](super::diameter()) already keep.
 
 use egui::{Pos2, Vec2};
 
-use super::{arrowhead, value_width, Anchor, Drawing, Label, Piece, Rank, ARROW_LENGTH, GAP};
+use super::{arrowhead, value_width, Anchor, Drawing, Label, Piece, Rank, Rim, ARROW_LENGTH, GAP};
 
 /// How far past the arc an extension line runs when a leg falls short of it.
 const OVERRUN: f32 = 8.0;
@@ -39,16 +47,18 @@ pub struct Leg {
 }
 
 /// An angle at `vertex` between the bearings `from` and `to` (radians, y running down), its arc
-/// struck at `radius`.
+/// drawn where `rim` stands and its layout reasoned in `radius`.
 ///
 /// `legs` says where each arm's own geometry sits along the ray its side of the corner is struck
 /// on, one entry per bearing — see [`Leg`]. Wherever that does not already cover the arc, this
 /// draws the extension line that carries it there.
+#[allow(clippy::too_many_arguments)]
 pub fn angle(
     vertex: Pos2,
     from: f32,
     to: f32,
     radius: f32,
+    rim: Rim<'_>,
     legs: [Leg; 2],
     value: &str,
     rank: Rank,
@@ -62,8 +72,12 @@ pub fn angle(
     // Extension lines, each drawn only across the gap ITS OWN arm leaves. Asked per leg because
     // the answer is per leg: the dogleg has to start where that line stops, and which end of it
     // that is depends on whether the arc overshoots the arm or falls short of it.
-    let target = radius + OVERRUN;
     for (bearing, leg) in [from, to].into_iter().zip(legs) {
+        // How far the arc actually stands out THIS way, which on the ellipse a tilted plane draws
+        // is a different length at every bearing. The nominal radius would carry one leg past the
+        // arc and leave the other short of it.
+        let stands = (rim.touch(bearing) - vertex).length();
+        let target = stands + OVERRUN;
         let gap = if target > leg.furthest {
             Some((leg.furthest, target))
         } else if target < leg.nearest {
@@ -71,7 +85,7 @@ pub fn angle(
             // and runs its eight past, exactly as it does when the arm stops short. Starting at
             // `target` instead would leave a hole the width of the overrun between the arc and
             // the line, with the arc's own terminator joined to nothing.
-            Some(((radius - OVERRUN).max(0.0), leg.nearest))
+            Some(((stands - OVERRUN).max(0.0), leg.nearest))
         } else {
             // The arc lands on the arm itself, which is already drawn.
             None
@@ -83,8 +97,13 @@ pub fn angle(
 
     let sweep = to - from;
     let direction = sweep.signum();
-    let tangent = |bearing: f32| Vec2::new(-bearing.sin(), bearing.cos()) * direction;
-    let (start, end) = (at(from, radius), at(to, radius));
+    // Along the arc where it is actually drawn: the square of the outward normal the rim answers,
+    // so a terminator sits tangent to the ellipse rather than to the circle it is not.
+    let tangent = |bearing: f32| {
+        let out = rim.aim(bearing);
+        Vec2::new(-out.y, out.x) * direction
+    };
+    let (start, end) = (rim.touch(from), rim.touch(to));
 
     // Both tests, on the ARC LENGTH rather than the chord: an angle is dimensioned along its arc,
     // and using the chord would let a wide sweep read as too tight.
@@ -95,55 +114,38 @@ pub fn angle(
     let step = ARROW_LENGTH / radius * direction;
     if arrows_fit {
         // The arc runs between the arrow bases, and each arrow points outward along the arc.
-        pieces.push(Piece::Arc {
-            center: vertex,
-            radius,
-            from: from + step,
-            to: to - step,
-        });
+        pieces.push(Piece::Polyline(rim.between(from + step, to - step)));
         pieces.push(arrowhead(start, -tangent(from)));
         pieces.push(arrowhead(end, tangent(to)));
     } else {
         // Too tight: the arc still spans the legs, and the arrows swing outside pointing in.
-        pieces.push(Piece::Arc {
-            center: vertex,
-            radius,
-            from,
-            to,
-        });
-        pieces.push(Piece::Arc {
-            center: vertex,
-            radius,
-            from: from - 2.0 * step,
-            to: from,
-        });
-        pieces.push(Piece::Arc {
-            center: vertex,
-            radius,
-            from: to,
-            to: to + 2.0 * step,
-        });
+        pieces.push(Piece::Polyline(rim.between(from, to)));
+        pieces.push(Piece::Polyline(rim.between(from - 2.0 * step, from)));
+        pieces.push(Piece::Polyline(rim.between(to, to + 2.0 * step)));
         pieces.push(arrowhead(start, tangent(from)));
         pieces.push(arrowhead(end, -tangent(to)));
     }
 
     let bisector = (from + to) / 2.0;
+    let riding = rim.touch(bisector);
     let label = if value_fits && arrows_fit {
+        let along = tangent(bisector);
         Label {
-            at: at(bisector, radius),
+            at: riding,
             // Tangent to the arc where the value sits, folded upright.
-            radians: super::upright_radians(bisector + std::f32::consts::FRAC_PI_2),
+            radians: super::upright_radians(along.y.atan2(along.x)),
             text,
             anchor: Anchor::Middle,
             lift: GAP,
         }
     } else {
         // The value leaves on a leader along the BISECTOR — the one direction that belongs to
-        // neither leg, so a tight angle's value never looks attached to one of them.
-        let jog = at(bisector, radius + LEADER);
+        // neither leg, so a tight angle's value never looks attached to one of them. It leaves
+        // SQUARE to the arc, which off a tilted plane is not the way it was reached.
+        let jog = riding + rim.aim(bisector) * LEADER;
         let side = if jog.x >= vertex.x { 1.0 } else { -1.0 };
         pieces.push(Piece::Polyline(vec![
-            at(bisector, radius),
+            riding,
             jog,
             jog + Vec2::X * side * (width + 2.0 * GAP),
         ]));

@@ -295,7 +295,7 @@ impl Rim<'_> {
     }
 
     /// The curve sampled from one bearing round to another, as screen points.
-    fn between(self, from: f32, to: f32) -> Vec<Pos2> {
+    pub(super) fn between(self, from: f32, to: f32) -> Vec<Pos2> {
         // One step per few degrees: fine enough that a projected rim reads as a curve, coarse
         // enough that a whole turn is a few dozen points rather than a few hundred.
         let steps = ((to - from).abs() / 0.12).ceil().max(1.0);
@@ -395,14 +395,12 @@ pub struct Label {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Piece {
     /// A run of connected straight segments.
+    ///
+    /// Curves included. There is no arc piece: every curve a dimension draws is a circle IN THE
+    /// SKETCH PLANE, which projects to an ellipse whenever the camera is not square to it, so a
+    /// piece struck at a screen center and a screen radius could only ever draw the wrong one.
+    /// Curves are sampled where they stand — [`Rim::between`] — and arrive here already flattened.
     Polyline(Vec<Pos2>),
-    /// A circular arc, `from` to `to` in radians, y running down.
-    Arc {
-        center: Pos2,
-        radius: f32,
-        from: f32,
-        to: f32,
-    },
     /// A filled arrowhead: the two nose corners, then the two base corners.
     Head([Pos2; 4]),
 }
@@ -434,14 +432,6 @@ impl Drawing {
                 match piece {
                     Piece::Polyline(points) => {
                         painter.add(Shape::line(points.clone(), pass));
-                    }
-                    Piece::Arc {
-                        center,
-                        radius,
-                        from,
-                        to,
-                    } => {
-                        painter.add(Shape::line(sample_arc(*center, *radius, *from, *to), pass));
                     }
                     // An arrowhead is filled, so its halo is the same shape stroked outward.
                     Piece::Head(points) => {
@@ -504,18 +494,6 @@ impl Drawing {
                 .with_underline(Stroke::NONE),
         );
     }
-}
-
-/// Sample an arc into a polyline, finely enough that no facet shows at its on-screen size.
-fn sample_arc(center: Pos2, radius: f32, from: f32, to: f32) -> Vec<Pos2> {
-    let sweep = to - from;
-    let steps = ((radius * sweep.abs() / 2.0).ceil() as usize).clamp(8, 96);
-    (0..=steps)
-        .map(|i| {
-            let t = from + sweep * (i as f32 / steps as f32);
-            center + Vec2::new(t.cos(), t.sin()) * radius
-        })
-        .collect()
 }
 
 /// Fold a bearing into `(-90°, 90°]` so aligned text is never upside-down.
