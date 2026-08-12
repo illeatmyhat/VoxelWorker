@@ -21,9 +21,11 @@ use crate::sheet::Sheet;
 ///
 /// Each of them is laid out in the plane it annotates, and takes that plane's frame as an
 /// argument; a printed sheet IS the plane, so every specimen here hands over
-/// [`facing`](dimension::PlaneFrame::facing) and the sheet shows the drawing at its square. What
-/// the frame changes — a value sheared into a tilted plane, a shoulder running the plane's level
-/// rather than the screen's — has no specimen because a still page cannot pose the question.
+/// [`facing`](dimension::PlaneFrame::facing) and the sheet shows the drawing at its square.
+///
+/// A still page CAN pose the tilted question, though, and the last row does: the frame is an
+/// argument, not something the paint path reads off a camera, so a specimen handed a synthetic one
+/// draws a genuinely sheared value with no camera anywhere in the program.
 mod flat {
     use egui::{Pos2, Vec2};
     use ui::gizmos::dimension::{self, Drawing, Leg, PlaneFrame, Rank, Rim};
@@ -701,6 +703,65 @@ impl Sheet {
                     Rank::Driving,
                 )
                 .paint(p);
+            },
+        );
+        self.specimen_row(
+            ui,
+            "the value is laid out in the PLANE, not on the glass",
+            "Every row above is square to the camera, where the plane's axes are the screen's and \
+             there is nothing to see. These three are the same span under three synthetic frames. \
+             Square-on the value is upright. PITCHED — the middle — is the case that decides the \
+             design: the plane's axes still meet at a right angle and the number is not sheared at \
+             all, it is only SHORTER, so a layout built from directions alone would draw it \
+             identically to the left-hand one and the tilt would go unsaid. Three-quarter shears \
+             AND shortens. The glyphs are geometry, not a turned billboard: a rotation cannot make \
+             either of the right-hand two, which is why the value used to read as pasted on the \
+             glass over a sketch seen from an angle.",
+            |p, s| {
+                let posed = [
+                    (
+                        "square on",
+                        [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+                    ),
+                    (
+                        "pitched",
+                        [[1.0, 0.0, 0.0], [0.0, 0.5, 0.0], [0.0, 0.0, 1.0]],
+                    ),
+                    (
+                        "three-quarter",
+                        [[1.0, 0.42, 0.0], [0.15, 0.62, 0.0], [0.0, 0.0, 1.0]],
+                    ),
+                ];
+                for (index, (posture, frame)) in posed.into_iter().enumerate() {
+                    #[allow(clippy::cast_precision_loss)]
+                    let left = (index as f32).mul_add(66.0, s.left() + 8.0);
+                    let plane = dimension::PlaneFrame::from_plane_to_screen(frame)
+                        .expect("a posed frame is not singular");
+                    let (from, to) = (
+                        Pos2::new(left, s.bottom() - 30.0),
+                        Pos2::new(left + 50.0, s.bottom() - 30.0),
+                    );
+                    gizmos::segment(p, from, to);
+                    let normal = Vec2::new(0.0, -1.0);
+                    dimension::axis_span(
+                        from,
+                        to,
+                        (to - from).normalized(),
+                        [normal; 2],
+                        from + (to - from) / 2.0 + normal * 22.0,
+                        plane,
+                        "50",
+                        Rank::Driving,
+                    )
+                    .paint(p);
+                    p.text(
+                        Pos2::new(left, s.bottom() - 16.0),
+                        egui::Align2::LEFT_TOP,
+                        posture,
+                        egui::FontId::monospace(8.0),
+                        color_palette::TEXT_SECONDARY,
+                    );
+                }
             },
         );
     }
