@@ -122,4 +122,71 @@ mod tests {
             "the cube paints at {cube:?} and the menu at {menu:?}, so the menu is buried"
         );
     }
+
+    /// **The blit lands on whole pixels at a fractional device ratio too.**
+    ///
+    /// The cube's square is a number of PHYSICAL pixels and the corner it stands at is decided in
+    /// physical pixels; only the last step divides by the ratio, because egui measures in points.
+    /// That division is the whole of the exposure. If it left the rect a fraction of a pixel off,
+    /// the sampler would be reading between texels for the entire square and the cube would come
+    /// out softened — everywhere, evenly, with no edge to notice it by. The `shot` goldens cannot
+    /// see this: the headless path is fixed at a ratio of one, where the division is a no-op.
+    ///
+    /// So the observable is the tessellated geometry rather than any pixel: every vertex the cube's
+    /// mesh puts down, taken back into physical pixels, is a whole number. The ratios are the ones
+    /// Windows actually offers — 125%, 150%, 175% — plus a corner that is not a multiple of any of
+    /// them, since a corner that happened to divide evenly would prove nothing.
+    #[test]
+    fn the_view_cube_lands_on_whole_pixels_at_a_fractional_device_ratio() {
+        // A cube edge and a corner in physical pixels, as `view_cube_corner` answers them.
+        let (edge, corner) = (144.0_f32, egui::pos2(1751.0, 67.0));
+        for ratio in [1.0_f32, 1.25, 1.5, 1.75, 2.0] {
+            let context = egui::Context::default();
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::pos2(0.0, 0.0),
+                    egui::vec2(1920.0 / ratio, 1080.0 / ratio),
+                )),
+                ..Default::default()
+            };
+            let output = context.run(input, |context| {
+                egui::CentralPanel::default().show(context, |ui| {
+                    super::view_cube_image(
+                        ui,
+                        egui::Rect::from_min_size(
+                            egui::pos2(corner.x / ratio, corner.y / ratio),
+                            egui::vec2(edge / ratio, edge / ratio),
+                        ),
+                        A_CUBE_TEXTURE,
+                    );
+                });
+            });
+
+            let mut vertices = 0_usize;
+            for primitive in context.tessellate(output.shapes, ratio) {
+                let egui::epaint::Primitive::Mesh(mesh) = primitive.primitive else {
+                    continue;
+                };
+                if mesh.texture_id != A_CUBE_TEXTURE {
+                    continue;
+                }
+                for vertex in &mesh.vertices {
+                    let (across, down) = (vertex.pos.x * ratio, vertex.pos.y * ratio);
+                    let off = (across - across.round())
+                        .abs()
+                        .max((down - down.round()).abs());
+                    assert!(
+                        off < 0.01,
+                        "at {ratio}x the cube puts a corner at {across}, {down} — \
+                         {off} of a pixel off the grid, so the whole square samples between texels"
+                    );
+                    vertices += 1;
+                }
+            }
+            assert!(
+                vertices >= 4,
+                "at {ratio}x the cube did not tessellate at all"
+            );
+        }
+    }
 }
