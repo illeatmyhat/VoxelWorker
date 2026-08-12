@@ -1555,3 +1555,83 @@ fn an_unsnapped_walk_is_smooth_in_every_direction() {
         );
     }
 }
+
+/// **A slot wound from the drawing the SHELL hands it keeps both its caps.**
+///
+/// The shell rebuilds the preview from the pre-drag producer every frame and lends the gesture's
+/// carries to it, so the drawing the settle is given is always the one at rest and the hand always
+/// arrives all at once. Every other walk here keeps the drawing between frames, and that difference
+/// hid a bug the author saw immediately: which way round a cap is drawn was decided against a
+/// reference read from the drawing as it STANDS, and by then the caller has written the raw cursor
+/// into the held point and settled nothing else. A cap whose center is the point being dragged is
+/// TORN at that moment — its center has gone with the hand while its two ends have not — and its
+/// joint read +0.162 where it holds -1.000 at rest. The sign test saw no change and that cap alone
+/// never turned over.
+///
+/// Measured across the seam at a quarter-slot of half-width 4 about an r40 spine, one 15-degree
+/// step past it: 33.51 before any of this (both caps inverted), 83.78 with the reference torn
+/// (exactly one inverted, which is why it read WORSE), 134.04 once the reference is `was`.
+///
+/// The area is asserted against the closed form rather than for continuity, because a slot is a
+/// shape whose area is known: an annular sector between the rails plus one full cap-radius disc.
+/// Continuity cannot tell one inverted cap from two, and the closed form names both.
+#[test]
+fn a_slot_wound_from_the_drawing_the_shell_rebuilds_keeps_both_caps() {
+    let (rail, cap) = (40.0_f64, 4.0_f64);
+    let (outer, inner) = (rail + cap, rail - cap);
+    for way in [-1.0_f64, 1.0] {
+        let original = curved_slot();
+        let held = spine_end(&original, [0.0, 40.0]);
+        let spine = original
+            .arcs()
+            .iter()
+            .find(|arc| arc.role == crate::sketch::EntityRole::Construction)
+            .expect("a slot is drawn from a centerline")
+            .id;
+        let mut turns = crate::sketch::ArcTurnUnderAGesture::opening_over(&original);
+        let mut wound = 0;
+        for taken in 1..=30 {
+            let asked = 90.0 + way * 15.0 * f64::from(taken);
+            let hand = [
+                rail * asked.to_radians().cos(),
+                rail * asked.to_radians().sin(),
+            ];
+            // Exactly what the shell does: the drawing comes from the pre-drag producer and only
+            // the carries survive the frame.
+            let mut frame = original.clone();
+            let Ok(answered) = frame.move_point_reporting_its_snap(
+                held,
+                SketchPoint::from_continuous(hand[0], hand[1]),
+                ctx(16),
+                crate::sketch::SnapReach::UNBOUNDED,
+                &mut turns,
+            ) else {
+                // The frame that lands ON the seam. Standing there is the law; refusing there is a
+                // fault of its own, older than this walk and measured at 5e2e3e4.
+                continue;
+            };
+            if !answered.moved {
+                continue;
+            }
+            let sweep = frame
+                .arc_form_of(spine)
+                .expect("the centerline still draws")
+                .sweep_degrees;
+            let enclosed: f64 = frame.faces(ctx(16)).iter().map(|face| face.area).sum();
+            let body = sweep * std::f64::consts::PI * (outer * outer - inner * inner) / 360.0;
+            let caps = std::f64::consts::PI * cap * cap;
+            assert!(
+                (enclosed - (body + caps)).abs() < 1.0e-3,
+                "at {asked} degrees the slot sweeps {sweep} and should enclose {} but encloses {enclosed}",
+                body + caps
+            );
+            if sweep > 180.0 {
+                wound += 1;
+            }
+        }
+        assert!(
+            wound > 0,
+            "the walk never carried the slot past a half turn, so it proves nothing"
+        );
+    }
+}

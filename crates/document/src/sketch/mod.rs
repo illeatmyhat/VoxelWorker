@@ -4314,8 +4314,21 @@ impl Sketch {
     fn arcs_this_frame_turns_over(
         &self,
         crossing: Vec<EntityId>,
+        was: &[(EntityId, [f64; 2])],
         at: &dyn Fn(EntityId) -> Option<[f64; 2]>,
     ) -> TheArcsThisFrameTurnsOver {
+        // Where the drawing STOOD, which is not where it stands. By here the caller has written the
+        // raw cursor into the held point and settled nothing else, so a joint at the moving end is
+        // TORN — its center has gone with the hand while its ends have not. Measured on the shell's
+        // own path, where the preview is rebuilt from the pre-drag drawing and the hand arrives all
+        // at once: the moving cap's joint read +0.162 against the -1.000 it holds at rest, the sign
+        // test saw no change, and exactly one of the two caps turned over.
+        let stood_at = |id: EntityId| {
+            was.iter()
+                .find(|(named, _)| *named == id)
+                .map(|(_, at)| *at)
+                .or_else(|| self.point_in_plane(id))
+        };
         let mut flipping = crossing.clone();
         let mut asked = 0;
         while asked < flipping.len() {
@@ -4343,7 +4356,7 @@ impl Sketch {
                 }
                 let joined = [id, neighbour];
                 let (Some(stood), Some(standing)) = (
-                    self.joint_reading(shared, joined, &|point| self.point_in_plane(point), &[]),
+                    self.joint_reading(shared, joined, &stood_at, &[]),
                     self.joint_reading(shared, joined, at, &flipping),
                 ) else {
                     continue;
@@ -4520,7 +4533,7 @@ impl Sketch {
             .filter_map(|carry| carry.crossing_under(&self.arcs, &settled_at))
             .collect();
         if !crossing.is_empty() {
-            let turning = self.arcs_this_frame_turns_over(crossing, &settled_at);
+            let turning = self.arcs_this_frame_turns_over(crossing, &was, &settled_at);
             let first = prepared
                 .plan_apply(&self.points, &self.circles, &settled.solution)
                 .ok();
