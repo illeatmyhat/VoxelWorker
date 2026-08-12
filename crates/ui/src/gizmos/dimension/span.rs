@@ -35,18 +35,23 @@ use super::{
 /// the two extension lines have different lengths, and for an axis-aligned run one of them vanishes
 /// because the point is already on the line.
 ///
-/// **`across` is the direction those extensions run, and the caller states it.** It is not
-/// `perp(along)`: a sketch plane the camera is not square to projects by a homography, and the
-/// screen perpendicular of a projected direction is the image of some OTHER plane direction
+/// **`across` is the direction those extensions run, and the caller states it — ONE PER END.** It
+/// is not `perp(along)`: a sketch plane the camera is not square to projects by a homography, and
+/// the screen perpendicular of a projected direction is the image of some OTHER plane direction
 /// entirely. At a three-quarter view the two are 31 degrees apart, and extension lines are the one
 /// part of the drawing whose whole job is to read square — so a dimension laid out on the screen's
-/// perpendicular reads as leaning out of the plane it annotates. A caller drawing on a flat page
-/// passes `perp(along)` and gets exactly the drawing it always did.
+/// perpendicular reads as leaning out of the plane it annotates.
+///
+/// There are two because a projection that DIVIDES carries one plane direction to a different
+/// screen direction at every point: square to the run at `from` and square to it at `to` are the
+/// same direction in the plane and differ by 13 degrees on screen at the far end of a strongly
+/// perspective view. Each end is asked at itself. A caller drawing on a flat page passes
+/// `perp(along)` twice and gets exactly the drawing it always did.
 pub fn axis_span(
     from: Pos2,
     to: Pos2,
     along: Vec2,
-    across: Vec2,
+    across: [Vec2; 2],
     through: Pos2,
     value: &str,
     rank: Rank,
@@ -60,21 +65,21 @@ pub fn axis_span(
     // The screen's own square, which is what `across` reduces to on a plane facing the camera and
     // what the drawing falls back on when the caller hands in nothing usable.
     let screens_own = Vec2::new(unit.y, -unit.x);
-    let reach = across.length();
-    let sideways = if reach > f32::EPSILON {
-        across / reach
-    } else {
-        screens_own
-    };
-    // How far from parallel the two directions are. Seen edge-on they collapse together and no
-    // meeting point exists; the caller declines before that, and the fallback here only has to keep
-    // the drawing finite.
-    let apart = unit.x.mul_add(sideways.y, -(unit.y * sideways.x));
-    // Where a feature point meets the dimension line: the line struck through it along `across`,
-    // met with the line struck through the anchor along `along`. Both are images of plane lines, so
-    // the meeting point is the image of where they meet IN THE PLANE — which is the whole reason
-    // the direction is handed in rather than turned out of `along` here.
-    let foot = move |point: Pos2| {
+    // Where a feature point meets the dimension line: the line struck through it along ITS OWN
+    // `across`, met with the line struck through the anchor along `along`. Both are images of plane
+    // lines, so the meeting point is the image of where they meet IN THE PLANE — which is the whole
+    // reason the direction is handed in rather than turned out of `along` here.
+    let foot = move |point: Pos2, across: Vec2| {
+        let reach = across.length();
+        let sideways = if reach > f32::EPSILON {
+            across / reach
+        } else {
+            screens_own
+        };
+        // How far from parallel the two directions are. Seen edge-on they collapse together and no
+        // meeting point exists; the caller declines before that, and the fallback here only has to
+        // keep the drawing finite.
+        let apart = unit.x.mul_add(sideways.y, -(unit.y * sideways.x));
         let toward = through - point;
         if apart.abs() <= f32::EPSILON {
             return point + screens_own * toward.dot(screens_own);
@@ -82,7 +87,7 @@ pub fn axis_span(
         point + sideways * (toward.x.mul_add(unit.y, -(toward.y * unit.x)) / -apart)
     };
 
-    let (near, far) = (foot(from), foot(to));
+    let (near, far) = (foot(from, across[0]), foot(to, across[1]));
     let extensions = [(from, near), (to, far)]
         .into_iter()
         .filter_map(|(feature, meeting)| {

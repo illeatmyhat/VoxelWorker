@@ -49,7 +49,7 @@ fn span(from: Pos2, to: Pos2, offset: f32, value: &str, rank: Rank) -> Drawing {
         from,
         to,
         along,
-        normal,
+        [normal; 2],
         middle + normal * offset,
         value,
         rank,
@@ -212,7 +212,7 @@ fn an_extent_reaches_its_dimension_line_by_a_different_amount_at_each_end() {
         Pos2::new(20.0, 100.0),
         Pos2::new(100.0, 60.0),
         Vec2::X,
-        Vec2::Y,
+        [Vec2::Y; 2],
         Pos2::new(60.0, 30.0),
         "80",
         Rank::Driving,
@@ -260,7 +260,7 @@ fn an_end_on_the_dimension_line_grows_no_extension() {
         Pos2::new(20.0, 30.0),
         Pos2::new(100.0, 60.0),
         Vec2::X,
-        Vec2::Y,
+        [Vec2::Y; 2],
         Pos2::new(60.0, 30.0),
         "80",
         Rank::Driving,
@@ -884,7 +884,7 @@ fn every_piece_is_finite_at_a_degenerate_input() {
             Pos2::ZERO,
             Pos2::ZERO,
             Vec2::ZERO,
-            Vec2::ZERO,
+            [Vec2::ZERO; 2],
             Pos2::ZERO,
             "0",
             Rank::Driving,
@@ -987,7 +987,7 @@ fn a_value_rides_where_it_was_dropped_and_leaves_by_the_end_it_was_carried_past(
             near,
             far,
             Vec2::X,
-            Vec2::Y,
+            [Vec2::Y; 2],
             Pos2::new(x, 100.0),
             "200",
             Rank::Driving,
@@ -1052,9 +1052,14 @@ fn a_value_rides_where_it_was_dropped_and_leaves_by_the_end_it_was_carried_past(
 ///
 /// Orthographic on purpose. The map only has to be a HOMOGRAPHY for the bug to exist — the screen
 /// perpendicular of a projected direction is the image of some other plane direction under any of
-/// them — and an orthographic one keeps the inverse an exact 2x2 solve, so unprojecting a drawn
-/// point back to the plane launders nothing. Perspective would add a sub-pixel kink at a
-/// diameter's center that has no bearing on the claim.
+/// them, and the inverse stays exact either way, so unprojecting a drawn point back to the plane
+/// launders nothing.
+///
+/// The shell's own door is `to_px` at `src/windowed/render.rs`: plane to world, times the view
+/// projection, a perspective divide, then the viewport — which composes to exactly this, a
+/// homography on the plane's two coordinates plus a `w > 0` cull. `depth` is what makes it one
+/// rather than an affine map, and it is set BOTH ways in every test here: an orthographic fixture
+/// is structurally unable to go red on anything the divide causes.
 #[derive(Clone, Copy)]
 struct Tilted {
     /// Which way the plane is turned under the camera, radians.
@@ -1062,6 +1067,10 @@ struct Tilted {
     /// How far the camera stands above the plane, radians. A quarter turn looks straight down and
     /// the projection becomes a similarity, which is the one view that cannot tell this bug apart.
     elevation: f32,
+    /// How hard the map divides. Zero is orthographic; anything else and a plane direction no
+    /// longer projects the same way at every point, which is the property an affine stand-in
+    /// silently grants the code under test.
+    depth: f32,
 }
 
 /// Where the drawing sits on screen, so the fixture's numbers read like a viewport's.
@@ -1071,27 +1080,37 @@ const ORIGIN: Pos2 = Pos2::new(300.0, 200.0);
 const SCALE: f32 = 3.0;
 
 impl Tilted {
-    /// Which way a step IN THE PLANE runs on screen. Linear, so it needs no point to be taken at.
-    fn direction(self, step: [f32; 2]) -> Vec2 {
-        let (turn, up) = (self.azimuth.sin_cos(), self.elevation.sin());
-        Vec2::new(
-            SCALE * step[1].mul_add(turn.1, -(step[0] * turn.0)),
-            SCALE * up * step[0].mul_add(turn.1, step[1] * turn.0),
-        )
-    }
-
     /// Where a plane coordinate lands on screen.
     fn at(self, plane: [f32; 2]) -> Pos2 {
-        ORIGIN + self.direction(plane)
+        let (turn, up) = (self.azimuth.sin_cos(), self.elevation.sin());
+        let across = plane[1].mul_add(turn.1, -(plane[0] * turn.0));
+        let into = plane[0].mul_add(turn.1, plane[1] * turn.0);
+        let divide = self.depth.mul_add(into, 1.0);
+        ORIGIN + Vec2::new(SCALE * across / divide, SCALE * up * into / divide)
     }
 
-    /// Back to the plane, exactly. The 2x2 part is a reflection, so it is its own inverse.
+    /// Which way a step IN THE PLANE runs on screen, TAKEN AT A POINT.
+    ///
+    /// Position-dependent on purpose: once the map divides, a plane direction runs differently at
+    /// every point, and a probe that forgot to say where would be answering for the orthographic
+    /// map only. The step is taken at unit plane length, which is what the shell does and for the
+    /// same reason — a step as long as the thing it describes can land behind the camera.
+    fn direction(self, at: [f32; 2], step: [f32; 2]) -> Vec2 {
+        let span = step[0].hypot(step[1]);
+        let there = self.at([
+            step[0].mul_add(1.0 / span, at[0]),
+            step[1].mul_add(1.0 / span, at[1]),
+        ]);
+        (there - self.at(at)).normalized()
+    }
+
+    /// Back to the plane, exactly. The divide is recovered first, and then the 2x2 part, which is a
+    /// reflection and so its own inverse.
     fn back(self, screen: Pos2) -> [f32; 2] {
         let (turn, up) = (self.azimuth.sin_cos(), self.elevation.sin());
-        let (across, into) = (
-            (screen.x - ORIGIN.x) / SCALE,
-            (screen.y - ORIGIN.y) / SCALE / up,
-        );
+        let (across, down) = ((screen.x - ORIGIN.x) / SCALE, (screen.y - ORIGIN.y) / SCALE);
+        let divide = 1.0 / self.depth.mul_add(-down / up, 1.0);
+        let (across, into) = (across * divide, down * divide / up);
         [
             into.mul_add(turn.1, -(across * turn.0)),
             across.mul_add(turn.1, into * turn.0),
@@ -1101,11 +1120,17 @@ impl Tilted {
 
 /// A three-quarter view: turned 45 degrees and looked at from 30 up. The lean this catches is 31
 /// degrees there, and the table across elevations 15 to 60 never falls below 6.
-fn three_quarters() -> Tilted {
-    Tilted {
+///
+/// Both the affine reading and a genuinely projective one, because they fail differently: the
+/// divide is what makes a plane direction position-dependent, and every observable here is run
+/// under both. The depth is chosen so the near and far ends of a 40-unit drawing differ by about
+/// half again in scale — a strong perspective, not a token one.
+fn three_quarters() -> [Tilted; 2] {
+    [0.0, 0.008].map(|depth| Tilted {
         azimuth: std::f32::consts::FRAC_PI_4,
         elevation: std::f32::consts::FRAC_PI_6,
-    }
+        depth,
+    })
 }
 
 /// **A dimension's extension lines stand square to it IN THE PLANE, not on the screen.**
@@ -1121,49 +1146,76 @@ fn three_quarters() -> Tilted {
 /// before any of them is allowed to count.
 #[test]
 fn extension_lines_stand_square_in_the_plane_not_on_the_screen() {
-    let view = three_quarters();
-    let (tail, head) = ([0.0_f32, 0.0], [40.0, 0.0]);
-    let (run, square) = ([1.0_f32, 0.0], [0.0_f32, 1.0]);
-    let along = view.direction(run).normalized();
-    let across = view.direction(square).normalized();
+    for view in three_quarters() {
+        let (tail, head) = ([0.0_f32, 0.0], [40.0, 0.0]);
+        let (run, square) = ([1.0_f32, 0.0], [0.0_f32, 1.0]);
+        // Where the annotation was dropped, and so where the dimension line stands. `along` is the
+        // run's direction THERE, not at the feature: under a dividing projection the plane's
+        // parallels converge, and the line the drawing is laid out on is the one through the
+        // anchor. The shell has no plane point for a screen anchor and reaches the same direction
+        // through the vanishing point; here the anchor is a plane point, so it can be said outright.
+        let dropped = [20.0_f32, 12.0];
+        let along = view.direction(dropped, run);
+        let across = [view.direction(tail, square), view.direction(head, square)];
 
-    let screens_own = Vec2::new(along.y, -along.x);
-    let apart = screens_own
-        .x
-        .mul_add(across.y, -(screens_own.y * across.x))
-        .abs();
-    assert!(
-        apart > 0.4,
-        "this view cannot tell the plane's square from the screen's ({apart}), so nothing below \
-         would mean anything"
-    );
-
-    let drawing = axis_span(
-        view.at(tail),
-        view.at(head),
-        along,
-        across,
-        view.at([20.0, 12.0]),
-        "40",
-        Rank::Driving,
-    );
-    // Both ends stand off the dimension line, so both grow an extension, and `axis_span` collects
-    // them before anything else it draws.
-    assert!(drawing.pieces.len() > 2, "{:?}", drawing.pieces);
-    for piece in drawing.pieces.iter().take(2) {
-        let Piece::Polyline(points) = piece else {
-            panic!("the two extension lines come first: {piece:?}");
-        };
-        assert_eq!(points.len(), 2, "{points:?}");
-        let (one, other) = (view.back(points[0]), view.back(points[1]));
-        let reach = [other[0] - one[0], other[1] - one[1]];
-        let length = reach[0].hypot(reach[1]);
-        assert!(length > 1.0, "an extension line of nothing: {reach:?}");
-        let leaning = reach[0].mul_add(run[0], reach[1] * run[1]) / length;
+        let screens_own = Vec2::new(along.y, -along.x);
+        let apart = screens_own
+            .x
+            .mul_add(across[0].y, -(screens_own.y * across[0].x))
+            .abs();
         assert!(
-            leaning.abs() < 1.0e-3,
-            "an extension line leans {} degrees off square in the plane",
-            90.0 - leaning.abs().acos().to_degrees()
+            apart > 0.4,
+            "this view cannot tell the plane's square from the screen's ({apart}), so nothing \
+             below would mean anything"
+        );
+
+        let drawing = axis_span(
+            view.at(tail),
+            view.at(head),
+            along,
+            across,
+            view.at(dropped),
+            "40",
+            Rank::Driving,
+        );
+        // Both ends stand off the dimension line, so both grow an extension, and `axis_span`
+        // collects them before anything else it draws.
+        assert!(drawing.pieces.len() > 2, "{:?}", drawing.pieces);
+        let mut feet = Vec::new();
+        for piece in drawing.pieces.iter().take(2) {
+            let Piece::Polyline(points) = piece else {
+                panic!("the two extension lines come first: {piece:?}");
+            };
+            assert_eq!(points.len(), 2, "{points:?}");
+            let (one, other) = (view.back(points[0]), view.back(points[1]));
+            let reach = [other[0] - one[0], other[1] - one[1]];
+            let length = reach[0].hypot(reach[1]);
+            assert!(length > 1.0, "an extension line of nothing: {reach:?}");
+            let leaning = reach[0].mul_add(run[0], reach[1] * run[1]) / length;
+            assert!(
+                leaning.abs() < 1.0e-3,
+                "at depth {} an extension line leans {} degrees off square in the plane",
+                view.depth,
+                90.0 - leaning.abs().acos().to_degrees()
+            );
+            // An extension is drawn from GAP short of its feature point to OVERRUN past the
+            // dimension line, so the meeting itself is one overrun back from the drawn end.
+            feet.push(view.back(points[1] - (points[1] - points[0]).normalized() * OVERRUN));
+        }
+
+        // And the line those two feet stand on is the run's own, carried over to where the author
+        // dropped the annotation. This is the claim the extension lines cannot make on their own:
+        // two segments can each be square to the run and still meet a line that is not parallel to
+        // it, which draws a dimension that reads as measuring some other direction.
+        let between = [feet[1][0] - feet[0][0], feet[1][1] - feet[0][1]];
+        let span = between[0].hypot(between[1]);
+        assert!(span > 1.0, "a dimension line of nothing: {between:?}");
+        let veering = between[0].mul_add(square[0], between[1] * square[1]) / span;
+        assert!(
+            veering.abs() < 1.0e-3,
+            "at depth {} the dimension line veers {} degrees off the run it measures",
+            view.depth,
+            veering.abs().asin().to_degrees()
         );
     }
 }
@@ -1217,7 +1269,12 @@ fn projected(view: Tilted, center: [f32; 2], radius: f32) -> impl Fn(f32) -> Pos
 /// draw the same thing and the assertion below would hold for the broken drawing too.
 #[test]
 fn an_angles_arc_is_a_circle_in_the_plane_not_on_the_screen() {
-    let view = three_quarters();
+    for view in three_quarters() {
+        an_angles_arc_stands_in_the_plane(view);
+    }
+}
+
+fn an_angles_arc_stands_in_the_plane(view: Tilted) {
     let corner = [0.0_f32, 0.0];
     let vertex = view.at(corner);
     let in_plane = 14.0_f32;
@@ -1270,7 +1327,9 @@ fn an_angles_arc_is_a_circle_in_the_plane_not_on_the_screen() {
         let reach = (back[0] - corner[0]).hypot(back[1] - corner[1]);
         assert!(
             (reach - in_plane).abs() < sag * 1.5,
-            "the arc stands {reach} from the vertex in the plane where it should stand {in_plane}"
+            "at depth {} the arc stands {reach} from the vertex in the plane where it should \
+             stand {in_plane}",
+            view.depth
         );
     }
 }

@@ -4219,29 +4219,12 @@ impl WindowedState {
         };
         // Which way a PLANE direction runs on screen. The step is taken in the plane and only then
         // projected, so what comes back is the image of a plane line rather than a direction the
-        // screen invented for itself.
-        //
-        // The distinction is the whole of this pass. Plane to screen is a homography, so the screen
-        // perpendicular of a projected direction is the image of some OTHER plane direction — at a
-        // three-quarter view, one 31 degrees away. Every direction a dimension is built from has to
-        // come through here or the drawing reads as leaning out of the sketch it annotates.
-        //
-        // The step is taken at UNIT plane length however long the one handed in is: a direction is
-        // asked for, and under perspective a step the length of the whole span could land behind
-        // the camera and answer nothing where the short one beside it answers fine.
-        let along_the_plane = |at: [f64; 2], step: [f64; 2]| {
-            let span = step[0].hypot(step[1]);
-            if span <= f64::EPSILON {
-                return None;
-            }
-            let (Some(here), Some(there)) = (
-                to_px(at),
-                to_px([at[0] + step[0] / span, at[1] + step[1] / span]),
-            ) else {
-                return None;
-            };
-            let reach = there - here;
-            (reach.length() > f32::EPSILON).then(|| reach / reach.length())
+        // screen invented for itself. The distinction is the whole of this pass, and
+        // [`a_plane_direction_on_screen`] is where it is argued.
+        let along_the_plane =
+            |at: [f64; 2], step: [f64; 2]| a_plane_direction_on_screen(at, step, &to_px);
+        let the_line_through = |at: [f64; 2], toward: [f64; 2], anchor: egui::Pos2| {
+            a_dimension_lines_direction(at, toward, anchor, &to_px)
         };
         // Everything a dimension needs of a rim: where it stands on screen, how much of itself it
         // draws, and the one nominal radius the layout reasons in. Asked once per drawing, because
@@ -4310,13 +4293,16 @@ impl WindowedState {
                     };
                     let run = to - from;
                     // Square to the run IN THE PLANE, then projected — the direction the extension
-                    // lines stand along and the one the drawing steps off by.
-                    let Some(across) =
-                        along_the_plane(tail, [tail[1] - head[1], head[0] - tail[0]])
+                    // lines stand along and the one the drawing steps off by. Asked at EACH end,
+                    // because a projection that divides carries one plane direction to a different
+                    // screen direction at every point.
+                    let square = [tail[1] - head[1], head[0] - tail[0]];
+                    let (Some(at_tail), Some(at_head)) =
+                        (along_the_plane(tail, square), along_the_plane(head, square))
                     else {
                         return None;
                     };
-                    if a_plane_too_edge_on_to_dimension(run, across) {
+                    if a_plane_too_edge_on_to_dimension(run, at_tail) {
                         return None;
                     }
                     // Where the author put the text IS the placement, in both directions at once:
@@ -4325,14 +4311,16 @@ impl WindowedState {
                     // is drawn, so two spans on one drawing do not sit on opposite sides of
                     // geometry that merely happens to have been drawn the other way round.
                     let anchor = placed.unwrap_or_else(|| {
-                        let side = if across.y > 0.0 { -1.0 } else { 1.0 };
-                        from + (to - from) / 2.0 + across * side * DIMENSION_STANDOFF_PX
+                        let side = if at_tail.y > 0.0 { -1.0 } else { 1.0 };
+                        from + (to - from) / 2.0 + at_tail * side * DIMENSION_STANDOFF_PX
                     });
+                    let along =
+                        the_line_through(tail, [head[0] - tail[0], head[1] - tail[1]], anchor)?;
                     ui::gizmos::dimension::axis_span(
                         from,
                         to,
-                        run,
-                        across,
+                        along,
+                        [at_tail, at_head],
                         anchor,
                         &voxels(length),
                         rank,
@@ -4347,34 +4335,37 @@ impl WindowedState {
                     let (Some(tail), Some(head)) = (in_plane(from), in_plane(to)) else {
                         return None;
                     };
-                    // The dimension line's direction is the PLANE's axis seen on screen, found by
-                    // projecting a step along it rather than assumed to be the screen's own — a
-                    // sketch drawn on a plane the camera is not square to still measures its width
-                    // across the plane, and a screen-axis line would be measuring the camera.
-                    let mut step = tail;
-                    step[axis.coordinate()] += 1.0;
-                    let (Some(from), Some(to), Some(step)) =
-                        (to_px(tail), to_px(head), to_px(step))
-                    else {
-                        return None;
-                    };
+                    // The direction measured in is the PLANE's axis, not the screen's: a sketch
+                    // drawn on a plane the camera is not square to still measures its width across
+                    // the plane, and a screen-axis line would be measuring the camera.
+                    let mut run = [0.0; 2];
+                    run[axis.coordinate()] = 1.0;
                     // The plane's OTHER direction, which is what square to this one means here —
                     // the two coordinates of a plane are perpendicular in it whatever the camera
-                    // makes of them.
-                    let mut sideways = tail;
-                    sideways[1 - axis.coordinate()] += 1.0;
-                    let Some(sideways) = to_px(sideways) else {
+                    // makes of them. Asked at each end, because a dividing projection answers a
+                    // plane direction differently at every point.
+                    let mut square = [0.0; 2];
+                    square[1 - axis.coordinate()] = 1.0;
+                    let (Some(from), Some(to)) = (to_px(tail), to_px(head)) else {
                         return None;
                     };
-                    if a_plane_too_edge_on_to_dimension(step - from, sideways - from) {
+                    let (Some(run_at_tail), Some(at_tail), Some(at_head)) = (
+                        along_the_plane(tail, run),
+                        along_the_plane(tail, square),
+                        along_the_plane(head, square),
+                    ) else {
+                        return None;
+                    };
+                    if a_plane_too_edge_on_to_dimension(run_at_tail, at_tail) {
                         return None;
                     }
                     let anchor = placed.unwrap_or_else(|| from + (to - from) / 2.0);
+                    let along = the_line_through(tail, run, anchor)?;
                     ui::gizmos::dimension::axis_span(
                         from,
                         to,
-                        step - from,
-                        sideways - from,
+                        along,
+                        [at_tail, at_head],
                         anchor,
                         &voxels(length),
                         rank,
@@ -4412,23 +4403,26 @@ impl WindowedState {
                     // line — which for the line's own end is the line carried on, and for the point
                     // is the same rule read the other way. Both directions are the plane's, not the
                     // screen's.
-                    let (Some(along), Some(measured)) = (
+                    let square = [-run[1], run[0]];
+                    let (Some(square_at_point), Some(at_point), Some(at_foot)) = (
+                        along_the_plane(standing, square),
                         along_the_plane(standing, run),
-                        along_the_plane(standing, [-run[1], run[0]]),
+                        along_the_plane(stands, run),
                     ) else {
                         return None;
                     };
-                    if a_plane_too_edge_on_to_dimension(measured, along) {
+                    if a_plane_too_edge_on_to_dimension(square_at_point, at_point) {
                         return None;
                     }
                     let anchor = placed.unwrap_or_else(|| {
-                        stood + (foot - stood) / 2.0 + along * DIMENSION_STANDOFF_PX
+                        stood + (foot - stood) / 2.0 + at_point * DIMENSION_STANDOFF_PX
                     });
+                    let measured = the_line_through(standing, square, anchor)?;
                     ui::gizmos::dimension::axis_span(
                         stood,
                         foot,
                         measured,
-                        along,
+                        [at_point, at_foot],
                         anchor,
                         &voxels(length),
                         rank,
@@ -4474,12 +4468,13 @@ impl WindowedState {
                     // Each extension leaves its rim along the TANGENT there — the projected plane
                     // tangent, taken as the square of the outward normal the rim already answers,
                     // rather than the screen's square of the radius.
-                    let facing = first_rim.aim(bearing);
+                    let facing = [first_rim.aim(bearing), second_rim.aim(bearing)]
+                        .map(|out| egui::vec2(-out.y, out.x));
                     ui::gizmos::dimension::axis_span(
                         first_rim.touch(bearing),
                         second_rim.touch(bearing),
                         out,
-                        egui::vec2(-facing.y, facing.x),
+                        facing,
                         anchor,
                         &voxels(length),
                         rank,
@@ -8158,6 +8153,95 @@ const DIMENSION_STANDOFF_PX: f32 = 26.0;
 /// Declining there is the drawing's own answer, the same one a corner too square to read gives.
 const A_PLANE_TOO_EDGE_ON_TO_DIMENSION: f32 = 0.1;
 
+/// Below this sine between one plane direction struck at two places, the projection is flat enough
+/// that the plane's parallels stay parallel and there is no vanishing point to aim at.
+///
+/// It is a floor on the divide rather than a judgement: at this angle the meeting point already
+/// stands ten thousand pixels off, so the direction to it and the direction at the feature agree to
+/// far better than a pixel and the cheaper of the two is the right answer.
+const A_PROJECTION_TOO_FLAT_TO_CONVERGE: f32 = 1.0e-4;
+
+/// Which way a step IN THE PLANE runs on screen, taken AT A POINT.
+///
+/// Plane to screen is a homography, so the screen perpendicular of a projected direction is the
+/// image of some OTHER plane direction — at a three-quarter view, one 31 degrees away. Every
+/// direction a dimension is built from has to come through here or the drawing reads as leaning out
+/// of the sketch it annotates.
+///
+/// Taken at a point because the map DIVIDES: one plane direction runs a different way on screen at
+/// every place, by 13 degrees across a strongly perspective view. The step is taken at unit plane
+/// length however long the one handed in is — a direction is what is being asked for, and a step
+/// the length of the whole span could land behind the camera and answer nothing where the short one
+/// beside it answers fine.
+fn a_plane_direction_on_screen<F>(at: [f64; 2], step: [f64; 2], to_px: &F) -> Option<egui::Vec2>
+where
+    F: Fn([f64; 2]) -> Option<egui::Pos2>,
+{
+    let span = step[0].hypot(step[1]);
+    if span <= f64::EPSILON {
+        return None;
+    }
+    let (Some(here), Some(there)) = (
+        to_px(at),
+        to_px([at[0] + step[0] / span, at[1] + step[1] / span]),
+    ) else {
+        return None;
+    };
+    let reach = there - here;
+    (reach.length() > f32::EPSILON).then(|| reach / reach.length())
+}
+
+/// Which way a DIMENSION LINE runs on screen: the plane line in `toward`'s direction that passes
+/// through where the author dropped the annotation.
+///
+/// Not the same question as [`a_plane_direction_on_screen`] at the feature, and the difference is
+/// not small — 3.5 degrees on a strongly perspective view, which reads as a dimension measuring
+/// some direction other than the one it names. Parallel plane lines CONVERGE on screen, so carrying
+/// the run's direction over to the anchor lands on a line that is the image of nothing. Every line
+/// of the family meets at one vanishing point instead, found by striking the direction at two
+/// places the plane keeps a unit apart; aiming the anchor at that point is the whole construction.
+///
+/// The anchor is asked for as a SCREEN point on purpose. Every screen point has exactly one line of
+/// the family through it whether or not it stands on the plane at all — which an unplaced drawing's
+/// invented anchor, stepped off by a pixel standoff, does not.
+///
+/// Without a divide the two strikes stay parallel, no such point exists, and the direction at the
+/// feature is already the exact answer.
+fn a_dimension_lines_direction<F>(
+    at: [f64; 2],
+    toward: [f64; 2],
+    anchor: egui::Pos2,
+    to_px: &F,
+) -> Option<egui::Vec2>
+where
+    F: Fn([f64; 2]) -> Option<egui::Pos2>,
+{
+    let here = a_plane_direction_on_screen(at, toward, to_px)?;
+    let span = toward[0].hypot(toward[1]);
+    let beside = [at[0] - toward[1] / span, at[1] + toward[0] / span];
+    let (Some(from), Some(there), Some(also)) = (
+        to_px(at),
+        to_px(beside),
+        a_plane_direction_on_screen(beside, toward, to_px),
+    ) else {
+        return Some(here);
+    };
+    let apart = here.x.mul_add(also.y, -(here.y * also.x));
+    if apart.abs() < A_PROJECTION_TOO_FLAT_TO_CONVERGE {
+        return Some(here);
+    }
+    let gap = there - from;
+    let vanishing = from + here * (gap.x.mul_add(also.y, -(gap.y * also.x)) / apart);
+    let reach = vanishing - anchor;
+    // The sign is free: a dimension line is a line, and everything downstream re-derives its
+    // direction from the two feet the line is met at.
+    Some(if reach.length() > f32::EPSILON {
+        reach / reach.length()
+    } else {
+        here
+    })
+}
+
 /// Whether a dimension's two projected directions have collapsed together — see
 /// [`A_PLANE_TOO_EDGE_ON_TO_DIMENSION`].
 ///
@@ -8525,6 +8609,7 @@ fn curve_ink(construction: bool) -> ui::chrome::SketchCurveInk {
 #[allow(clippy::expect_used, clippy::float_cmp)]
 mod tests {
     use super::{
+        a_dimension_lines_direction, a_plane_direction_on_screen,
         advance_circle_center_diameter_gesture, aggregate_marquee_picks, angle_arc_radius,
         angle_legs, apply_sketch_snap, circle_gesture_is_current, circle_marquee_hit, circle_ring,
         closest_point_on_segment, complete_circle_center_diameter, concentric_badge_anchor,
@@ -8543,6 +8628,92 @@ mod tests {
     use egui::{pos2, Rect};
     use std::num::NonZeroU32;
     use ui::panel::PositionSnap;
+
+    /// A sketch plane seen from three-quarters, spelled as the bare homography `to_px` composes to.
+    ///
+    /// `depth` is the divide. Zero is orthographic and the plane's parallels stay parallel on
+    /// screen; the value used below puts the far end of a forty-unit drawing at about two thirds
+    /// the scale of the near one, which is a strong perspective rather than a token one.
+    #[allow(clippy::cast_possible_truncation)]
+    fn a_tilted_camera(depth: f64) -> impl Fn([f64; 2]) -> Option<egui::Pos2> {
+        move |at| {
+            let (turn, up) = (
+                std::f64::consts::FRAC_PI_4.sin_cos(),
+                std::f64::consts::FRAC_PI_6.sin(),
+            );
+            let across = at[1].mul_add(turn.1, -(at[0] * turn.0));
+            let into = at[0].mul_add(turn.1, at[1] * turn.0);
+            let divide = depth.mul_add(into, 1.0);
+            Some(egui::pos2(
+                3.0f64.mul_add(across / divide, 300.0) as f32,
+                (3.0 * up).mul_add(into / divide, 200.0) as f32,
+            ))
+        }
+    }
+
+    /// How far apart two screen directions stand, in degrees, whichever way round each points.
+    fn apart_in_degrees(one: egui::Vec2, other: egui::Vec2) -> f32 {
+        one.x
+            .mul_add(other.y, -(one.y * other.x))
+            .abs()
+            .min(1.0)
+            .asin()
+            .to_degrees()
+    }
+
+    /// **A dimension line runs the way the plane does WHERE THE ANNOTATION WAS DROPPED.**
+    ///
+    /// Under a projection that divides, the plane's parallels converge on screen — so the run's
+    /// direction at the feature and its direction at the anchor are two different screen
+    /// directions. Carrying the first one over and drawing through the anchor lands on a line that
+    /// is the image of no plane line at all, and the dimension reads as measuring some direction
+    /// other than the one it names. Every line of the family passes through one vanishing point
+    /// instead, which is what [`a_dimension_lines_direction`] aims at.
+    ///
+    /// The camera is a bare homography because that is exactly what `to_px` composes to, and a
+    /// fixture without a divide is structurally unable to go red here — so the orthographic reading
+    /// is checked too, for the opposite claim: no vanishing point exists and the direction at the
+    /// feature is already the answer.
+    ///
+    /// The construction is judged against the DEFINITION rather than against itself: the anchor
+    /// used here is the image of a known plane point, so the way the plane line runs there can be
+    /// said outright — which is the thing the vanishing point has to reproduce without being told
+    /// the anchor stands on the plane at all.
+    #[test]
+    fn a_dimension_line_runs_the_way_the_plane_does_where_it_was_dropped() {
+        let (run, feature, dropped) = ([1.0, 0.0], [0.0, 0.0], [20.0, 12.0]);
+
+        let flat = a_tilted_camera(0.0);
+        let anchor = flat(dropped).expect("the anchor projects");
+        let at_the_feature =
+            a_plane_direction_on_screen(feature, run, &flat).expect("the run projects");
+        let struck = a_dimension_lines_direction(feature, run, anchor, &flat)
+            .expect("a flat projection still answers");
+        assert!(
+            apart_in_degrees(struck, at_the_feature) < 0.01,
+            "with nothing to converge on, the answer is the direction at the feature"
+        );
+
+        let deep = a_tilted_camera(0.008);
+        let anchor = deep(dropped).expect("the anchor projects");
+        let at_the_feature =
+            a_plane_direction_on_screen(feature, run, &deep).expect("the run projects");
+        let at_the_anchor =
+            a_plane_direction_on_screen(dropped, run, &deep).expect("the run projects there too");
+        let apart = apart_in_degrees(at_the_feature, at_the_anchor);
+        assert!(
+            apart > 1.0,
+            "this camera barely divides ({apart} degrees), so nothing below would mean anything"
+        );
+
+        let struck = a_dimension_lines_direction(feature, run, anchor, &deep)
+            .expect("a dividing projection has a vanishing point");
+        let off = apart_in_degrees(struck, at_the_anchor);
+        assert!(
+            off < 0.01,
+            "the dimension line runs {off} degrees off the plane line through the anchor"
+        );
+    }
 
     /// **A marquee cannot select what the viewport does not show.**
     ///
