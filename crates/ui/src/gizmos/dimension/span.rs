@@ -24,7 +24,8 @@
 use egui::{Pos2, Vec2};
 
 use super::{
-    arrowhead, value_width, Anchor, Drawing, Label, Piece, Rank, ARROW_LENGTH, GAP, OVERRUN,
+    arrowhead, value_width, Anchor, Drawing, Label, Piece, PlaneFrame, Rank, ARROW_LENGTH, GAP,
+    OVERRUN,
 };
 
 /// How far apart two points stand ALONG ONE DIRECTION — a width or a height rather than a length.
@@ -47,12 +48,20 @@ use super::{
 /// same direction in the plane and differ by 13 degrees on screen at the far end of a strongly
 /// perspective view. Each end is asked at itself. A caller drawing on a flat page passes
 /// `perp(along)` twice and gets exactly the drawing it always did.
+///
+/// `plane` is the same fact for everywhere ELSE the drawing needs it — the value's own baseline and
+/// lift, which stand at a point the caller has not measured and cannot have. The two are kept apart
+/// deliberately: `across` is measured at points with real plane coordinates and is exact there,
+/// while the frame answers any point at all, and a drawing should take the sharper of the two where
+/// it has it.
+#[allow(clippy::too_many_arguments)]
 pub fn axis_span(
     from: Pos2,
     to: Pos2,
     along: Vec2,
     across: [Vec2; 2],
     through: Pos2,
+    plane: PlaneFrame,
     value: &str,
     rank: Rank,
 ) -> Drawing {
@@ -101,7 +110,7 @@ pub fn axis_span(
             })
         })
         .collect();
-    measured_between(near, far, extensions, Some(through), value, rank)
+    measured_between(near, far, extensions, Some(through), plane, value, rank)
 }
 
 /// The dimension line itself, between the two points its extension lines reach — arrows, the two
@@ -112,11 +121,13 @@ pub fn axis_span(
 /// ALONG the line the value rides and which end it leaves by when it does not fit. `None` keeps the
 /// value in the middle and sends it out past the far end, which is where a drawing with nothing
 /// placed has always put it.
+#[allow(clippy::too_many_arguments)]
 fn measured_between(
     near: Pos2,
     far: Pos2,
     mut pieces: Vec<Piece>,
     beside: Option<Pos2>,
+    plane: PlaneFrame,
     value: &str,
     rank: Rank,
 ) -> Drawing {
@@ -154,7 +165,9 @@ fn measured_between(
         pieces.push(arrowhead(far, -along));
     }
 
-    let bearing = super::upright_radians(along.y.atan2(along.x));
+    // The run's own direction, folded so the value reads from above. Already a plane direction:
+    // both ends are points in the sketch, so the line through them is the image of a plane line.
+    let reading = super::upright_direction(along);
     // How far along the line the author put the value, measured from `near`.
     let put = beside.map_or(length / 2.0, |at| (at - near).dot(along));
     // The room a value needs to ride inline: half of itself, clear of the arrowhead beside it.
@@ -162,10 +175,12 @@ fn measured_between(
     // unplaced drawing lands on the same layout it always did.
     let room = width / 2.0 + ARROW_LENGTH + GAP;
     let label = if value_fits && arrows_fit && put >= room && put <= length - room {
+        let at = near + along * put;
         Label {
-            at: near + along * put,
+            at,
             text,
-            radians: bearing,
+            along: reading,
+            across: plane.square_to(reading, at),
             anchor: Anchor::Middle,
             lift: GAP,
         }
@@ -183,11 +198,12 @@ fn measured_between(
         pieces.push(Piece::Polyline(vec![end, end + direction * out]));
         // The value reads left to right whichever end it left by, so which of its two edges lands
         // on the leader depends on whether the reading direction agrees with the way out.
-        let reading = Vec2::new(bearing.cos(), bearing.sin());
+        let at = end + direction * (out - width - GAP);
         Label {
-            at: end + direction * (out - width - GAP),
+            at,
             text,
-            radians: bearing,
+            along: reading,
+            across: plane.square_to(reading, at),
             anchor: if reading.dot(direction) >= 0.0 {
                 Anchor::Start
             } else {

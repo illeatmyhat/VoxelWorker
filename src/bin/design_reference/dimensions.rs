@@ -17,6 +17,101 @@ use ui::theme::color_palette;
 
 use crate::sheet::Sheet;
 
+/// The gizmos as a flat page sees them.
+///
+/// Each of them is laid out in the plane it annotates, and takes that plane's frame as an
+/// argument; a printed sheet IS the plane, so every specimen here hands over
+/// [`facing`](dimension::PlaneFrame::facing) and the sheet shows the drawing at its square. What
+/// the frame changes — a value sheared into a tilted plane, a shoulder running the plane's level
+/// rather than the screen's — has no specimen because a still page cannot pose the question.
+mod flat {
+    use egui::{Pos2, Vec2};
+    use ui::gizmos::dimension::{self, Drawing, Leg, PlaneFrame, Rank, Rim};
+
+    pub fn axis_span(
+        from: Pos2,
+        to: Pos2,
+        along: Vec2,
+        across: [Vec2; 2],
+        through: Pos2,
+        value: &str,
+        rank: Rank,
+    ) -> Drawing {
+        dimension::axis_span(
+            from,
+            to,
+            along,
+            across,
+            through,
+            PlaneFrame::facing(),
+            value,
+            rank,
+        )
+    }
+
+    pub fn radius(
+        center: Pos2,
+        radius: f32,
+        anchor: Pos2,
+        rim: Rim,
+        value: &str,
+        rank: Rank,
+    ) -> Drawing {
+        dimension::radius(
+            center,
+            radius,
+            anchor,
+            rim,
+            PlaneFrame::facing(),
+            value,
+            rank,
+        )
+    }
+
+    pub fn diameter(
+        center: Pos2,
+        radius: f32,
+        anchor: Pos2,
+        rim: Rim,
+        value: &str,
+        rank: Rank,
+    ) -> Drawing {
+        dimension::diameter(
+            center,
+            radius,
+            anchor,
+            rim,
+            PlaneFrame::facing(),
+            value,
+            rank,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn angle(
+        vertex: Pos2,
+        from: f32,
+        to: f32,
+        radius: f32,
+        rim: Rim<'_>,
+        legs: [Leg; 2],
+        value: &str,
+        rank: Rank,
+    ) -> Drawing {
+        dimension::angle(
+            vertex,
+            from,
+            to,
+            radius,
+            rim,
+            legs,
+            PlaneFrame::facing(),
+            value,
+            rank,
+        )
+    }
+}
+
 /// A span whose dimension line runs parallel to its own run, `offset` away along the normal. The
 /// sheet draws this case on its own because it is the one an author reads as "the length of that",
 /// and the gizmo reaches it by being handed the run's own direction.
@@ -32,7 +127,7 @@ fn aligned(from: Pos2, to: Pos2, offset: f32, value: &str, rank: Rank) -> dimens
     // Offset from the MIDDLE of the run, which is where a span with nothing placed
     // has always carried its value.
     let middle = from + run / 2.0;
-    dimension::axis_span(
+    flat::axis_span(
         from,
         to,
         along,
@@ -189,7 +284,7 @@ impl Sheet {
                     Pos2::new(s.left() + 84.0, s.top() + 34.0),
                 );
                 gizmos::segment(p, run.0, run.1);
-                dimension::axis_span(
+                flat::axis_span(
                     run.0,
                     run.1,
                     Vec2::X,
@@ -205,7 +300,7 @@ impl Sheet {
                     Pos2::new(s.left() + 194.0, s.top() + 34.0),
                 );
                 gizmos::segment(p, same.0, same.1);
-                dimension::axis_span(
+                flat::axis_span(
                     same.0,
                     same.1,
                     Vec2::Y,
@@ -234,7 +329,7 @@ impl Sheet {
                 gizmos::segment(p, rail.0, rail.1);
                 let stood = Pos2::new(s.left() + 62.0, s.bottom() - 70.0);
                 gizmos::vertex_handle(p, stood, 3.0, gizmos::HandleState::Idle, false);
-                dimension::axis_span(
+                flat::axis_span(
                     stood,
                     Pos2::new(stood.x, rail.0.y),
                     Vec2::Y,
@@ -255,7 +350,7 @@ impl Sheet {
                 gizmos::segment(p, upper, upper + along * 44.0);
                 gizmos::vertex_handle(p, upper, 3.0, gizmos::HandleState::Idle, false);
                 let foot = lower + along * (upper - lower).dot(along);
-                dimension::axis_span(
+                flat::axis_span(
                     upper,
                     foot,
                     across,
@@ -283,7 +378,7 @@ impl Sheet {
                     let standing = round(center, radius);
                     rim_curve(p, whole(&standing));
                 }
-                dimension::axis_span(
+                flat::axis_span(
                     center + Vec2::X * 12.0,
                     center + Vec2::X * 30.0,
                     Vec2::X,
@@ -317,7 +412,7 @@ impl Sheet {
                     .into_iter()
                     .fold(dropped, |bearing, rim| rim.nearest_drawn(bearing));
                 let out = Vec2::angled(bearing);
-                dimension::axis_span(
+                flat::axis_span(
                     drawn[0].touch(bearing),
                     drawn[1].touch(bearing),
                     out,
@@ -342,7 +437,7 @@ impl Sheet {
                 let outside = Pos2::new(s.left() + 46.0, s.center().y + 4.0);
                 p.circle_stroke(outside, 20.0, stroke);
                 let standing = round(outside, 20.0);
-                dimension::radius(
+                flat::radius(
                     outside,
                     20.0,
                     Pos2::new(s.left() + 74.0, s.top() + 26.0),
@@ -355,7 +450,7 @@ impl Sheet {
                 let inside = Pos2::new(s.left() + 150.0, s.center().y + 4.0);
                 p.circle_stroke(inside, 34.0, stroke);
                 let standing = round(inside, 34.0);
-                dimension::radius(
+                flat::radius(
                     inside,
                     34.0,
                     Pos2::new(s.left() + 166.0, s.center().y - 8.0),
@@ -380,7 +475,7 @@ impl Sheet {
                 let wide = Pos2::new(s.left() + 56.0, s.center().y + 4.0);
                 p.circle_stroke(wide, 30.0, stroke);
                 let standing = round(wide, 30.0);
-                dimension::diameter(
+                flat::diameter(
                     wide,
                     30.0,
                     Pos2::new(s.left() + 78.0, s.center().y - 18.0),
@@ -393,7 +488,7 @@ impl Sheet {
                 let tight = Pos2::new(s.left() + 160.0, s.center().y + 4.0);
                 p.circle_stroke(tight, 12.0, stroke);
                 let standing = round(tight, 12.0);
-                dimension::diameter(
+                flat::diameter(
                     tight,
                     12.0,
                     Pos2::new(s.left() + 190.0, s.center().y - 22.0),
@@ -422,7 +517,7 @@ impl Sheet {
                     at: &standing,
                 };
                 rim_curve(p, short);
-                dimension::radius(
+                flat::radius(
                     outside,
                     28.0,
                     Pos2::new(s.left() + 92.0, s.center().y + 26.0),
@@ -440,7 +535,7 @@ impl Sheet {
                     at: &standing,
                 };
                 rim_curve(p, half);
-                dimension::radius(
+                flat::radius(
                     inside,
                     32.0,
                     Pos2::new(s.left() + 164.0, s.center().y + 20.0),
@@ -468,7 +563,7 @@ impl Sheet {
                 // 48, not 40: at 40 the arc is 42.8 long and the value is evicted onto a leader,
                 // which is the tight drawing — this row is here to show the wide one.
                 let arc = round(wide, 48.0);
-                dimension::angle(
+                flat::angle(
                     wide,
                     from,
                     to,
@@ -485,7 +580,7 @@ impl Sheet {
                 arm(p, tight, from, whole_arm(56.0));
                 arm(p, tight, to, whole_arm(56.0));
                 let arc = round(tight, 34.0);
-                dimension::angle(
+                flat::angle(
                     tight,
                     from,
                     to,
@@ -523,7 +618,7 @@ impl Sheet {
                 arm(p, inside, from, near);
                 arm(p, inside, to, far);
                 let arc = round(inside, 24.0);
-                dimension::angle(inside, from, to, 24.0, whole(&arc), [near, far], "60°", Rank::Driving).paint(p);
+                flat::angle(inside, from, to, 24.0, whole(&arc), [near, far], "60°", Rank::Driving).paint(p);
 
                 let across = Pos2::new(s.left() + 126.0, s.bottom() - 14.0);
                 let (from, to) = (-1.60_f32, -0.30_f32);
@@ -540,7 +635,7 @@ impl Sheet {
                 arm(p, across, from, stops_short);
                 arm(p, across, to, runs_past);
                 let arc = round(across, 40.0);
-                dimension::angle(
+                flat::angle(
                     across,
                     from,
                     to,
@@ -574,7 +669,7 @@ impl Sheet {
                 arm(p, vertex, line, straight);
                 let tangent = tangent_arm(p, vertex, curve, 62.0, 16.0, 1.0);
                 let arc = round(vertex, 46.0);
-                dimension::angle(
+                flat::angle(
                     vertex,
                     line,
                     curve,
@@ -595,7 +690,7 @@ impl Sheet {
                 arm(p, vertex, line, straight);
                 let tangent = tangent_arm(p, vertex, curve, 68.0, 14.0, -1.0);
                 let arc = round(vertex, 54.0);
-                dimension::angle(
+                flat::angle(
                     vertex,
                     line,
                     curve,

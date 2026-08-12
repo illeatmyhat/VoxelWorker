@@ -4198,18 +4198,23 @@ impl WindowedState {
             return;
         };
         let [vx, vy, vw, vh] = viewport_px.map(|value| value as f32);
-        // The plane-to-screen door, in EGUI POINTS — the gizmo modules lay out in the same units
-        // egui paints in, so the conversion belongs here rather than at every call.
-        let to_px = |coord: [f64; 2]| {
+        let clip_of = |coord: [f64; 2]| {
             let vertex = handles.profile_to_render(coord);
-            let clip = view_projection * glam::Vec4::new(vertex[0], vertex[1], vertex[2], 1.0);
-            (clip.w > 0.0).then(|| {
-                egui::Pos2::new(
-                    (vx + (clip.x / clip.w * 0.5 + 0.5) * vw) / pixels_per_point,
-                    (vy + (1.0 - (clip.y / clip.w * 0.5 + 0.5)) * vh) / pixels_per_point,
-                )
-            })
+            view_projection * glam::Vec4::new(vertex[0], vertex[1], vertex[2], 1.0)
         };
+        // The plane's whole projection as one matrix — see [`a_sketch_planes_frame`]. A dimension
+        // needs more of it than a point does: not only where a plane coordinate lands but which way
+        // the plane runs at any PIXEL and how far a plane unit reaches there, and only the matrix
+        // has those.
+        let Some(plane) = a_sketch_planes_frame(&clip_of, [vx, vy, vw, vh], pixels_per_point)
+        else {
+            return;
+        };
+        // The plane-to-screen door, in EGUI POINTS — the gizmo modules lay out in the same units
+        // egui paints in, so the conversion belongs here rather than at every call. Read off the
+        // frame rather than struck again beside it: two expressions of one projection is two
+        // things to keep agreeing, and the value's own layout would be the one that drifted.
+        let to_px = |coord: [f64; 2]| plane.at(coord);
         let in_plane = |id: document::sketch::EntityId| {
             producer
                 .sketch
@@ -4323,6 +4328,7 @@ impl WindowedState {
                         along,
                         [at_tail, at_head],
                         anchor,
+                        plane,
                         &voxels(length),
                         rank,
                     )
@@ -4368,6 +4374,7 @@ impl WindowedState {
                         along,
                         [at_tail, at_head],
                         anchor,
+                        plane,
                         &voxels(length),
                         rank,
                     )
@@ -4425,6 +4432,7 @@ impl WindowedState {
                         measured,
                         [at_point, at_foot],
                         anchor,
+                        plane,
                         &voxels(length),
                         rank,
                     )
@@ -4477,6 +4485,7 @@ impl WindowedState {
                         out,
                         facing,
                         anchor,
+                        plane,
                         &voxels(length),
                         rank,
                     )
@@ -4494,6 +4503,7 @@ impl WindowedState {
                             turn,
                             at: &|bearing| standing.touch(bearing),
                         },
+                        plane,
                         &voxels(length),
                         rank,
                     )
@@ -4511,6 +4521,7 @@ impl WindowedState {
                             turn,
                             at: &|bearing| standing.touch(bearing),
                         },
+                        plane,
                         &voxels(length),
                         rank,
                     )
@@ -4571,6 +4582,7 @@ impl WindowedState {
                             at: &|bearing| struck.touch(bearing),
                         },
                         legs,
+                        plane,
                         &value,
                         rank,
                     )
@@ -8176,6 +8188,58 @@ const A_PROJECTION_TOO_FLAT_TO_CONVERGE: f32 = 1.0e-4;
 /// CULL rather than accuracy — a plane line images as a straight line, so both samples lie on it and
 /// the chord IS the direction at any step length. A step as long as the whole span can land behind
 /// the camera and answer nothing where the short one beside it answers fine.
+/// The sketch plane's whole projection, as the one three-by-three that states it exactly.
+///
+/// A plane coordinate reaches the world by an affine and the world reaches clip space by a matrix,
+/// so a plane coordinate reaches CLIP linearly — three strikes are the entire map. What makes the
+/// composition a homography rather than an affine is the last step, the divide into pixels, and a
+/// homography is what a dimension has to reason in: it carries lines to lines but neither angles
+/// nor lengths, so the plane's own right angle and the plane's own unit both have to be asked for
+/// at the place they are wanted.
+///
+/// The two strikes are taken a long way apart and divided back down. A sketch can sit far from the
+/// render origin, and a one-unit difference between two `f32` clip values out there keeps only a
+/// few significant digits; sixty-four units keeps six more.
+///
+/// The viewport's own affine is folded into the first two rows, so the matrix answers in EGUI
+/// POINTS and needs nothing downstream. The last row is left as the projection's `w` untouched,
+/// because its SIGN is the in-front-of-the-camera test every caller of
+/// [`PlaneFrame::at`](ui::gizmos::dimension::PlaneFrame::at) relies on.
+fn a_sketch_planes_frame<F>(
+    clip_of: &F,
+    viewport: [f32; 4],
+    pixels_per_point: f32,
+) -> Option<ui::gizmos::dimension::PlaneFrame>
+where
+    F: Fn([f64; 2]) -> glam::Vec4,
+{
+    const STRIDE: f32 = 64.0;
+    let origin = clip_of([0.0, 0.0]);
+    let across = (clip_of([f64::from(STRIDE), 0.0]) - origin) / STRIDE;
+    let down = (clip_of([0.0, f64::from(STRIDE)]) - origin) / STRIDE;
+    let row = |read: fn(glam::Vec4) -> f32| {
+        [
+            f64::from(read(across)),
+            f64::from(read(down)),
+            f64::from(read(origin)),
+        ]
+    };
+    let (to_x, to_y, to_w) = (row(|clip| clip.x), row(|clip| clip.y), row(|clip| clip.w));
+
+    let [left, top, wide, tall] = viewport.map(f64::from);
+    let ratio = f64::from(pixels_per_point);
+    // `x = (left + (X/W * 0.5 + 0.5) * wide) / ratio`, cleared of the divide; `y` the same with the
+    // vertical flip, which is the one minus sign.
+    let mix = |gain: f64, axis: [f64; 3], bias: f64| {
+        [0, 1, 2].map(|index| gain.mul_add(axis[index], bias * to_w[index]))
+    };
+    ui::gizmos::dimension::PlaneFrame::from_plane_to_screen([
+        mix(0.5 * wide / ratio, to_x, (left + 0.5 * wide) / ratio),
+        mix(-0.5 * tall / ratio, to_y, (top + 0.5 * tall) / ratio),
+        to_w,
+    ])
+}
+
 fn a_plane_direction_on_screen<F>(at: [f64; 2], step: [f64; 2], to_px: &F) -> Option<egui::Vec2>
 where
     F: Fn([f64; 2]) -> Option<egui::Pos2>,

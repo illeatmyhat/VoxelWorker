@@ -15,7 +15,9 @@
 
 use egui::{Pos2, Vec2};
 
-use super::{arrowhead, value_width, Anchor, Drawing, Label, Piece, Rank, Rim, ARROW_LENGTH, GAP};
+use super::{
+    arrowhead, value_width, Anchor, Drawing, Label, Piece, PlaneFrame, Rank, Rim, ARROW_LENGTH, GAP,
+};
 
 /// Half the center mark's arm length, matching [`radius`](super::radius())'s cross.
 const CENTER_ARM: f32 = 4.0;
@@ -35,6 +37,7 @@ pub fn diameter(
     radius: f32,
     anchor: Pos2,
     rim: Rim,
+    plane: PlaneFrame,
     value: &str,
     rank: Rank,
 ) -> Drawing {
@@ -86,10 +89,14 @@ pub fn diameter(
         ]));
         pieces.push(arrowhead(near, aim_near));
         pieces.push(arrowhead(far, aim_far));
+        // The through-line joins two points on the curve, so it is the image of a plane line and
+        // the value rides it as one.
+        let reading = super::upright_direction(far - near);
         Label {
             at: center,
             text,
-            radians: super::upright_radians(ray.y.atan2(ray.x)),
+            along: reading,
+            across: plane.square_to(reading, center),
             anchor: Anchor::Middle,
             lift: GAP,
         }
@@ -97,7 +104,14 @@ pub fn diameter(
         // Too tight to read across: the arrows flip outside pointing in, the through-line stays
         // continuous so it still reads as crossing the circle, and the value leaves on a leader
         // that carries on along the SAME ray to wherever the anchor was dragged.
-        let side = if anchor.x >= center.x { 1.0 } else { -1.0 };
+        // Level IN THE PLANE, struck where the shoulder actually stands.
+        let reading = plane.reading_at(anchor);
+        let side = if (anchor - center).dot(reading) >= 0.0 {
+            1.0
+        } else {
+            -1.0
+        };
+        let away = reading * side;
         // The leader ends at the anchor, or at the rim if the anchor was dragged back inside:
         // a leader that doubled back would point into the circle it had just left.
         let stop = if (anchor - far).dot(ray) > 0.0 {
@@ -112,14 +126,16 @@ pub fn diameter(
         pieces.push(Piece::Polyline(vec![
             near,
             stop,
-            stop + Vec2::X * side * (width + 2.0 * GAP),
+            stop + away * (width + 2.0 * GAP),
         ]));
         pieces.push(arrowhead(near, -aim_near));
         pieces.push(arrowhead(far, -aim_far));
+        let seat = stop + away * GAP;
         Label {
-            at: stop + Vec2::X * side * GAP,
+            at: seat,
             text,
-            radians: 0.0,
+            along: reading,
+            across: plane.square_to(reading, seat),
             anchor: if side > 0.0 {
                 Anchor::Start
             } else {

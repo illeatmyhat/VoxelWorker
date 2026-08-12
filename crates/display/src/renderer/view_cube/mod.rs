@@ -511,7 +511,7 @@ impl ViewCubeRenderer {
     /// NOT A FACT ABOUT PASS ORDER. A composited corner lands under every egui shape in the frame
     /// unconditionally, so a sketch mark that reaches the corner paints straight over it — the
     /// cube is not in egui's z-order at all and has no tier to lose in. Painted as an egui image
-    /// it does: over the marks and under a menu, decided by [`egui::Order`], which is the only
+    /// it does: over the marks and under a menu, decided by egui's `Order` tier, which is the only
     /// thing in that API that is a guarantee rather than which layer the hash map reached first.
     pub fn standing_texture(&self) -> &wgpu::TextureView {
         &self.sampled_view

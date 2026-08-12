@@ -182,6 +182,191 @@ pub use radius::radius;
 
 pub use span::axis_span;
 
+/// How the sketch plane runs on screen, as the one 3x3 that says it exactly.
+///
+/// A sketch plane reaches the viewport by an affine into the world, a matrix into clip space and a
+/// divide into pixels, and the composition of those on a PLANE is a homography — three by three, no
+/// approximation anywhere in it. Carrying that matrix is what lets a dimension ask two questions no
+/// pair of screen directions can answer: which way a plane direction runs AT A GIVEN PLACE, since a
+/// projection that divides answers differently at every point, and HOW FAR a plane unit reaches
+/// there, which is the foreshortening that makes text look like it is lying on the plane rather
+/// than merely leaning.
+///
+/// The inverse is kept beside it, so a mark standing at a bare screen point — a leader's jog, a
+/// value's standoff — is answered as exactly as one sitting on the geometry. There is no nearest-
+/// on-plane-point approximation and no species distinction: every pixel in the viewport has a plane
+/// coordinate under it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PlaneFrame {
+    /// Plane coordinates to screen points, homogeneous. The last row is the clip `w`, so its sign
+    /// is the in-front-of-the-camera test and it is never rescaled.
+    to_screen: [[f64; 3]; 3],
+    /// Its inverse, computed once at construction.
+    to_plane: [[f64; 3]; 3],
+}
+
+/// Multiply a homogeneous 3-vector by a 3x3.
+fn carried(matrix: &[[f64; 3]; 3], point: [f64; 3]) -> [f64; 3] {
+    let row = |index: usize| {
+        matrix[index][0].mul_add(
+            point[0],
+            matrix[index][1].mul_add(point[1], matrix[index][2] * point[2]),
+        )
+    };
+    [row(0), row(1), row(2)]
+}
+
+impl PlaneFrame {
+    /// A plane facing the camera, where the plane's axes are the screen's own.
+    ///
+    /// What a drawing on a flat page has always been laid out in, and what every projected view
+    /// approaches as it comes square. Every layout rule in this module reduces to the one it had
+    /// before any of this existed when handed this frame — that is the parity the tests hold.
+    #[must_use]
+    pub fn facing() -> Self {
+        let identity = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        Self {
+            to_screen: identity,
+            to_plane: identity,
+        }
+    }
+
+    /// The frame for a given plane-to-screen homography, or `None` if it is singular.
+    ///
+    /// Rows map `(u, v, 1)` to a homogeneous screen point. The last row must be the projection's
+    /// own `w` UNSCALED, because its sign is what [`PlaneFrame::at`] culls on.
+    #[must_use]
+    pub fn from_plane_to_screen(to_screen: [[f64; 3]; 3]) -> Option<Self> {
+        let cofactor = |row: usize, column: usize| {
+            let (r0, r1) = ((row + 1) % 3, (row + 2) % 3);
+            let (c0, c1) = ((column + 1) % 3, (column + 2) % 3);
+            to_screen[r0][c0].mul_add(to_screen[r1][c1], -(to_screen[r0][c1] * to_screen[r1][c0]))
+        };
+        let determinant = (0..3).fold(0.0, |sum, column| {
+            to_screen[0][column].mul_add(cofactor(0, column), sum)
+        });
+        if !determinant.is_finite() || determinant.abs() <= f64::EPSILON {
+            return None;
+        }
+        // The adjugate is the cofactor matrix TRANSPOSED, which is where the index swap comes from.
+        let mut to_plane = [[0.0; 3]; 3];
+        for row in 0..3 {
+            for column in 0..3 {
+                to_plane[row][column] = cofactor(column, row) / determinant;
+            }
+        }
+        Some(Self {
+            to_screen,
+            to_plane,
+        })
+    }
+
+    /// Where a plane coordinate lands on screen — `None` behind the camera.
+    #[must_use]
+    pub fn at(&self, plane: [f64; 2]) -> Option<Pos2> {
+        let [x, y, w] = carried(&self.to_screen, [plane[0], plane[1], 1.0]);
+        (w > 0.0 && w.is_finite()).then(|| Pos2::new((x / w) as f32, (y / w) as f32))
+    }
+
+    /// Which plane coordinate lies under a screen point — every pixel has one.
+    #[must_use]
+    fn plane_of(&self, at: Pos2) -> Option<[f64; 2]> {
+        let [u, v, w] = carried(&self.to_plane, [f64::from(at.x), f64::from(at.y), 1.0]);
+        (w.abs() > f64::EPSILON && w.is_finite()).then(|| [u / w, v / w])
+    }
+
+    /// What the plane's two unit steps reach on screen at `at` — the projection's Jacobian there,
+    /// in pixels per plane unit.
+    ///
+    /// These are the columns everything else in the frame is built out of. Their DIRECTIONS give
+    /// the plane's two families of lines as the screen bends them; their LENGTHS give the
+    /// foreshortening, which no construction from vanishing points can recover.
+    #[must_use]
+    pub fn axes_at(&self, at: Pos2) -> Option<[Vec2; 2]> {
+        let plane = self.plane_of(at)?;
+        let [x, y, w] = carried(&self.to_screen, [plane[0], plane[1], 1.0]);
+        if w.abs() <= f64::EPSILON || !w.is_finite() {
+            return None;
+        }
+        let (x, y) = (x / w, y / w);
+        let column = |index: usize| {
+            Vec2::new(
+                ((self.to_screen[0][index] - x * self.to_screen[2][index]) / w) as f32,
+                ((self.to_screen[1][index] - y * self.to_screen[2][index]) / w) as f32,
+            )
+        };
+        let axes = [column(0), column(1)];
+        axes.iter()
+            .all(|axis| axis.is_finite() && axis.length() > f32::EPSILON)
+            .then_some(axes)
+    }
+
+    /// The plane's own +X where it passes through `at`, as a unit screen direction, folded upright.
+    ///
+    /// This is the level a shoulder runs along and a value reads along when it has left its
+    /// geometry — the plane's level, not the screen's. Pinned to the plane's authored +X rather
+    /// than to anything the camera decides, so it cannot swap axis mid-orbit.
+    #[must_use]
+    pub fn reading_at(&self, at: Pos2) -> Vec2 {
+        self.axes_at(at)
+            .map_or(Vec2::X, |[across, _]| upright_direction(across))
+    }
+
+    /// The plane direction SQUARE to `along` at `at`, scaled so `along` stays one unit long.
+    ///
+    /// Two things at once, and both are the complaint. **The direction** is not `perp(along)`: a
+    /// homography carries the plane's right angle to some other screen angle — 31 degrees away at a
+    /// three-quarter view — so a value lifted along the screen's perpendicular leans out of the
+    /// sketch it annotates. **The length** is the foreshortening, and it is the half a pair of
+    /// vanishing points cannot supply. Tilt the camera straight down over a plane with no compound
+    /// turn and there is NO shear at all: the plane's axes still image square, one of them merely
+    /// images short. A frame that normalized both axes would draw that view identically to a flat
+    /// page, which is exactly the view an author takes to look at a sketch from an angle.
+    ///
+    /// Normalized on `along` rather than on area: a value keeps its type size along its own
+    /// baseline at every view, and loses height as the plane recedes, which is what ink on
+    /// receding paper does. Holding the AREA instead would inflate the baseline as the height
+    /// shrank, and a number that swells as the camera turns is the thing the constant-size rule for
+    /// sketch marks exists to prevent.
+    ///
+    /// Signed to agree with `perp(along)`, which is the same condition as keeping the frame
+    /// right-handed — so this one comparison both keeps a drawing lifting its values the way it
+    /// always did and stops a plane seen from BEHIND drawing every glyph mirror-image.
+    #[must_use]
+    pub fn square_to(&self, along: Vec2, at: Pos2) -> Vec2 {
+        let screens_own = Vec2::new(along.y, -along.x);
+        let Some([across, down]) = self.axes_at(at) else {
+            return screens_own;
+        };
+        let spread = across.x.mul_add(down.y, -(across.y * down.x));
+        if spread.abs() <= f32::EPSILON {
+            return screens_own;
+        }
+        // `along` in the plane's own coordinates, made a unit step THERE, turned a quarter there,
+        // and carried back — so what returns is the image of a plane right angle.
+        let reading = along.x.mul_add(down.y, -(along.y * down.x)) / spread;
+        let lifting = across.x.mul_add(along.y, -(across.y * along.x)) / spread;
+        let step = reading.hypot(lifting);
+        if step <= f32::EPSILON {
+            return screens_own;
+        }
+        let (reading, lifting) = (reading / step, lifting / step);
+        let pace = (across * reading + down * lifting).length();
+        if pace <= f32::EPSILON {
+            return screens_own;
+        }
+        let square = (across * -lifting + down * reading) / pace;
+        if !square.is_finite() || square.length() <= f32::EPSILON {
+            return screens_own;
+        }
+        if square.dot(screens_own) >= 0.0 {
+            square
+        } else {
+            -square
+        }
+    }
+}
+
 /// The chrome weight: dimension line, extension line and leader all share it, per ISO 128-20.
 pub const LINE_WIDTH: f32 = 0.8;
 
@@ -322,6 +507,15 @@ impl Rim<'_> {
     }
 }
 
+/// How square a lift has to stand before the drawing stops reaching further out along it.
+///
+/// The lift is a travel along a PLANE direction, so at a slant it projects short and the value
+/// creeps back onto the line it is supposed to clear. Reaching further along that same direction
+/// buys the clearance back without leaving the plane, which is the one fix that does not trade the
+/// attachment away for the legibility. The floor is the sine the shell already declines a dimension
+/// below, so a drawing that reaches it was going to be refused anyway.
+const A_LIFT_TOO_SLANTED_TO_CLEAR: f32 = 0.1;
+
 /// The value's type size, and the monospace advance that follows from it.
 ///
 /// Layout has to know how wide a value will be BEFORE anything is painted — the whole span rule
@@ -376,19 +570,41 @@ pub enum Anchor {
     End,
 }
 
-/// A value, placed and angled.
+/// A value, placed and laid out in the sketch plane.
+///
+/// Both directions are PLANE directions as the screen sees them, which is the difference between a
+/// number that annotates the drawing and one that floats in front of it. They are not each other's
+/// perpendicular: a projection carries the plane's right angle to some other screen angle, and
+/// carrying both is what lets [`Drawing::paint`] shear the glyphs into that angle.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Label {
     /// Where the anchor sits.
     pub at: Pos2,
     /// The whole indication, already parenthesised if it is a reference.
     pub text: String,
-    /// The baseline's bearing, folded upright by [`upright_radians`].
-    pub radians: f32,
+    /// The baseline direction on screen: unit, and folded upright so the text is never inverted.
+    pub along: Vec2,
+    /// The plane direction square to [`Label::along`] IN THE PLANE, on the lift side, scaled so a
+    /// unit step along the baseline is one unit long.
+    ///
+    /// Two facts in one vector, and the drawing needs both. Its DIRECTION is not `perp(along)`,
+    /// which is the screen's square and the image of some entirely different plane direction. Its
+    /// LENGTH is the foreshortening — how short a plane step across the baseline projects compared
+    /// with one along it — which is the whole of the tilt cue in a view that has no shear at all.
+    /// [`PlaneFrame::square_to`] is the one way to strike this.
+    pub across: Vec2,
     /// Which edge of the text `at` refers to.
     pub anchor: Anchor,
-    /// How far the text is lifted off the line it rides, along the baseline's normal.
+    /// How far the text is lifted off the line it rides, as a travel along [`Label::across`].
     pub lift: f32,
+}
+
+impl Label {
+    /// The baseline's bearing, for a caller that wants the angle rather than the direction.
+    #[must_use]
+    pub fn radians(&self) -> f32 {
+        self.along.y.atan2(self.along.x)
+    }
 }
 
 /// One stroked or filled element of a dimension.
@@ -479,20 +695,60 @@ impl Drawing {
             .collect()
     }
 
+    /// Paint one value as GEOMETRY rather than as a turned billboard.
+    ///
+    /// [`TextShape::with_angle`](egui::epaint::TextShape::with_angle) is a pure rotation, and a
+    /// rotation cannot put text in a tilted plane: the plane's own right angle is not a right angle
+    /// on screen, so rotated glyphs stand square to a baseline that nothing in the sketch is square
+    /// to. The value reads as pasted on the glass. Laying it out in the plane needs a SHEAR, which
+    /// is not in `TextShape` at any angle.
+    ///
+    /// It is in the galley, though, and for free. A laid-out galley already carries its rows as
+    /// finished meshes in galley-local points, so this maps each vertex through the plane's own
+    /// two directions and emits the mesh directly. Every glyph is one quad with an affine texture
+    /// map, so an affine on the quad IS that affine on the glyph image — the shear is exact, and
+    /// nothing here re-tessellates a font.
+    ///
+    /// The uv coordinates a row carries are in TEXELS, which the text path would have normalized
+    /// on the way past; a mesh handed over ready-made goes through the tessellator untouched, so
+    /// the normalizing happens here against the atlas's current size.
+    ///
+    /// The origin is snapped to a whole PHYSICAL pixel, which is what the text path does and what
+    /// keeps a glyph's own pixel grid landing on the screen's. That is the one place the paint and
+    /// [`Drawing::label_boxes`] part company, by at most half a pixel and never structurally: the
+    /// box stays the unrounded truth, because a hit target has no reason to care and the snap
+    /// depends on a device ratio the shell hit-tests without.
     fn paint_label(&self, painter: &Painter, label: &Label) {
         let color = self.rank.color();
         let galley =
             painter.layout_no_wrap(label.text.clone(), FontId::monospace(VALUE_SIZE), color);
-        let size = galley.size();
-        let at = label_corners(label, size)[0];
+        let (origin, across_page, down_page) = label_frame(label, galley.size());
+        let ratio = painter.ctx().pixels_per_point().max(f32::EPSILON);
+        let origin = Pos2::new(
+            (origin.x * ratio).round() / ratio,
+            (origin.y * ratio).round() / ratio,
+        );
+
+        let atlas = painter.ctx().fonts(|fonts| fonts.font_image_size());
+        let (wide, tall) = (atlas[0].max(1) as f32, atlas[1].max(1) as f32);
 
         // The value's halo IS painted over the dimension line: a line is supposed to break where
         // the number sits, which is the one place the two-pass rule is deliberately broken.
-        painter.add(
-            egui::epaint::TextShape::new(at, galley, color)
-                .with_angle(label.radians)
-                .with_underline(Stroke::NONE),
-        );
+        for row in &galley.rows {
+            if row.visuals.mesh.is_empty() {
+                continue;
+            }
+            let mut mesh = row.visuals.mesh.clone();
+            for vertex in &mut mesh.vertices {
+                let local = row.pos.to_vec2() + vertex.pos.to_vec2();
+                vertex.pos = origin + across_page * local.x + down_page * local.y;
+                vertex.uv = egui::pos2(vertex.uv.x / wide, vertex.uv.y / tall);
+                if vertex.color == Color32::PLACEHOLDER {
+                    vertex.color = color;
+                }
+            }
+            painter.add(Shape::Mesh(mesh.into()));
+        }
     }
 }
 
@@ -511,28 +767,61 @@ pub fn upright_radians(radians: f32) -> f32 {
     folded
 }
 
-/// How wide a value will be once laid out — known before anything is painted.
-/// The four corners of a value's box, top-left first, in the order the text is laid out.
+/// Fold a direction upright, so a value laid along it is never read from below.
 ///
-/// egui draws a galley from its top-left and rotates about that point, so the offset that realises
-/// the anchor and the lift has to be applied in the ROTATED frame. Written once because the paint
-/// path and [`Drawing::label_boxes`] have to agree exactly — a hit target that missed the mark it
-/// is standing for would be a click that does nothing on something the author can plainly see.
-fn label_corners(label: &Label, size: Vec2) -> [Pos2; 4] {
-    let along = Vec2::new(label.radians.cos(), label.radians.sin());
+/// The direction form of [`upright_radians`], for the callers that have a vector in hand and want
+/// one back — which is all of them since a plane direction is struck rather than named as an angle.
+#[must_use]
+pub fn upright_direction(direction: Vec2) -> Vec2 {
+    let folded = upright_radians(direction.y.atan2(direction.x));
+    Vec2::new(folded.cos(), folded.sin())
+}
+
+/// How wide a value will be once laid out — known before anything is painted.
+/// Where a value's text starts and which way its page runs: top-left, then across, then down.
+///
+/// The two returned directions span a PARALLELOGRAM, not a rectangle — that is the whole of the
+/// coplanarity, and everything else about the value is unchanged. The glyph SIZE stays a screen
+/// quantity: both directions come back unit, so a number keeps its type size as the camera turns
+/// and only the angle between the two of them carries the tilt. Foreshortening the glyphs as well
+/// would be one scale factor here, and it would swell the number at a slant, which is the visible
+/// thing the constant-size rule for sketch marks exists to prevent.
+///
+/// Written once because the paint path and [`Drawing::label_boxes`] have to agree exactly — a hit
+/// target that missed the mark it stands for would be a click that does nothing on something the
+/// author can plainly see.
+fn label_frame(label: &Label, size: Vec2) -> (Pos2, Vec2, Vec2) {
+    let along = label.along;
     let normal = Vec2::new(along.y, -along.x);
+    // Direction and foreshortening are read apart: the standoff is a CLEARANCE, measured in screen
+    // points, while the text's height is a plane travel that is supposed to shorten with the plane.
+    let squash = label.across.length();
+    let across = if squash > f32::EPSILON {
+        label.across / squash
+    } else {
+        normal
+    };
     let shift = match label.anchor {
         Anchor::Middle => -size.x / 2.0,
         Anchor::Start => 0.0,
         Anchor::End => -size.x,
     };
-    let top_left = label.at + along * shift + normal * (label.lift + size.y);
-    let down = -normal;
+    // The lift is a plane travel that has to clear a screen distance, so it reaches as far along
+    // `across` as it takes for the part of it that stands off the line to come to `lift`.
+    let reach = label.lift / across.dot(normal).max(A_LIFT_TOO_SLANTED_TO_CLEAR);
+    let down_page = -across * squash.max(f32::EPSILON);
+    let top_left = label.at + along * shift + across * reach - down_page * size.y;
+    (top_left, along, down_page)
+}
+
+/// The four corners of a value's box, top-left first, in the order the text is laid out.
+fn label_corners(label: &Label, size: Vec2) -> [Pos2; 4] {
+    let (top_left, across_page, down_page) = label_frame(label, size);
     [
         top_left,
-        top_left + along * size.x,
-        top_left + along * size.x + down * size.y,
-        top_left + down * size.y,
+        top_left + across_page * size.x,
+        top_left + across_page * size.x + down_page * size.y,
+        top_left + down_page * size.y,
     ]
 }
 

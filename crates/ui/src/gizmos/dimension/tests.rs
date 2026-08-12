@@ -19,6 +19,82 @@ use egui::{Pos2, Vec2};
 
 use super::*;
 
+/// The four gizmos on a FLAT PAGE, which is what almost every rule below is about.
+///
+/// A dimension is laid out in the plane it annotates, and the plane's own frame is the last
+/// argument each of them takes. Handed [`PlaneFrame::facing`] it reduces to the drawing this
+/// module made before any of that existed — the plane's axes are the screen's, its right angle is
+/// the screen's right angle, and a plane unit is a screen unit — so every fit rule, every eviction
+/// and every arrowhead reversal reads exactly as it always did. That parity IS a claim, and these
+/// shims are how the whole file asserts it at once. The projected cases name the frame themselves.
+fn axis_span(
+    from: Pos2,
+    to: Pos2,
+    along: Vec2,
+    across: [Vec2; 2],
+    through: Pos2,
+    value: &str,
+    rank: Rank,
+) -> Drawing {
+    super::axis_span(
+        from,
+        to,
+        along,
+        across,
+        through,
+        PlaneFrame::facing(),
+        value,
+        rank,
+    )
+}
+
+fn radius(center: Pos2, radius: f32, anchor: Pos2, rim: Rim, value: &str, rank: Rank) -> Drawing {
+    super::radius(
+        center,
+        radius,
+        anchor,
+        rim,
+        PlaneFrame::facing(),
+        value,
+        rank,
+    )
+}
+
+fn diameter(center: Pos2, radius: f32, anchor: Pos2, rim: Rim, value: &str, rank: Rank) -> Drawing {
+    super::diameter(
+        center,
+        radius,
+        anchor,
+        rim,
+        PlaneFrame::facing(),
+        value,
+        rank,
+    )
+}
+
+fn angle(
+    vertex: Pos2,
+    from: f32,
+    to: f32,
+    radius: f32,
+    rim: Rim<'_>,
+    legs: [Leg; 2],
+    value: &str,
+    rank: Rank,
+) -> Drawing {
+    super::angle(
+        vertex,
+        from,
+        to,
+        radius,
+        rim,
+        legs,
+        PlaneFrame::facing(),
+        value,
+        rank,
+    )
+}
+
 /// Count the arrowheads, and answer whether they point toward each other or away.
 fn heads(drawing: &Drawing) -> Vec<[Pos2; 4]> {
     drawing
@@ -246,9 +322,9 @@ fn an_extent_reaches_its_dimension_line_by_a_different_amount_at_each_end() {
     let label = &drawing.labels[0];
     assert!((label.at.y - 30.0).abs() < 1e-4, "{:?}", label.at);
     assert!(
-        label.radians.abs() < 1e-4,
+        label.radians().abs() < 1e-4,
         "a width reads level: {}",
-        label.radians
+        label.radians()
     );
 }
 
@@ -678,7 +754,11 @@ fn a_diameter_too_tight_to_read_across_evicts_its_value() {
         (tight.labels[0].at - center).length() > 12.0,
         "tight: the value left the circle"
     );
-    assert_eq!(tight.labels[0].radians, 0.0, "an evicted value reads level");
+    assert_eq!(
+        tight.labels[0].radians(),
+        0.0,
+        "an evicted value reads level"
+    );
 }
 
 /// A leader never doubles back into the circle it left, however far inside the anchor is dragged.
@@ -927,7 +1007,7 @@ fn every_piece_is_finite_at_a_degenerate_input() {
                 }
             }
         }
-        assert!(drawing.labels.iter().all(|l| l.radians.is_finite()));
+        assert!(drawing.labels.iter().all(|l| l.radians().is_finite()));
     }
 }
 /// **A bearing a curve does not reach is answered with the end that is nearer.** This is what keeps
@@ -1332,4 +1412,275 @@ fn an_angles_arc_stands_in_the_plane(view: Tilted) {
             view.depth
         );
     }
+}
+
+/// A camera pitched straight down over the sketch and turned no other way.
+///
+/// The view an author takes to look at a drawing from an angle, and the one that catches a frame
+/// built out of DIRECTIONS alone. There is no shear in it at all: the plane's +X still images
+/// horizontal and its +Y still images vertical, and the entire tilt is in the RATIO of the two.
+/// Any layout that normalizes both axes draws this view identically to a flat page.
+fn a_pitched_plane() -> PlaneFrame {
+    PlaneFrame::from_plane_to_screen([[3.0, 0.0, 300.0], [0.0, 1.5, 200.0], [0.0, 0.0, 1.0]])
+        .expect("the pitched frame is not singular")
+}
+
+/// A three-quarter view with a real perspective divide, so the plane's directions and its unit
+/// both change from place to place across the viewport.
+fn a_three_quarter_plane() -> PlaneFrame {
+    PlaneFrame::from_plane_to_screen([[3.0, 1.2, 300.0], [0.4, 2.4, 200.0], [0.0006, 0.0002, 1.0]])
+        .expect("the three-quarter frame is not singular")
+}
+
+/// The same plane seen from BEHIND — the mirror case, where the projected frame is left-handed.
+fn a_plane_from_behind() -> PlaneFrame {
+    PlaneFrame::from_plane_to_screen([[-3.0, 0.0, 300.0], [0.0, 1.5, 200.0], [0.0, 0.0, 1.0]])
+        .expect("a mirrored frame is still invertible")
+}
+
+/// A screen direction read back into the plane's OWN coordinates at `at`, which is where a claim
+/// about a right angle in the plane can actually be tested.
+fn in_the_plane_at(frame: PlaneFrame, at: Pos2, screen: Vec2) -> Vec2 {
+    let [across, down] = frame.axes_at(at).expect("the frame stands there");
+    let spread = across.x * down.y - across.y * down.x;
+    Vec2::new(
+        (screen.x * down.y - screen.y * down.x) / spread,
+        (across.x * screen.y - across.y * screen.x) / spread,
+    )
+}
+
+/// One span, laid out in whichever plane it is handed.
+fn a_span_in(frame: PlaneFrame) -> Drawing {
+    let (from, to) = (Pos2::new(320.0, 240.0), Pos2::new(560.0, 240.0));
+    let along = (to - from).normalized();
+    let across = [Vec2::new(along.y, -along.x); 2];
+    super::axis_span(
+        from,
+        to,
+        along,
+        across,
+        from + (to - from) / 2.0 + across[0] * 24.0,
+        frame,
+        "40",
+        Rank::Driving,
+    )
+}
+
+/// **A value lifts along the PLANE's square, not the screen's.**
+///
+/// The two are not the same direction: a homography carries lines to lines but not angles, so the
+/// screen perpendicular of a projected plane direction is the image of some entirely different
+/// plane direction. Read back into the plane's own coordinates, the direction the value stands off
+/// along has to be at a right angle to the baseline it stands off FROM — and the screen's
+/// perpendicular, read back the same way, is measurably not.
+#[test]
+fn a_value_lifts_along_the_planes_square_not_the_screens() {
+    let frame = a_three_quarter_plane();
+    let drawing = a_span_in(frame);
+    let label = &drawing.labels[0];
+
+    let baseline = in_the_plane_at(frame, label.at, label.along).normalized();
+    let lifted = in_the_plane_at(frame, label.at, label.across).normalized();
+    assert!(
+        baseline.dot(lifted).abs() < 1e-4,
+        "the value lifts {:.2} degrees off square IN THE PLANE, so it leans out of the sketch",
+        baseline.dot(lifted).acos().to_degrees() - 90.0
+    );
+
+    // And the direction it would have lifted along before, to show the two are different things.
+    let screens_own = Vec2::new(label.along.y, -label.along.x);
+    let naive = in_the_plane_at(frame, label.at, screens_own).normalized();
+    assert!(
+        baseline.dot(naive).abs() > 0.1,
+        "the screen's own perpendicular already stands square in this plane, so the case proves \
+         nothing — pick a frame with some shear in it"
+    );
+}
+
+/// **A pitched view foreshortens the value even though it shears it not at all.**
+///
+/// The failure a frame of two directions cannot see. Tilt the camera straight down and the plane's
+/// axes still image at a right angle: there is no shear to carry, and a layout that normalized
+/// both axes would put the number on screen at exactly its flat-page size and shape. What the view
+/// actually does is squash one axis, and the value has to squash with it or it is not lying on the
+/// plane — it is standing in front of it at full height.
+#[test]
+fn a_pitched_view_foreshortens_a_value_it_cannot_shear() {
+    let flat = a_span_in(PlaneFrame::facing());
+    let pitched = a_span_in(a_pitched_plane());
+
+    let (level, tilted) = (&flat.labels[0], &pitched.labels[0]);
+    assert!(
+        (level.across.length() - 1.0).abs() < 1e-4,
+        "a flat page neither shears nor squashes, so its value stands off at one to one"
+    );
+    // The frame reaches 3 pixels per plane unit across and 1.5 down, so a plane step square to a
+    // horizontal baseline projects to exactly half of one along it.
+    assert!(
+        (tilted.across.length() - 0.5).abs() < 1e-3,
+        "the pitched value stands {:.3} of its baseline's unit high, not the 0.5 the plane does — \
+         a number at full height is a number in front of the sketch, not on it",
+        tilted.across.length()
+    );
+    assert!(
+        tilted.across.normalized().dot(level.across.normalized()) > 0.999,
+        "and it still lifts the same WAY, because a pitch on its own has no shear to change that"
+    );
+}
+
+/// **A value's glyphs are never mirrored, however the plane is turned.**
+///
+/// A rotation could not produce this and so never had to be defended against; a two-by-two can.
+/// Seen from behind the plane the projected frame is left-handed, and glyph geometry carried
+/// through it raw comes out reading backwards. The fold that keeps the lift agreeing with the
+/// screen's perpendicular is the same condition as keeping the frame right-handed, so one
+/// comparison closes both — this is the test that says so.
+#[test]
+fn a_value_seen_from_behind_the_plane_is_not_mirrored() {
+    let size = Vec2::new(value_width("40"), VALUE_SIZE);
+    for (facing, frame) in [
+        ("square on", PlaneFrame::facing()),
+        ("pitched", a_pitched_plane()),
+        ("three-quarter", a_three_quarter_plane()),
+        ("from behind", a_plane_from_behind()),
+    ] {
+        let drawing = a_span_in(frame);
+        let corners = label_corners(&drawing.labels[0], size);
+        let (reading, descending) = (corners[1] - corners[0], corners[3] - corners[0]);
+        let handedness = reading.x * descending.y - reading.y * descending.x;
+        assert!(
+            handedness > 0.0,
+            "{facing}: the text runs {reading:?} and its lines descend {descending:?}, which is \
+             the wrong way round — every glyph would draw mirror-image"
+        );
+    }
+}
+
+/// **A shoulder runs the PLANE's level, and a value that has left its geometry reads along it.**
+///
+/// The horizontal bar a radius drops its value onto is a drafting convention about the drawing,
+/// not about the monitor: on a tilted sketch, level in the plane is not level on screen. It is
+/// struck at the shoulder's own place, because a projection that divides carries the plane's +X to
+/// a different screen direction at every point in the viewport.
+#[test]
+fn a_shoulder_runs_the_planes_level_not_the_screens() {
+    let frame = a_three_quarter_plane();
+    let (center, anchor) = (Pos2::new(360.0, 260.0), Pos2::new(520.0, 210.0));
+    let standing = |bearing: f32| center + Vec2::angled(bearing) * 30.0;
+    let drawing = super::radius(
+        center,
+        30.0,
+        anchor,
+        whole(&standing),
+        frame,
+        "30",
+        Rank::Driving,
+    );
+
+    let level = frame.reading_at(anchor);
+    assert!(
+        level.dot(Vec2::X).abs() < 0.999,
+        "this frame's level IS the screen's, so the case proves nothing"
+    );
+    let shoulder = drawing
+        .pieces
+        .iter()
+        .find_map(|piece| match piece {
+            Piece::Polyline(points) if points.len() == 3 => Some(points[2] - points[1]),
+            _ => None,
+        })
+        .expect("the evicted value lands on a shoulder");
+    assert!(
+        shoulder.normalized().dot(level).abs() > 0.9999,
+        "the shoulder runs {:?} where the plane's level is {level:?}",
+        shoulder.normalized()
+    );
+    assert!(
+        drawing.labels[0].along.dot(level).abs() > 0.9999,
+        "and the value reads along the bar it sits on"
+    );
+}
+
+/// **The glyphs come out as geometry the font atlas can actually sample, inside the box that
+/// stands for them.**
+///
+/// The rest of this file gates the LAYOUT, which is arithmetic and needs no painter. This one
+/// gates the handover, and it exists because the handover is now hand-written: a value is no
+/// longer a `TextShape` the tessellator understands but a row mesh mapped through a two-by-two and
+/// emitted raw. Everything that can go wrong with that is silent. Leave the texel coordinates a
+/// row carries unnormalized and every glyph samples somewhere off the far side of the atlas —
+/// nothing draws, no assertion in this module notices, and the drawing simply has no numbers in
+/// it. Drop the transform and they pile up at the origin. So: the uv has to be inside the atlas,
+/// the vertices have to stand where the hit target says they do, and the quads have to be SHEARED,
+/// which is the one thing that proves the plane's frame reached the geometry at all.
+#[test]
+fn a_value_paints_glyphs_the_atlas_can_sample_inside_the_box_that_claims_them() {
+    let viewport = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(900.0, 600.0));
+    let context = egui::Context::default();
+    let input = egui::RawInput {
+        screen_rect: Some(viewport),
+        ..Default::default()
+    };
+    // One frame to bring the font atlas into being; the glyphs are not in it until something has
+    // asked for them.
+    drop(context.run(input.clone(), |_| {}));
+
+    let laid_out = a_span_in(a_three_quarter_plane());
+    // The value alone. A polyline is a mesh too, and it samples the white pixel inside the SAME
+    // atlas, so a test that filtered by texture would be reading the dimension line.
+    let value = Drawing {
+        pieces: Vec::new(),
+        labels: laid_out.labels.clone(),
+        rank: laid_out.rank,
+    };
+    let claimed = value.label_boxes()[0].expand(1.0);
+
+    let output = context.run(input, |context| {
+        value.paint(&context.layer_painter(egui::LayerId::new(
+            egui::Order::Foreground,
+            egui::Id::new("a_value"),
+        )));
+    });
+
+    let mut corners: Vec<egui::Pos2> = Vec::new();
+    for primitive in context.tessellate(output.shapes, 1.0) {
+        let egui::epaint::Primitive::Mesh(mesh) = primitive.primitive else {
+            continue;
+        };
+        for vertex in &mesh.vertices {
+            assert!(
+                (0.0..=1.0).contains(&vertex.uv.x) && (0.0..=1.0).contains(&vertex.uv.y),
+                "a glyph samples the atlas at {:?}, which is off it — the texel coordinates a \
+                 galley row carries were never normalized, and nothing would draw",
+                vertex.uv
+            );
+            assert!(
+                claimed.contains(vertex.pos),
+                "a glyph corner stands at {:?} but the box that makes the value clickable is \
+                 {claimed:?} — the paint and the hit target have parted company",
+                vertex.pos
+            );
+            corners.push(vertex.pos);
+        }
+    }
+    assert!(
+        corners.len() >= 8,
+        "a two-digit value is two glyph quads and came out as {} vertices",
+        corners.len()
+    );
+
+    // The quads are parallelograms, all alike, so the first one's two edges are the frame the
+    // glyphs were carried through. On a flat page they would be at a right angle.
+    let (reading, descending) = (corners[1] - corners[0], corners[2] - corners[1]);
+    let leaning = reading
+        .normalized()
+        .dot(descending.normalized())
+        .abs()
+        .acos()
+        .to_degrees();
+    assert!(
+        (1.0..89.0).contains(&(90.0 - leaning)),
+        "the glyph quads meet at {leaning:.1} degrees, so the plane's frame never reached them — \
+         a rotation is all that happened, which is what the value looked wrong doing"
+    );
 }

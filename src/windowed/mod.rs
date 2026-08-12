@@ -350,7 +350,7 @@ struct WindowedState {
     viewport_menu_at: Option<egui::Pos2>,
     /// #13 Step 4: the `ViewCube` chrome zone currently under the cursor (a rotate
     /// or roll arrow / Home / Fit), driving the live hover highlight in
-    /// [`ViewCubeRenderer::draw`]. Recomputed cheaply on every `CursorMoved`; held
+    /// [`ViewCubeRenderer::render_offscreen`]. Recomputed cheaply on every `CursorMoved`; held
     /// at `None` while orbiting/dragging, when the cursor leaves the cube rect, or
     /// when egui consumed the move. The cube body never highlights (we skip its
     /// raycast for hover), so a body hover is treated as `None`.

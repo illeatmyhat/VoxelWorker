@@ -20,7 +20,9 @@
 
 use egui::{Pos2, Vec2};
 
-use super::{arrowhead, value_width, Anchor, Drawing, Label, Piece, Rank, Rim, ARROW_LENGTH, GAP};
+use super::{
+    arrowhead, value_width, Anchor, Drawing, Label, Piece, PlaneFrame, Rank, Rim, ARROW_LENGTH, GAP,
+};
 
 /// How far past the arc an extension line runs when a leg falls short of it.
 const OVERRUN: f32 = 8.0;
@@ -60,6 +62,7 @@ pub fn angle(
     radius: f32,
     rim: Rim<'_>,
     legs: [Leg; 2],
+    plane: PlaneFrame,
     value: &str,
     rank: Rank,
 ) -> Drawing {
@@ -129,11 +132,14 @@ pub fn angle(
     let bisector = (from + to) / 2.0;
     let riding = rim.touch(bisector);
     let label = if value_fits && arrows_fit {
-        let along = tangent(bisector);
+        // Tangent to the arc where the value sits, folded upright. The value's lift is asked of the
+        // plane rather than turned out of the tangent: square to a tangent on the ellipse a tilted
+        // plane draws is not radial in the sketch, and radial is what the eye reads as attached.
+        let reading = super::upright_direction(tangent(bisector));
         Label {
             at: riding,
-            // Tangent to the arc where the value sits, folded upright.
-            radians: super::upright_radians(along.y.atan2(along.x)),
+            along: reading,
+            across: plane.square_to(reading, riding),
             text,
             anchor: Anchor::Middle,
             lift: GAP,
@@ -143,16 +149,28 @@ pub fn angle(
         // neither leg, so a tight angle's value never looks attached to one of them. It leaves
         // SQUARE to the arc, which off a tilted plane is not the way it was reached.
         let jog = riding + rim.aim(bisector) * LEADER;
-        let side = if jog.x >= vertex.x { 1.0 } else { -1.0 };
+        // The shoulder is level IN THE PLANE. The jog is a screen standoff — it stands LEADER
+        // pixels off the arc, which is nowhere in particular in the sketch — so the plane's own
+        // level there comes from the frame, which answers any point in the viewport and not only
+        // the ones the drawing has coordinates for.
+        let reading = plane.reading_at(jog);
+        let side = if (jog - vertex).dot(reading) >= 0.0 {
+            1.0
+        } else {
+            -1.0
+        };
+        let away = reading * side;
         pieces.push(Piece::Polyline(vec![
             riding,
             jog,
-            jog + Vec2::X * side * (width + 2.0 * GAP),
+            jog + away * (width + 2.0 * GAP),
         ]));
+        let seat = jog + away * GAP;
         Label {
-            at: jog + Vec2::X * side * GAP,
+            at: seat,
             text,
-            radians: 0.0,
+            along: reading,
+            across: plane.square_to(reading, seat),
             anchor: if side > 0.0 {
                 Anchor::Start
             } else {

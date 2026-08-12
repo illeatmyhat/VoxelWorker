@@ -20,7 +20,8 @@
 use egui::{Pos2, Vec2};
 
 use super::{
-    arrowhead, value_width, Anchor, Drawing, Label, Piece, Rank, Rim, ARROW_LENGTH, GAP, OVERRUN,
+    arrowhead, value_width, Anchor, Drawing, Label, Piece, PlaneFrame, Rank, Rim, ARROW_LENGTH,
+    GAP, OVERRUN,
 };
 
 /// Half the center mark's arm length — the cross that says "this is a center".
@@ -48,11 +49,15 @@ pub(super) fn carry(rim: Rim, radius: f32, ray: Vec2) -> Option<Piece> {
 /// `rim` says how much of the circle the curve draws and where it stands. An arc dimensioned
 /// toward a bearing its own curve never reaches gets the extension that carries it there, in BOTH
 /// drawings: the leader has to arrive at the geometry either way round.
+///
+/// `plane` lays the value out in the sketch rather than on the glass — the shoulder it lands on and
+/// the direction it reads along are the PLANE's level, not the screen's.
 pub fn radius(
     center: Pos2,
     radius: f32,
     anchor: Pos2,
     rim: Rim,
+    plane: PlaneFrame,
     value: &str,
     rank: Rank,
 ) -> Drawing {
@@ -99,27 +104,44 @@ pub fn radius(
         // leader at its own angle rather than sitting horizontally across it.
         pieces.push(Piece::Polyline(vec![center, touch - aim * ARROW_LENGTH]));
         pieces.push(arrowhead(touch, aim));
+        // The leader runs from the center to a point on the curve, so both of its ends are points
+        // in the sketch and the line through them is already the image of a plane line — the value
+        // rides it exactly.
+        let seat = center + (touch - center) * 0.55;
+        let reading = super::upright_direction(touch - center);
         Label {
-            at: center + (touch - center) * 0.55,
+            at: seat,
             text,
-            radians: super::upright_radians(ray.y.atan2(ray.x)),
+            along: reading,
+            across: plane.square_to(reading, seat),
             anchor: Anchor::Middle,
             lift: GAP,
         }
     } else {
         // Leader leaves the arc along the SAME ray, jogs where the anchor is, and lands under the
         // text. The arrow reverses to point back at the curve.
-        let side = if anchor.x >= center.x { 1.0 } else { -1.0 };
+        // The shoulder runs LEVEL IN THE PLANE, which on a tilted sketch is not level on screen.
+        // Struck at the anchor, because a projection that divides carries the plane's own +X to a
+        // different screen direction at every point.
+        let reading = plane.reading_at(anchor);
+        let side = if (anchor - center).dot(reading) >= 0.0 {
+            1.0
+        } else {
+            -1.0
+        };
+        let away = reading * side;
         pieces.push(Piece::Polyline(vec![
             touch + aim * ARROW_LENGTH,
             anchor,
-            anchor + Vec2::X * side * (width + 2.0 * GAP),
+            anchor + away * (width + 2.0 * GAP),
         ]));
         pieces.push(arrowhead(touch, -aim));
+        let seat = anchor + away * GAP;
         Label {
-            at: anchor + Vec2::X * side * GAP,
+            at: seat,
             text,
-            radians: 0.0,
+            along: reading,
+            across: plane.square_to(reading, seat),
             anchor: if side > 0.0 {
                 Anchor::Start
             } else {
