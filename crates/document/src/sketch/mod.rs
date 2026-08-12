@@ -4213,6 +4213,27 @@ impl Sketch {
     // collapse went through. `was` is the only record of the drawing the gesture found, which
     // is what the question is about. An arc that was already degenerate before the hand
     // touched it is left out on purpose: it is the one drag that could repair it.
+    /// Whether this candidate stacks some reached arc's two ends, leaving it no piece to draw.
+    ///
+    /// Asked of the SOLUTION rather than of the drawing, because the question is about the frame
+    /// being considered and nothing has been written yet.
+    fn an_arc_would_be_left_without_a_piece(
+        &self,
+        reached: &[EntityId],
+        at: &dyn Fn(EntityId) -> Option<[f64; 2]>,
+    ) -> bool {
+        reached.iter().any(|id| {
+            self.arcs
+                .iter()
+                .find(|arc| arc.id == *id)
+                .and_then(|arc| {
+                    let (from, to) = (at(arc.from)?, at(arc.to)?);
+                    Some((from[0] - to[0]).hypot(from[1] - to[1]) < STACKED_DOT_TOLERANCE)
+                })
+                .unwrap_or(false)
+        })
+    }
+
     fn arcs_that_were_still_drawing_circles(
         &self,
         reached: Vec<EntityId>,
@@ -4540,6 +4561,17 @@ impl Sketch {
             return self.settle_again_the_other_way_round(
                 &turning, first, hands, &was, context, snap_reach, carries,
             );
+        }
+        // A frame that stacks an arc's two ends leaves it no piece to draw, and the law is that
+        // such a frame is STOOD rather than refused: both ends on one dot is no arc, nothing is
+        // written, and the gesture lives. Asked BEFORE the contact validation because that
+        // validation reads the drawn piece — measured on the shell's own path, the frame that lands
+        // exactly on an arc slot's seam came back `InvalidTangent { OutsideFirstDomain }`, which the
+        // shell answers by ending the drag outright, at the single frame the author is most
+        // committed to the wind. The collapse guard below says the same thing about the drawing
+        // this frame would WRITE; this says it about the piece the validator is about to read.
+        if self.an_arc_would_be_left_without_a_piece(&arcs_reached, &settled_at) {
+            return Ok(DragAnswer::stood(false));
         }
         validate_prepared_tangent_contacts(&prepared, &settled.solution)?;
         if !accepted {

@@ -1590,6 +1590,7 @@ fn a_slot_wound_from_the_drawing_the_shell_rebuilds_keeps_both_caps() {
             .id;
         let mut turns = crate::sketch::ArcTurnUnderAGesture::opening_over(&original);
         let mut wound = 0;
+        let mut stood = 0;
         for taken in 1..=30 {
             let asked = 90.0 + way * 15.0 * f64::from(taken);
             let hand = [
@@ -1599,18 +1600,22 @@ fn a_slot_wound_from_the_drawing_the_shell_rebuilds_keeps_both_caps() {
             // Exactly what the shell does: the drawing comes from the pre-drag producer and only
             // the carries survive the frame.
             let mut frame = original.clone();
-            let Ok(answered) = frame.move_point_reporting_its_snap(
-                held,
-                SketchPoint::from_continuous(hand[0], hand[1]),
-                ctx(16),
-                crate::sketch::SnapReach::UNBOUNDED,
-                &mut turns,
-            ) else {
-                // The frame that lands ON the seam. Standing there is the law; refusing there is a
-                // fault of its own, older than this walk and measured at 5e2e3e4.
-                continue;
-            };
+            // A frame is written or it is STOOD. It is never refused: refusing is what the shell
+            // answers by ending the drag, and the frame that lands on the seam is exactly the one
+            // the author is most committed to. Measured refusing at 5e2e3e4 and at 72ad196.
+            let answered = frame
+                .move_point_reporting_its_snap(
+                    held,
+                    SketchPoint::from_continuous(hand[0], hand[1]),
+                    ctx(16),
+                    crate::sketch::SnapReach::UNBOUNDED,
+                    &mut turns,
+                )
+                .unwrap_or_else(|refused| {
+                    panic!("at {asked} degrees the drawing refused the frame: {refused:?}")
+                });
             if !answered.moved {
+                stood += 1;
                 continue;
             }
             let sweep = frame
@@ -1632,6 +1637,10 @@ fn a_slot_wound_from_the_drawing_the_shell_rebuilds_keeps_both_caps() {
         assert!(
             wound > 0,
             "the walk never carried the slot past a half turn, so it proves nothing"
+        );
+        assert!(
+            stood > 0,
+            "the walk never landed on a seam, so it never asked the question"
         );
     }
 }
