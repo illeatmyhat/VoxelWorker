@@ -560,12 +560,17 @@ fn an_arrowhead_stops_at_the_line_it_points_at() {
     }
 }
 
-/// **A mark that lands on the curve is AIMED by the curve.** A rim on a plane the camera is not
-/// square to draws an ellipse, and there the ray an annotation was dragged along is not the
-/// direction the curve faces — they part by as much as the tilt. An arrowhead aimed along the ray
-/// lies ACROSS its own drawing instead of meeting it, which is what a slanted radius looked like.
+/// **A mark that lands on the curve is aimed square to it IN THE PLANE, which is RADIAL.**
+///
+/// The tilted case is the whole test, because square-on the plane's square and the screen's are
+/// the same direction and either layout passes. A rim answers a bearing with the point where the
+/// ray from the projected center meets the drawing, so center and touch are the images of two
+/// plane points and the segment between them is the image of the plane RADIUS — and square to a
+/// circle in its own plane is along that radius. The screen perpendicular of the projected curve
+/// is the image of a different plane direction, and an arrowhead aimed by it leans off the paper
+/// by as much as the tilt, which is what a slanted radius looked like.
 #[test]
-fn an_arrowhead_meets_a_slanted_rim_square_to_it() {
+fn an_arrowhead_meets_a_slanted_rim_square_to_it_in_the_plane() {
     let center = Pos2::new(100.0, 100.0);
     let (wide, tall) = (120.0_f32, 30.0_f32);
     // The ellipse point ON the ray at a bearing — the convention a projected ring answers in.
@@ -575,24 +580,39 @@ fn an_arrowhead_meets_a_slanted_rim_square_to_it() {
     };
     let rim = whole(&squashed);
 
-    // Along either axis the ray IS the way the curve faces, so nothing moves.
+    let slant = std::f32::consts::FRAC_PI_4;
+    let along = (squashed(slant + 0.005) - squashed(slant - 0.005)).normalized();
+    // DISCRIMINABILITY FIRST: at this bearing the plane's two square directions image far apart,
+    // so the drawing can tell them apart and the assertions below are not free.
+    let screens_square = Vec2::new(along.y, -along.x);
+    assert!(
+        screens_square.dot(Vec2::angled(slant)) < 0.9,
+        "the camera cannot tell the two squares apart here: {screens_square:?}"
+    );
+
+    // Along either axis they coincide, so nothing moves there.
     for square_on in [0.0, std::f32::consts::FRAC_PI_2] {
         assert!(
             rim.aim(square_on).dot(Vec2::angled(square_on)) > 0.999,
-            "on an axis the two directions agree"
+            "on an axis every reading of square agrees"
         );
     }
-    // Off them they part, and the aim is the one perpendicular to the drawing.
-    let slant = std::f32::consts::FRAC_PI_4;
+    // Off them, the aim is the imaged plane radius and NOT the screen's perpendicular.
     let facing = rim.aim(slant);
     assert!(
-        facing.dot(Vec2::angled(slant)) < 0.9,
-        "the ray is not the way the curve faces here: {facing:?}"
+        facing.dot(Vec2::angled(slant)) > 0.999,
+        "the aim left the plane's own square: {facing:?}"
     );
-    let along = (squashed(slant + 0.005) - squashed(slant - 0.005)).normalized();
     assert!(
-        facing.dot(along).abs() < 1e-2,
-        "the aim left square to the drawing: {facing:?} against {along:?}"
+        facing.dot(along).abs() > 1e-2,
+        "the aim is standing square to the SCREEN's curve: {facing:?} against {along:?}"
+    );
+    // The rim's other answer is the plane TANGENT there, which is the drawing's own direction and
+    // is deliberately not this one's perpendicular.
+    assert!(
+        rim.tangent(slant).dot(along) > 0.999,
+        "the tangent left the drawing: {:?}",
+        rim.tangent(slant)
     );
 
     // The drawing uses it: the arrow is square to the rim, and the leader ends at its base rather

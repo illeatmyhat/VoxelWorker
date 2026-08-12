@@ -55,8 +55,9 @@ pub fn diameter(
     let back = bearing + std::f32::consts::PI;
     let (near, far) = (rim.touch(back), rim.touch(bearing));
     let across = (far - near).length();
-    // Each end's arrow is aimed by the curve it lands on, not by the ray both were reached along:
-    // on the ellipse a tilted plane draws, an arrow aimed radially lies across its own rim.
+    // Each end's arrow is square to the rim IN THE PLANE, which is along the radius it stands on
+    // — so the two ends are aimed by their own opposite bearings and the through-line between
+    // them meets both arrows on their own line rather than kinking into them.
     let (aim_near, aim_far) = (rim.aim(back), rim.aim(bearing));
 
     // A center CROSS in dimension ink — a filled dot is what a sketch point looks like, and the

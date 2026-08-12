@@ -4474,11 +4474,10 @@ impl WindowedState {
                     // the tangent at the rim it leaves — the same drawing a gap across a line
                     // makes, read on a curve. Each end is asked of its OWN rim: on a plane the
                     // camera is not square to, a screen radius is right in one direction only.
-                    // Each extension leaves its rim along the TANGENT there — the projected plane
-                    // tangent, taken as the square of the outward normal the rim already answers,
-                    // rather than the screen's square of the radius.
-                    let facing = [first_rim.aim(bearing), second_rim.aim(bearing)]
-                        .map(|out| egui::vec2(-out.y, out.x));
+                    // Each extension leaves its rim along the TANGENT there — the projected
+                    // plane tangent, which the rim answers directly, rather than the screen's
+                    // square of the radius.
+                    let facing = [first_rim.tangent(bearing), second_rim.tangent(bearing)];
                     ui::gizmos::dimension::axis_span(
                         first_rim.touch(bearing),
                         second_rim.touch(bearing),

@@ -100,12 +100,9 @@ pub fn angle(
 
     let sweep = to - from;
     let direction = sweep.signum();
-    // Along the arc where it is actually drawn: the square of the outward normal the rim answers,
-    // so a terminator sits tangent to the ellipse rather than to the circle it is not.
-    let tangent = |bearing: f32| {
-        let out = rim.aim(bearing);
-        Vec2::new(-out.y, out.x) * direction
-    };
+    // Along the arc where it is actually drawn, turned the way the sweep runs: the rim's own
+    // tangent, so a terminator sits along the ellipse rather than the circle it is not.
+    let tangent = |bearing: f32| rim.tangent(bearing) * direction;
     let (start, end) = (rim.touch(from), rim.touch(to));
 
     // Both tests, on the ARC LENGTH rather than the chord: an angle is dimensioned along its arc,
@@ -147,7 +144,8 @@ pub fn angle(
     } else {
         // The value leaves on a leader along the BISECTOR — the one direction that belongs to
         // neither leg, so a tight angle's value never looks attached to one of them. It leaves
-        // SQUARE to the arc, which off a tilted plane is not the way it was reached.
+        // SQUARE to the arc, and square to an arc in its own plane is out along the bisecting
+        // radius, so the leader is the vertex's own ray carried past where the arc is drawn.
         let jog = riding + rim.aim(bisector) * LEADER;
         // The shoulder is level IN THE PLANE. The jog is a screen standoff — it stands LEADER
         // pixels off the arc, which is nowhere in particular in the sketch — so the plane's own

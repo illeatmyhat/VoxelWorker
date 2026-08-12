@@ -75,9 +75,10 @@ pub fn radius(
     // of the rim, because the ray says which way the curve is and only the rim says how far.
     let bearing = ray.y.atan2(ray.x);
     let touch = rim.touch(bearing);
-    // The arrow meets the curve SQUARE, so it is aimed by the curve rather than by the ray it was
-    // reached along — the two are one direction on a circle and as far apart as the tilt on the
-    // ellipse a tilted plane draws. The leader stops at the arrow's base for the same reason.
+    // The arrow meets the curve SQUARE IN THE PLANE, which on a circle is along the radius — so
+    // the ray the anchor was reached along IS the aim, and the leader that runs out along that
+    // same ray stops dead on the arrow's base with no kink in it. Off the plane, the screen's
+    // square of the ellipse would be a different direction and would put that kink back.
     let aim = rim.aim(bearing);
     // How far out the curve actually stands THERE, which is what decides inside from outside. The
     // nominal radius would flip the drawing early on one side of an ellipse and late on the other.

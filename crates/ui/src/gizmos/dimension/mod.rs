@@ -452,31 +452,50 @@ impl Rim<'_> {
         (self.at)(bearing)
     }
 
-    /// Which way the curve FACES at a bearing: its outward unit normal on screen.
+    /// Which way the curve RUNS at a bearing: the plane's tangent there, imaged, unit, turning
+    /// the way the bearing does.
     ///
-    /// A mark that has to sit SQUARE to the drawing — an arrowhead, and whatever line runs into its
-    /// base — is aimed by this rather than by the ray it was reached along. On a circle the two are
-    /// the same direction; on the ellipse a tilted plane projects to they differ by as much as the
-    /// tilt, and an arrow aimed along the ray lies across its own curve instead of meeting it.
+    /// A secant, not a derivative: the rim is sampled, so asking either side of the bearing reads
+    /// the drawing's own direction there rather than a curve it only approximates. Both samples
+    /// are images of plane points, so the chord between them is the image of a plane chord and
+    /// tends to the image of the plane tangent.
+    ///
+    /// Deliberately NOT the screen perpendicular of [`aim`](Self::aim) — see there.
     #[must_use]
-    pub fn aim(self, bearing: f32) -> Vec2 {
-        // A secant, not a derivative: the rim is sampled, so asking either side of the bearing
-        // reads the drawing's own direction there rather than a curve it only approximates.
+    pub fn tangent(self, bearing: f32) -> Vec2 {
         const NUDGE: f32 = 1e-2;
         let along = self.touch(bearing + NUDGE) - self.touch(bearing - NUDGE);
-        let radial = Vec2::angled(bearing);
-        let out = Vec2::new(along.y, -along.x);
-        if out.length() <= f32::EPSILON {
-            return radial;
+        if along.length() <= f32::EPSILON {
+            // A rim collapsed to a point has no direction of its own, so the only answer left is
+            // the bearing's own square — which is the right one wherever the drawing is a curve.
+            let radial = Vec2::angled(bearing);
+            return Vec2::new(-radial.y, radial.x);
         }
-        // Of the tangent's two perpendiculars, the one pointing away from the center — which the
-        // bearing already names, because the rim answers a bearing with a point along that ray.
-        let out = out.normalized();
-        if out.dot(radial) >= 0.0 {
-            out
-        } else {
-            -out
-        }
+        along.normalized()
+    }
+
+    /// Which way the curve FACES at a bearing: the outward normal of the PLANE curve, imaged.
+    ///
+    /// A mark that has to sit SQUARE to the drawing — an arrowhead, and whatever line runs into
+    /// its base or leaves it — is aimed by this. Square to a circle **in its own plane** is along
+    /// the radius, so this is the ray, and the screen perpendicular of the projected curve is
+    /// something else: the image of a different plane direction, off by as much as the tilt. At a
+    /// 3:1 squash the two are 84 degrees apart, which is an arrowhead lying flat across its own
+    /// rim rather than meeting it.
+    ///
+    /// **The precondition that makes it the ray is that the rim is struck at the image of the
+    /// plane center**, which is what [`touch`](Self::touch) means: it answers a bearing with the
+    /// point where the ray from that center meets the drawing. Center and touch are then the
+    /// images of two plane points, so the segment between them is the image of the plane radius
+    /// exactly, at any perspective. A rim struck at a center that is NOT a projected plane point
+    /// would need the projected curve's own perpendicular, and that would have to be a third,
+    /// screen-named answer rather than a bend in this one.
+    ///
+    /// Not perpendicular on screen to [`tangent`](Self::tangent), and that is the point: the
+    /// plane's two square directions image at an angle that is not a right one.
+    #[must_use]
+    pub fn aim(self, bearing: f32) -> Vec2 {
+        Vec2::angled(bearing)
     }
 
     /// The curve sampled from one bearing round to another, as screen points.
