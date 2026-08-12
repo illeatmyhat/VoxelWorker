@@ -42,7 +42,7 @@
 //!     the primary and [`Icon::EmbossRecess`] is its negative-amount variant.
 
 use crate::theme;
-use egui::{Color32, Painter, Pos2, Rect, Shape, Stroke};
+use egui::{Color32, Painter, Pos2, Rect, Shape, Stroke, Vec2};
 
 mod add_point;
 mod arc_center_endpoints;
@@ -190,6 +190,32 @@ pub const STROKE_RATIO: f32 = 24.0;
 /// The Signal rail glyph stroke, in design points — [`GRID`] at the house ratio.
 pub const STROKE_WIDTH: f32 = GRID / STROKE_RATIO;
 
+/// How far a CONSTRAINT glyph's ink reaches from its center, as a fraction of the box's
+/// half-width. The shelf is drawn inside a margin; none of its glyphs fills its box to the corner.
+///
+/// It exists because a glyph drawn onto a SHEARED frame — see [`IconPainter::on_frame`] — reaches
+/// further from its center than an upright one, and the badge that carries it has to stay inside
+/// the constant screen square that makes it clickable. **Fitting the BOX would shrink every badge
+/// by 29% at an ordinary three-quarter view where no ink escapes at all** — measured, the worst
+/// mark on the shelf is 1.7 points INSIDE the square there — because the box's corner stands 40%
+/// out while the glyph inside it does not. Fitting the ink costs 8% at that view and only starts
+/// doing real work at harder rakes, where ink would otherwise stand 2.7 points outside.
+///
+/// A single isotropic number for the whole shelf, so every badge shrinks by the same amount and a
+/// row of them stays one size. That is why it is a shelf-wide bound and not each glyph's own
+/// extent, and it is why the 8% at three-quarter is spent rather than saved.
+///
+/// **[`Group::SketchConstraint`] and not the whole set**, because the badge is the only thing that
+/// draws onto a frame and the rest of the catalogue does not share the shelf's margin —
+/// [`Icon::EllipseSketch`] is a ring that reaches 0.98 of its own box, and letting a tool glyph
+/// nobody shears decide how far a badge shrinks would be borrowing a constraint from the wrong
+/// drawing. Anything else that starts drawing on a frame has to measure its own shelf.
+///
+/// `a_constraint_glyphs_ink_stays_within_its_declared_reach` measures this off the mark data and
+/// fails BOTH ways, so neither a new glyph drawn nearer its edge nor a shelf that quietly tightens
+/// can leave the number stale.
+pub const INK_REACH: f32 = 0.7778;
+
 /// Painting kit handed to a glyph: it owns the mapping from the authoring grid onto the
 /// on-screen box, so an icon file never does arithmetic on `Rect`s and cannot drift off the
 /// grid.
@@ -201,7 +227,15 @@ pub const STROKE_WIDTH: f32 = GRID / STROKE_RATIO;
 /// to be told which grid it is on.
 pub struct IconPainter<'a> {
     painter: &'a Painter,
-    rect: Rect,
+    /// Where grid (0, 0) lands.
+    origin: Pos2,
+    /// The glyph's own +x side, full width, on screen.
+    across: Vec2,
+    /// Its +y side. Not the square of `across` on screen: a glyph drawn onto a projected sketch
+    /// plane is SHEARED, and the pair is what carries that.
+    down: Vec2,
+    /// The glyph's screen SIZE, which is what the pen scales by — see [`IconPainter::on_frame`].
+    span: f32,
     stroke: Stroke,
     grid: f32,
     accent: Color32,
@@ -228,13 +262,51 @@ impl<'a> IconPainter<'a> {
         grid: f32,
         stroke_width: f32,
     ) -> Self {
+        Self::on_frame(
+            painter,
+            rect.left_top(),
+            Vec2::new(rect.width(), 0.0),
+            Vec2::new(0.0, rect.height()),
+            color,
+            grid,
+            stroke_width,
+        )
+    }
+
+    /// Bind the kit to a PARALLELOGRAM instead of a box: `origin` is where the glyph's top-left
+    /// grid corner lands, and `across`/`down` are its two full-width sides.
+    ///
+    /// This is how a glyph is drawn as ink lying IN a projected sketch plane rather than pasted on
+    /// the glass in front of it. Every primitive in the kit routes through [`at`](Self::at) —
+    /// ellipses, arcs and cubics are sampled into grid points first and mapped like any other — so
+    /// one general pair of sides shears the whole set, curves included, and no glyph file changes.
+    ///
+    /// **The pen stays the screen's while the path becomes the plane's.** Stroke width, dash
+    /// period, segment count and a disc's radius all scale by the glyph's `across` length and
+    /// never by its area, exactly as a dimension's type size does: ink on receding paper keeps its
+    /// weight and loses its footprint. So a badge on a steeply raked plane is a squashed drawing
+    /// at an unsquashed line weight. That is a real asymmetry against texture-mapped text, whose
+    /// stroke weights squash with the frame, and it is invisible at the sizes either is drawn at.
+    pub fn on_frame(
+        painter: &'a Painter,
+        origin: Pos2,
+        across: Vec2,
+        down: Vec2,
+        color: Color32,
+        grid: f32,
+        stroke_width: f32,
+    ) -> Self {
         // The stroke scales with the glyph so a 44 pt tile is not drawn with a hairline meant
         // for a 15 pt rail button. A large mark rides a proportionally lighter stroke, which is
         // why this is a ratio and not a constant.
-        let scale = rect.width() / grid;
+        let span = across.length();
+        let scale = span / grid;
         Self {
             painter,
-            rect,
+            origin,
+            across,
+            down,
+            span,
             stroke: Stroke::new(stroke_width * scale.max(0.55), color),
             grid,
             // When the host has ALREADY painted the glyph in the accent — an armed rail button —
@@ -269,12 +341,16 @@ impl<'a> IconPainter<'a> {
         )
     }
 
-    /// Map a point on the authoring grid onto the glyph box.
+    /// Map a point on the authoring grid onto the glyph's frame.
+    ///
+    /// The set's ONE grid-to-screen seam: every mark in the kit reaches the screen through here,
+    /// which is what lets [`on_frame`](Self::on_frame) shear all of them at once.
+    /// The grid coordinate is divided before it scales the side, not after, so an upright glyph
+    /// reaches exactly the pixel the box arithmetic this replaced reached — the `down` term is a
+    /// zero vector there and adds nothing. Icon parity is a segment-set diff and does not want a
+    /// last-bit excuse.
     pub fn at(&self, x: f32, y: f32) -> Pos2 {
-        Pos2::new(
-            self.rect.left() + (x / self.grid) * self.rect.width(),
-            self.rect.top() + (y / self.grid) * self.rect.height(),
-        )
+        self.origin + self.across * (x / self.grid) + self.down * (y / self.grid)
     }
 
     /// The glyph's stroke.
@@ -389,7 +465,7 @@ impl<'a> IconPainter<'a> {
 
     /// Stroke a dashed ellipse in a given stroke.
     pub fn dashed_ellipse_with(&self, center: (f32, f32), rx: f32, ry: f32, stroke: Stroke) {
-        let segments = ((self.rect.width() * 0.9) as usize).clamp(24, 96);
+        let segments = ((self.span * 0.9) as usize).clamp(24, 96);
         let points: Vec<Pos2> = (0..=segments)
             .map(|i| {
                 let t = std::f32::consts::TAU * (i as f32 / segments as f32);
@@ -409,8 +485,8 @@ impl<'a> IconPainter<'a> {
     /// The period is in the painter's own grid units, so it is the same visual rhythm
     /// whichever family is drawing (the rail's 18-unit grid or the tile set's 26).
     fn dash_path(&self, points: &[Pos2], stroke: Stroke) {
-        let period = (2.2 + 1.8) / self.grid * self.rect.width();
-        let on = 2.2 / self.grid * self.rect.width();
+        let period = (2.2 + 1.8) / self.grid * self.span;
+        let on = 2.2 / self.grid * self.span;
         // Below about half a pixel the rhythm cannot resolve on screen — a solid line is what
         // it would read as anyway — and refusing it keeps the dash count below bounded.
         if period < 0.5 {
@@ -470,7 +546,7 @@ impl<'a> IconPainter<'a> {
     /// The constraint set needs it: a pattern's seed and its generated copies are both discs, and
     /// which is which is the entire content of the mark.
     pub fn filled_circle_with(&self, center: (f32, f32), radius: f32, color: Color32) {
-        let scaled = (radius / self.grid) * self.rect.width();
+        let scaled = (radius / self.grid) * self.span;
         self.painter
             .circle_filled(self.at(center.0, center.1), scaled, color);
     }
@@ -505,7 +581,7 @@ impl<'a> IconPainter<'a> {
         p2: (f32, f32),
         p3: (f32, f32),
     ) -> Vec<(f32, f32)> {
-        let segments = ((self.rect.width() * 0.9) as usize).clamp(12, 64);
+        let segments = ((self.span * 0.9) as usize).clamp(12, 64);
         (0..=segments)
             .map(|i| {
                 let t = i as f32 / segments as f32;
@@ -566,7 +642,7 @@ impl<'a> IconPainter<'a> {
         from: f32,
         to: f32,
     ) -> Vec<(f32, f32)> {
-        let segments = ((self.rect.width() * 0.9) as usize).clamp(12, 64);
+        let segments = ((self.span * 0.9) as usize).clamp(12, 64);
         (0..=segments)
             .map(|i| {
                 let t = from + (to - from) * (i as f32 / segments as f32);
@@ -946,13 +1022,39 @@ impl Icon {
 
     /// Paint the glyph into `rect` in `color`.
     pub fn draw(self, painter: &Painter, rect: Rect, color: Color32) {
-        let g = IconPainter::new(painter, rect, color);
+        self.draw_with(&IconPainter::new(painter, rect, color));
+    }
+
+    /// Draw the glyph onto a PARALLELOGRAM — the same mark, lying in a projected sketch plane
+    /// rather than on the glass. See [`IconPainter::on_frame`].
+    pub fn draw_on_frame(
+        self,
+        painter: &Painter,
+        origin: Pos2,
+        across: Vec2,
+        down: Vec2,
+        color: Color32,
+    ) {
+        self.draw_with(&IconPainter::on_frame(
+            painter,
+            origin,
+            across,
+            down,
+            color,
+            GRID,
+            STROKE_WIDTH,
+        ));
+    }
+
+    /// Draw onto a kit already bound to its frame — where the two doors above meet, so neither
+    /// can pick a different set of marks than the other.
+    fn draw_with(self, g: &IconPainter) {
         match self {
             // The three orbit marks compose ROTATED ellipses at paint time, which `Mark` cannot
             // describe, so they stay imperative and answer an empty slice from `marks`.
-            Icon::Orbit => orbit::draw(&g),
-            Icon::OrbitConstrained => orbit_constrained::draw(&g),
-            Icon::OrbitFree => orbit_free::draw(&g),
+            Icon::Orbit => orbit::draw(g),
+            Icon::OrbitConstrained => orbit_constrained::draw(g),
+            Icon::OrbitFree => orbit_free::draw(g),
             other => g.marks(other.marks()),
         }
     }

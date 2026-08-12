@@ -764,5 +764,62 @@ impl Sheet {
                 }
             },
         );
+        self.specimen_row(
+            ui,
+            "a constraint badge is notation ON the drawing",
+            "The same three frames, carrying a badge instead of a number. A constraint symbol is              ink on the paper the way a dimension is, so it squashes where the plane recedes and              SHEARS where the plane turns — neither of which a glyph that merely rotated to face              along the plane could do, and the middle panel is again the one that proves it. The              whole glyph set shears through one seam, so its curves bend with it rather than              staying round inside a leaning box. The line WEIGHT does not squash: the path is the              plane's and the pen is the screen's, the same split the value's type size makes. The              fourth panel is the selection plate, which stays square to the glass on purpose — it              says you have hold of this, which is a fact about the UI and not about the drawing,              and it is the rect the click is tested against.",
+            |p, s| {
+                let posed = [
+                    (
+                        "square",
+                        [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+                        false,
+                    ),
+                    (
+                        "pitched",
+                        [[1.0, 0.0, 0.0], [0.0, 0.5, 0.0], [0.0, 0.0, 1.0]],
+                        false,
+                    ),
+                    (
+                        "turned",
+                        [[1.0, 0.42, 0.0], [0.15, 0.62, 0.0], [0.0, 0.0, 1.0]],
+                        false,
+                    ),
+                    (
+                        "picked",
+                        [[1.0, 0.42, 0.0], [0.15, 0.62, 0.0], [0.0, 0.0, 1.0]],
+                        true,
+                    ),
+                ];
+                for (index, (posture, frame, picked)) in posed.into_iter().enumerate() {
+                    // Tighter than the row above: four panels and a 40 pt plate, where that one
+                    // has three panels and no plate.
+                    #[allow(clippy::cast_precision_loss)]
+                    let left = (index as f32).mul_add(50.0, s.left() + 8.0);
+                    let plane = dimension::PlaneFrame::from_plane_to_screen(frame)
+                        .expect("a posed frame is not singular");
+                    let center = Pos2::new(left + 22.0, s.bottom() - 42.0);
+                    let reading = plane.reading_at(center);
+                    ui::chrome::paint_constraint_badges(
+                        p,
+                        &[ui::chrome::ConstraintBadge {
+                            center,
+                            reading,
+                            square: plane.square_to(reading, center),
+                            icon: ui::icons::Icon::ConstraintQuantize,
+                            constraint: 1,
+                            picked,
+                        }],
+                    );
+                    p.text(
+                        Pos2::new(left, s.bottom() - 16.0),
+                        egui::Align2::LEFT_TOP,
+                        posture,
+                        egui::FontId::monospace(8.0),
+                        color_palette::TEXT_SECONDARY,
+                    );
+                }
+            },
+        );
     }
 }

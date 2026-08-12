@@ -338,19 +338,11 @@ impl PlaneFrame {
         let Some([across, down]) = self.axes_at(at) else {
             return screens_own;
         };
-        let spread = across.x.mul_add(down.y, -(across.y * down.x));
-        if spread.abs() <= f32::EPSILON {
-            return screens_own;
-        }
         // `along` in the plane's own coordinates, made a unit step THERE, turned a quarter there,
         // and carried back — so what returns is the image of a plane right angle.
-        let reading = along.x.mul_add(down.y, -(along.y * down.x)) / spread;
-        let lifting = across.x.mul_add(along.y, -(across.y * along.x)) / spread;
-        let step = reading.hypot(lifting);
-        if step <= f32::EPSILON {
+        let Some([reading, lifting]) = stepped_in_plane([across, down], along) else {
             return screens_own;
-        }
-        let (reading, lifting) = (reading / step, lifting / step);
+        };
         let pace = (across * reading + down * lifting).length();
         if pace <= f32::EPSILON {
             return screens_own;
@@ -365,6 +357,66 @@ impl PlaneFrame {
             -square
         }
     }
+
+    /// The unit direction halfway between two screen directions IN THE PLANE — `None` where they
+    /// double back in the plane and name no side to be between.
+    ///
+    /// Halfway on screen is not halfway in the plane, for the same reason square is not square: a
+    /// homography does not preserve angles, so two projected plane lines are drawn at an angle
+    /// the plane never held them at, and splitting THAT angle points somewhere the drawing does
+    /// not. The two arms are carried into plane coordinates, made unit steps and added there, and
+    /// the sum is carried back.
+    ///
+    /// Falls back to the screen's own bisector wherever the plane's axes do not span — the flat
+    /// reading, which is right exactly where there is nothing to correct.
+    #[must_use]
+    pub fn bisector_of(&self, first: Vec2, second: Vec2, at: Pos2) -> Option<Vec2> {
+        let screens_own = || {
+            let sum = first.normalized() + second.normalized();
+            (sum.length() > f32::EPSILON).then(|| sum.normalized())
+        };
+        let Some(axes) = self.axes_at(at) else {
+            return screens_own();
+        };
+        let (Some(first_step), Some(second_step)) = (
+            stepped_in_plane(axes, first),
+            stepped_in_plane(axes, second),
+        ) else {
+            return screens_own();
+        };
+        let sum = [
+            first_step[0] + second_step[0],
+            first_step[1] + second_step[1],
+        ];
+        let length = sum[0].hypot(sum[1]);
+        if length <= f32::EPSILON {
+            // They double back IN THE PLANE, which is the honest no-answer: the screen's bisector
+            // would invent a side out of the projection's own distortion.
+            return None;
+        }
+        let carried = axes[0] * (sum[0] / length) + axes[1] * (sum[1] / length);
+        if !carried.is_finite() || carried.length() <= f32::EPSILON {
+            return screens_own();
+        }
+        Some(carried.normalized())
+    }
+}
+
+/// `direction` in the plane's own coordinates at a place its two projected axes are known, as a
+/// UNIT step there — `None` where the axes do not span, which is a plane seen edge-on.
+///
+/// The one decomposition both [`PlaneFrame::square_to`] and [`PlaneFrame::bisector_of`] turn on:
+/// a question about the plane's own metric is answered by carrying the screen direction back into
+/// the plane, doing the plane geometry THERE, and carrying the answer out again.
+fn stepped_in_plane([across, down]: [Vec2; 2], direction: Vec2) -> Option<[f32; 2]> {
+    let spread = across.x.mul_add(down.y, -(across.y * down.x));
+    if spread.abs() <= f32::EPSILON {
+        return None;
+    }
+    let reading = direction.x.mul_add(down.y, -(direction.y * down.x)) / spread;
+    let lifting = across.x.mul_add(direction.y, -(across.y * direction.x)) / spread;
+    let step = reading.hypot(lifting);
+    (step > f32::EPSILON).then(|| [reading / step, lifting / step])
 }
 
 /// The chrome weight: dimension line, extension line and leader all share it, per ISO 128-20.

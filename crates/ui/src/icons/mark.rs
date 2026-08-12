@@ -208,6 +208,79 @@ pub enum Mark {
 }
 
 impl Mark {
+    /// How far this mark reaches from the glyph box's CENTER, on each grid axis.
+    ///
+    /// A BOUND, not the exact hull: a curve is bounded by its control points and an arc by its
+    /// full ellipse, both of which are what a mark's own numbers already say. Being loose costs
+    /// only a slightly early inscribe fit and being wrong would let ink escape, so the bound is
+    /// the safe direction.
+    pub(super) fn reach_from(&self, center: f32) -> (f32, f32) {
+        let mut worst = (0.0_f32, 0.0_f32);
+        let mut touch = |x: f32, y: f32| {
+            worst = (
+                worst.0.max((x - center).abs()),
+                worst.1.max((y - center).abs()),
+            );
+        };
+        match *self {
+            Mark::Line { points, .. } | Mark::Closed { points, .. } | Mark::Fill { points, .. } => {
+                for &(x, y) in points {
+                    touch(x, y);
+                }
+            }
+            Mark::Rect { a, b, .. } => {
+                touch(a.0, a.1);
+                touch(b.0, b.1);
+            }
+            Mark::Circle {
+                center: c, radius, ..
+            }
+            | Mark::Disc {
+                center: c, radius, ..
+            } => {
+                touch(c.0 - radius, c.1 - radius);
+                touch(c.0 + radius, c.1 + radius);
+            }
+            Mark::Node {
+                center: c, size, ..
+            } => {
+                touch(c.0 - size / 2.0, c.1 - size / 2.0);
+                touch(c.0 + size / 2.0, c.1 + size / 2.0);
+            }
+            Mark::Ellipse {
+                center: c, rx, ry, ..
+            } => {
+                touch(c.0 - rx, c.1 - ry);
+                touch(c.0 + rx, c.1 + ry);
+            }
+            // An arc is SAMPLED rather than bounded by its whole ellipse. A quarter turn of a
+            // wide arc stays near its own ends while the ellipse it belongs to runs right off the
+            // glyph, and taking the ellipse would report ink that is never drawn — enough to make
+            // the set's declared reach meaningless.
+            Mark::Arc {
+                center: c,
+                rx,
+                ry,
+                from,
+                to,
+                ..
+            } => {
+                const STEPS: usize = 64;
+                for step in 0..=STEPS {
+                    #[allow(clippy::cast_precision_loss)]
+                    let turn = (to - from).mul_add(step as f32 / STEPS as f32, from);
+                    touch(rx.mul_add(turn.cos(), c.0), ry.mul_add(turn.sin(), c.1));
+                }
+            }
+            Mark::Cubic { p0, p1, p2, p3, .. } => {
+                for (x, y) in [p0, p1, p2, p3] {
+                    touch(x, y);
+                }
+            }
+        }
+        worst
+    }
+
     /// Paint this mark. Every arm is a dispatch to the method the imperative form called — no
     /// arithmetic happens here, which is what keeps the two forms byte-identical.
     pub(super) fn paint(&self, g: &IconPainter) {

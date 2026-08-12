@@ -304,3 +304,41 @@ fn every_glyph_paints_at_every_size_and_terminates() {
         }
     }
 }
+
+/// **The constraint shelf's declared ink reach is the truth about that shelf.**
+///
+/// [`super::INK_REACH`] decides how far a badge's glyph is scaled down to stay inside the square
+/// that claims its click, so a glyph authored nearer its own box edge than the constant admits
+/// would put ink outside that square on a raked plane. Asserted in BOTH directions: too small and
+/// ink escapes, too large and every badge on a tilted plane is shrunk for room nothing uses.
+#[test]
+fn a_constraint_glyphs_ink_stays_within_its_declared_reach() {
+    let half = super::GRID / 2.0;
+    let mut worst = 0.0_f32;
+    let mut widest = Icon::Home;
+    for icon in Icon::ALL
+        .iter()
+        .filter(|icon| icon.group() == Group::SketchConstraint)
+    {
+        for mark in icon.marks() {
+            let (x, y) = mark.reach_from(half);
+            let reach = x.max(y) / half;
+            if reach > worst {
+                worst = reach;
+                widest = *icon;
+            }
+        }
+    }
+    assert!(
+        worst <= super::INK_REACH,
+        "{widest:?} reaches {worst} of its half-box, past the declared {} — a badge drawn on a \
+         raked plane would put that ink outside the square that claims its click",
+        super::INK_REACH
+    );
+    assert!(
+        worst >= super::INK_REACH - 0.02,
+        "the set's widest glyph only reaches {worst}, so the declared {} is loose and every \
+         badge on a tilted plane is shrunk for room nothing uses",
+        super::INK_REACH
+    );
+}

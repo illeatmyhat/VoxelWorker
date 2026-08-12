@@ -4650,6 +4650,14 @@ impl WindowedState {
     /// edge normal (perpendicular is the only offset that reads as "about this line" at every
     /// angle); a point's sits up and to the right, where a lock hangs in every CAD tool.
     ///
+    /// **Every one of those directions is read IN THE SKETCH PLANE.** A constraint symbol is
+    /// notation on the drawing the way a dimension's number is, so square-to-a-segment is the
+    /// plane's square and not the screen's — 31 degrees apart at a three-quarter view — and the
+    /// point convention is the plane's own up-and-right rather than a fixed screen diagonal that
+    /// slides off the paper as the camera turns. The offset LENGTH stays in pixels: direction
+    /// from the plane, clearance from the screen, which is the same split the value of a
+    /// dimension makes when it lifts off its line.
+    ///
     /// Several badges on one anchor step further along that same offset rather than overprinting.
     /// A constraint naming geometry that is off-screen or behind the camera simply has no badge:
     /// the drawing is what carries them.
@@ -4678,6 +4686,33 @@ impl WindowedState {
         let point_index = |id: document::sketch::EntityId| {
             self.sketch_point_ids.iter().position(|held| *held == id)
         };
+        // The plane's whole projection as one matrix, so a badge can ask it for a direction at
+        // any point in the viewport — including the standoff positions, which are pixel offsets
+        // and so have no sketch coordinate of their own. `facing` where the sketch has no
+        // placement yet or the plane is edge-on: the flat-page reading, which is what every one
+        // of these conventions used to be unconditionally.
+        let [vx, vy, vw, vh] = viewport_px.map(|value| value as f32);
+        let plane = handles
+            .as_ref()
+            .and_then(|handles| {
+                let clip_of = |coord: [f64; 2]| {
+                    let vertex = handles.profile_to_render(coord);
+                    view_projection * glam::Vec4::new(vertex[0], vertex[1], vertex[2], 1.0)
+                };
+                a_sketch_planes_frame(&clip_of, [vx, vy, vw, vh], pixels_per_point)
+            })
+            .unwrap_or_else(ui::gizmos::dimension::PlaneFrame::facing);
+        // The plane's own up-and-right at a point: the image of its 45 degree diagonal, which
+        // square-on is exactly the screen diagonal this replaced.
+        let out_of_the_corner = move |here: egui::Pos2| {
+            let reading = plane.reading_at(here);
+            let diagonal = reading + plane.square_to(reading, here);
+            if diagonal.length() > f32::EPSILON {
+                diagonal.normalized()
+            } else {
+                egui::vec2(0.707, -0.707)
+            }
+        };
         // How many badges already stand on this anchor, so the next one steps clear of them.
         let mut stacked: std::collections::HashMap<[u32; 2], f32> =
             std::collections::HashMap::new();
@@ -4694,12 +4729,24 @@ impl WindowedState {
             if length < f32::EPSILON {
                 return None;
             }
-            Some((a + along * 0.5, egui::vec2(-along.y, along.x) / length))
+            let middle = a + along * 0.5;
+            // Square to the segment IN THE PLANE. The sign holds the side the badge has always
+            // stood on: `square_to` agrees with the OTHER perpendicular, so it is turned back.
+            let square = -plane.square_to(along / length, middle);
+            Some((
+                middle,
+                if square.length() > f32::EPSILON {
+                    square.normalized()
+                } else {
+                    egui::vec2(-along.y, along.x) / length
+                },
+            ))
         };
         // A badge on a point sits up and to the right of it — there is no geometry to take a
-        // normal from, so the direction is a convention.
+        // normal from, so the direction is a convention, read in the plane the point lies in.
         let beside_point = |id: document::sketch::EntityId| {
-            Some((at(point_index(id)?)?, egui::vec2(0.707, -0.707)))
+            let here = at(point_index(id)?)?;
+            Some((here, out_of_the_corner(here)))
         };
         let ends_of = |segment: document::sketch::EntityId| {
             self.sketch_segments
@@ -4721,15 +4768,19 @@ impl WindowedState {
                 let length = away.length();
                 (length > f32::EPSILON).then_some(away / length)
             };
-            let bisector = arm((first_from, first_to))? + arm((second_from, second_to))?;
-            let length = bisector.length();
+            let (first_arm, second_arm) =
+                (arm((first_from, first_to))?, arm((second_from, second_to))?);
+            // Bisected IN THE PLANE: the halfway direction between two projected plane lines is
+            // not the halfway direction on screen, because the angle between them is not the
+            // angle the plane holds them at.
             // Doubling back means the two arms run along one line, which nothing perpendicular
             // can look like — fall back to the point convention rather than to a zero vector.
-            Some(if length < f32::EPSILON {
-                (here, egui::vec2(0.707, -0.707))
-            } else {
-                (here, bisector / length)
-            })
+            Some((
+                here,
+                plane
+                    .bisector_of(first_arm, second_arm, here)
+                    .unwrap_or_else(|| out_of_the_corner(here)),
+            ))
         };
 
         for constraint in producer.sketch.constraints() {
@@ -4803,7 +4854,7 @@ impl WindowedState {
                         .map(|handles| |coord| handles.profile_to_render(coord)),
                     (view_projection, viewport_px, pixels_per_point),
                 )
-                .map(|at| (at, egui::vec2(0.707, -0.707)))
+                .map(|at| (at, out_of_the_corner(at)))
                 .into_iter()
                 .collect(),
                 // Concentric has one semantic locus: the shared center. Radius and evaluation
@@ -4818,7 +4869,7 @@ impl WindowedState {
                             .map(|handles| |coord| handles.profile_to_render(coord)),
                         (view_projection, viewport_px, pixels_per_point),
                     )
-                    .map(|at| (at, egui::vec2(0.707, -0.707)))
+                    .map(|at| (at, out_of_the_corner(at)))
                     .into_iter()
                     .collect()
                 }
@@ -4839,7 +4890,7 @@ impl WindowedState {
                         .map(|handles| |coord| handles.profile_to_render(coord)),
                     (view_projection, viewport_px, pixels_per_point),
                 )
-                .map(|at| (at, egui::vec2(0.707, -0.707)))
+                .map(|at| (at, out_of_the_corner(at)))
                 .into_iter()
                 .collect(),
             };
@@ -4851,9 +4902,14 @@ impl WindowedState {
                 let center =
                     anchor + direction * (ui::chrome::SKETCH_CONSTRAINT_BADGE_OFFSET * *step);
                 *step += 1.0;
+                // Read where the badge ENDS UP, not at its anchor: the standoff is far enough
+                // that a projection which divides answers the plane's level differently there.
+                let reading = plane.reading_at(center);
                 self.sketch_constraint_badges
                     .push(ui::chrome::ConstraintBadge {
                         center,
+                        reading,
+                        square: plane.square_to(reading, center),
                         icon: ui::panel::constraint_icon(constraint.kind),
                         constraint: constraint.id,
                         picked: self.panel_state.selection.contains(
@@ -9366,6 +9422,10 @@ mod tests {
             )
             .expect("valid tangent");
         let badges = [ui::chrome::ConstraintBadge {
+            // The hit rect is the constant screen square whatever the plane does, so
+            // these say the flat reading and the test stays about the pick.
+            reading: egui::Vec2::X,
+            square: egui::vec2(0.0, -1.0),
             center: pos2(40.0, 20.0),
             icon: ui::icons::Icon::ConstraintTangent,
             constraint,
@@ -9416,6 +9476,10 @@ mod tests {
             )
             .expect("concentric");
         let badges = [ui::chrome::ConstraintBadge {
+            // The hit rect is the constant screen square whatever the plane does, so
+            // these say the flat reading and the test stays about the pick.
+            reading: egui::Vec2::X,
+            square: egui::vec2(0.0, -1.0),
             center: anchor,
             icon: ui::icons::Icon::ConstraintConcentric,
             constraint,
@@ -9483,6 +9547,10 @@ mod tests {
             )
             .expect("symmetry");
         let badges = [ui::chrome::ConstraintBadge {
+            // The hit rect is the constant screen square whatever the plane does, so
+            // these say the flat reading and the test stays about the pick.
+            reading: egui::Vec2::X,
+            square: egui::vec2(0.0, -1.0),
             center: anchor,
             icon: ui::icons::Icon::ConstraintSymmetry,
             constraint,
