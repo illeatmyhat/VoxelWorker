@@ -110,23 +110,23 @@ pub fn axis_span(
             })
         })
         .collect();
-    measured_between(near, far, extensions, Some(through), plane, value, rank)
+    measured_between(near, far, extensions, through, plane, value, rank)
 }
 
 /// The dimension line itself, between the two points its extension lines reach — arrows, the two
 /// fit tests, and the label that leaves when it does not fit.
 ///
 /// `pieces` arrives holding the extension lines, because that is the one part the two callers
-/// disagree about. `beside` is where the author dropped the annotation, which is what decides where
-/// ALONG the line the value rides and which end it leaves by when it does not fit. `None` keeps the
-/// value in the middle and sends it out past the far end, which is where a drawing with nothing
-/// placed has always put it.
+/// disagree about. `beside` is where the annotation stands, which is what decides where ALONG the
+/// line the value rides and which end it leaves by when it does not fit — the author's own drop
+/// where there is one, and otherwise the caller's default, which is the plane's middle and not the
+/// chord's.
 #[allow(clippy::too_many_arguments)]
 fn measured_between(
     near: Pos2,
     far: Pos2,
     mut pieces: Vec<Piece>,
-    beside: Option<Pos2>,
+    beside: Pos2,
     plane: PlaneFrame,
     value: &str,
     rank: Rank,
@@ -168,8 +168,10 @@ fn measured_between(
     // The run's own direction, folded so the value reads from above. Already a plane direction:
     // both ends are points in the sketch, so the line through them is the image of a plane line.
     let reading = super::upright_direction(along);
-    // How far along the line the author put the value, measured from `near`.
-    let put = beside.map_or(length / 2.0, |at| (at - near).dot(along));
+    // How far along the line the value stands, measured from `near`. A screen distance read off a
+    // screen point, so it round-trips exactly through `near + along * put` below — the station is
+    // the anchor's own foot on the line, wherever the anchor came by it.
+    let put = (beside - near).dot(along);
     // The room a value needs to ride inline: half of itself, clear of the arrowhead beside it.
     // At the middle of a span the value fits in, this is exactly `value_fits` — which is why an
     // unplaced drawing lands on the same layout it always did.

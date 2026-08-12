@@ -4318,7 +4318,10 @@ impl WindowedState {
                     // geometry that merely happens to have been drawn the other way round.
                     let anchor = placed.unwrap_or_else(|| {
                         let side = if at_tail.y > 0.0 { -1.0 } else { 1.0 };
-                        from + (to - from) / 2.0 + at_tail * side * DIMENSION_STANDOFF_PX
+                        // Two halves of one convention, and they answer to different things. WHICH
+                        // SIDE is chrome and stays the screen's, as the comment above says. HOW FAR
+                        // ALONG names a place on the drawing, so it is the plane's middle.
+                        plane.along(from, to, 0.5) + at_tail * side * DIMENSION_STANDOFF_PX
                     });
                     let along =
                         the_line_through(tail, [head[0] - tail[0], head[1] - tail[1]], anchor)?;
@@ -4366,7 +4369,7 @@ impl WindowedState {
                     if a_plane_too_edge_on_to_dimension(run_at_tail, [at_tail, at_head]) {
                         return None;
                     }
-                    let anchor = placed.unwrap_or_else(|| from + (to - from) / 2.0);
+                    let anchor = placed.unwrap_or_else(|| plane.along(from, to, 0.5));
                     let along = the_line_through(tail, run, anchor)?;
                     ui::gizmos::dimension::axis_span(
                         from,
@@ -4729,7 +4732,10 @@ impl WindowedState {
             if length < f32::EPSILON {
                 return None;
             }
-            let middle = a + along * 0.5;
+            // The middle of the SEGMENT, not the middle of its image. Those are different
+            // points under a projection that divides, by 28 pixels at an ordinary three-quarter
+            // view against a badge 32 wide — see `PlaneFrame::along`.
+            let middle = plane.along(a, b, 0.5);
             // Square to the segment IN THE PLANE. The sign holds the side the badge has always
             // stood on: `square_to` agrees with the OTHER perpendicular, so it is turned back.
             let square = -plane.square_to(along / length, middle);

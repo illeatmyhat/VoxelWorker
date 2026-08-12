@@ -106,9 +106,12 @@ pub fn radius(
         pieces.push(Piece::Polyline(vec![center, touch - aim * ARROW_LENGTH]));
         pieces.push(arrowhead(touch, aim));
         // The leader runs from the center to a point on the curve, so both of its ends are points
-        // in the sketch and the line through them is already the image of a plane line — the value
-        // rides it exactly.
-        let seat = center + (touch - center) * 0.55;
+        // in the sketch and the line through them is the image of a plane line. That makes the
+        // value's DIRECTION exact, and it is not enough for the seat: a homography carries the
+        // line but not the fraction, so a screen lerp down it slides toward the near end. This is
+        // a default naming a place on the drawing — a bit past the middle of the leader — and a
+        // default that names a place has to name it in the plane.
+        let seat = plane.along(center, touch, 0.55);
         let reading = super::upright_direction(touch - center);
         Label {
             at: seat,

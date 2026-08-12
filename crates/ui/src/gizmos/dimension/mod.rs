@@ -312,6 +312,40 @@ impl PlaneFrame {
             .map_or(Vec2::X, |[across, _]| upright_direction(across))
     }
 
+    /// The image of the point a FRACTION of the way along the plane segment between two screen
+    /// points.
+    ///
+    /// Not `from.lerp(to, fraction)`. A homography carries the segment to the segment, so both
+    /// answers lie on the same screen line and no amount of looking at the line will separate
+    /// them — but it does not carry the FRACTION, so a mark seated by a screen lerp slides toward
+    /// the near end of a receding run. The image of the middle sits at `w_far / (w_near + w_far)`
+    /// of the screen chord, and the two only agree when the ends are the same depth.
+    ///
+    /// That last clause is why this is a bug a drawing shows only SOMETIMES: the drift is a
+    /// function of the run's BEARING, so one sketch seats some of its marks right and some of them
+    /// wrong, and the wrong ones move as the camera turns. Measured on a 45 degree view of a plane
+    /// two units across at 1280 by 800: nothing at all along the view-symmetric diagonal, 28 pixels
+    /// across a 382-pixel span at an ordinary three-quarter, 78 pixels close in. A constraint badge
+    /// is 32 pixels wide.
+    ///
+    /// Falls back to the screen lerp where the frame declines — a plane seen edge-on, or a station
+    /// that lands behind the camera — which is the seat the drawing had before the frame existed.
+    #[must_use]
+    pub fn along(&self, from: Pos2, to: Pos2, fraction: f32) -> Pos2 {
+        let screens_own = || from + (to - from) * fraction;
+        let (Some(near), Some(far)) = (self.plane_of(from), self.plane_of(to)) else {
+            return screens_own();
+        };
+        let fraction = f64::from(fraction);
+        let station = [
+            (far[0] - near[0]).mul_add(fraction, near[0]),
+            (far[1] - near[1]).mul_add(fraction, near[1]),
+        ];
+        self.at(station)
+            .filter(|seat| seat.is_finite())
+            .unwrap_or_else(screens_own)
+    }
+
     /// The plane direction SQUARE to `along` at `at`, scaled so `along` stays one unit long.
     ///
     /// Two things at once, and both are the complaint. **The direction** is not `perp(along)`: a

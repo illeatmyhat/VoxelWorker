@@ -1458,6 +1458,69 @@ fn a_plane_from_behind() -> PlaneFrame {
         .expect("a mirrored frame is still invertible")
 }
 
+/// **A station along a run is a fraction of the PLANE's segment, not of the screen's chord.**
+///
+/// A homography carries the segment to the segment, so both answers sit on the same screen line
+/// and the drawing gives nothing away by looking at it — what it does not carry is the FRACTION.
+/// Posed on the bearing where that bites, and it opens by proving the bearing bites: on the run
+/// square to this one there is no drift at all, and a test posed THERE would be green with the bug
+/// still in.
+///
+/// **Seen red** at 20.3 pixels with the seat taken as `from.lerp(to, 0.5)`.
+#[test]
+fn a_station_along_a_run_is_a_fraction_of_the_plane_not_of_the_chord() {
+    let frame = a_three_quarter_plane();
+    let at = |plane: [f64; 2]| frame.at(plane).expect("the fixture stands in front");
+
+    // The bearing this is posed on, and the one it is NOT posed on. The frame's `w` runs
+    // `0.0006u + 0.0002v + 1`, so a run with `dv = -3 du` keeps both ends at one depth and the two
+    // seats agree there however wrong the code is.
+    let (near, far) = (at([-80.0, -60.0]), at([80.0, 60.0]));
+    let level = (at([-20.0, 60.0]), at([20.0, -60.0]));
+    // Both guards name the chord against the KNOWN seat and never against the code under test,
+    // or a `along` that had simply returned the chord would satisfy them by agreeing with itself.
+    assert!(
+        (level.0.lerp(level.1, 0.5) - at([0.0, 0.0])).length() < 0.01,
+        "a run whose ends are the same depth has no drift, so it can prove nothing"
+    );
+    assert!(
+        (near.lerp(far, 0.5) - at([0.0, 0.0])).length() > 15.0,
+        "this run must be one the screen chord gets measurably wrong"
+    );
+
+    // The claim: the seat is the image of the plane's own middle.
+    assert!(
+        (frame.along(near, far, 0.5) - at([0.0, 0.0])).length() < 0.01,
+        "the middle of the run seats at the image of the middle of the plane segment"
+    );
+    // And not only at the middle — the fraction is the plane's at every station.
+    for (fraction, plane) in [(0.25_f32, [-40.0, -30.0]), (0.55, [8.0, 6.0])] {
+        assert!(
+            (frame.along(near, far, fraction) - at(plane)).length() < 0.01,
+            "the station at {fraction} is the image of the plane point there"
+        );
+    }
+}
+
+/// **Where the frame cannot answer, a station is the screen chord's — the seat drawings had.**
+///
+/// Two ways it declines, and they are different code paths: a frame that is the screen's own has
+/// nothing to correct, and a frame whose stations land behind the camera has nothing to report.
+#[test]
+fn a_station_falls_back_to_the_chord_where_the_frame_declines() {
+    let (near, far) = (Pos2::new(120.0, 400.0), Pos2::new(680.0, 260.0));
+
+    let facing = PlaneFrame::facing();
+    assert_eq!(facing.along(near, far, 0.5), near.lerp(far, 0.5));
+    assert_eq!(facing.along(near, far, 0.25), near.lerp(far, 0.25));
+
+    // Every station is at negative `w`, which is the frame's in-front-of-the-camera test failing.
+    let behind =
+        PlaneFrame::from_plane_to_screen([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, -1.0]])
+            .expect("invertible, merely facing away");
+    assert_eq!(behind.along(near, far, 0.5), near.lerp(far, 0.5));
+}
+
 /// A screen direction read back into the plane's OWN coordinates at `at`, which is where a claim
 /// about a right angle in the plane can actually be tested.
 fn in_the_plane_at(frame: PlaneFrame, at: Pos2, screen: Vec2) -> Vec2 {
