@@ -1802,6 +1802,28 @@ pub struct Sketch {
 /// [`Sketch::point_draws_at_rest`].
 const STACKED_DOT_TOLERANCE: f64 = 1.0e-3;
 
+/// How square a corner has to be before its reading says nothing about which way it turned.
+///
+/// A joint's reading is a cosine, so a near-right-angle sits near zero and its SIGN is noise the
+/// solve's own tolerance can flip. A joint that cannot say whether the seam changed it is one the
+/// flip declines to carry.
+const A_CORNER_TOO_SQUARE_TO_READ: f64 = 0.1;
+
+/// See [`Sketch::arcs_this_frame_turns_over`].
+struct TheArcsThisFrameTurnsOver {
+    /// Arcs whose own two ends crossed, measured by the gesture's carry.
+    crossing: Vec<EntityId>,
+    /// Arcs a neighbour's flip carried with it, to keep a joint reading what it read.
+    carried: Vec<EntityId>,
+}
+
+impl TheArcsThisFrameTurnsOver {
+    /// Every arc the frame turns over, whichever account it is on.
+    fn every_one(&self) -> impl Iterator<Item = EntityId> + '_ {
+        self.crossing.iter().chain(self.carried.iter()).copied()
+    }
+}
+
 impl Sketch {
     fn incoming_tangent_at(
         &self,
@@ -4018,6 +4040,33 @@ impl Sketch {
             .collect()
     }
 
+    /// Every curve with an END standing on this point.
+    ///
+    /// A center is not an end and a circle has none, so the hub three arcs turn about is not a
+    /// joint: what meets at a joint is the DRAWN pieces, and only an end of one stands there.
+    fn curve_ends_standing_on(&self, point: EntityId) -> Vec<SketchCurve> {
+        let segments = self
+            .segments
+            .iter()
+            .filter(|segment| segment.from == point || segment.to == point)
+            .map(|segment| SketchCurve::Segment(segment.id));
+        let arcs = self
+            .arcs
+            .iter()
+            .filter(|arc| arc.from == point || arc.to == point)
+            .map(|arc| SketchCurve::Arc(arc.id));
+        let splines = self
+            .splines
+            .iter()
+            .filter(|spline| {
+                !spline.closed
+                    && (spline.points.first() == Some(&point)
+                        || spline.points.last() == Some(&point))
+            })
+            .map(|spline| SketchCurve::Spline(spline.id));
+        segments.chain(arcs).chain(splines).collect()
+    }
+
     /// Every point a relation reaches, whether it names the point itself or the curve it stands on.
     fn points_named_by(&self, constraint: &Constraint) -> Vec<EntityId> {
         constraint
@@ -4193,9 +4242,133 @@ impl Sketch {
             .collect()
     }
 
+    /// Which arcs this frame turns round the other way, and on whose account.
+    ///
+    /// Kept apart because the two are answered by different things and told to the gesture
+    /// differently: a CROSSING is the carry's own arithmetic catching up with geometry it already
+    /// counted, while a CARRIED arc is turned over by a neighbour without having swept anywhere, so
+    /// its carry has to be told or the next frame reads the flip as a crossing and undoes it. That
+    /// is not a hypothetical: left untold, the propagated rail and both caps came back as crossings
+    /// on the very next frame and the slot oscillated.
+    /// How the two arcs meeting at a point leave it: minus one where their drawn pieces continue
+    /// each other, plus one at a cusp, and the cosine of the corner between them anywhere else.
+    ///
+    /// Read from coordinates the caller supplies and from the endpoint order as it will stand once
+    /// `flipping` is applied, so the same question can be put to the drawing as it stands and to
+    /// the frame about to replace it. The tangent itself is
+    /// [`parametric::sketch::direction_at`], the one statement of where a circular curve runs.
+    fn joint_reading(
+        &self,
+        shared: EntityId,
+        joined: [EntityId; 2],
+        at: &dyn Fn(EntityId) -> Option<[f64; 2]>,
+        flipping: &[EntityId],
+    ) -> Option<f64> {
+        let standing = at(shared)?;
+        let leaving = |id: EntityId| -> Option<[f64; 2]> {
+            let arc = self.arcs.iter().find(|arc| arc.id == id)?;
+            let center = at(arc.center)?;
+            let turn = parametric::sketch::direction_at(
+                parametric::sketch::CurveGeometry::Circular(parametric::sketch::CircularCurve {
+                    center,
+                    radius: (standing[0] - center[0]).hypot(standing[1] - center[1]),
+                    arc: None,
+                }),
+                standing,
+            );
+            let reach = turn[0].hypot(turn[1]);
+            if reach <= f64::EPSILON {
+                return None;
+            }
+            let opens = if flipping.contains(&id) {
+                arc.to
+            } else {
+                arc.from
+            };
+            let along = if opens == shared { 1.0 } else { -1.0 };
+            Some([along * turn[0] / reach, along * turn[1] / reach])
+        };
+        let (one, other) = (leaving(joined[0])?, leaving(joined[1])?);
+        Some(one[0] * other[0] + one[1] * other[1])
+    }
+
+    /// The arcs a flip carries with it, because a joint they stand at would otherwise read
+    /// differently on the far side of the seam.
+    ///
+    /// A cap on an arc slot is the case. Its own two ends stay diametrically opposite about its own
+    /// center, so its sweep is a steady half turn and crossing parity, which measures each arc from
+    /// its OWN ends, is blind to it. But which HALF of its circle the cap draws is not a fact about
+    /// the cap: it is the half away from the body, and at the seam the body moves to the other
+    /// side. Left behind, the caps bulge inward and the profile collapses. Measured on a 30 degree
+    /// slot of half-width 2 about an r8 spine: an area of 4.19 against the 29.32 the same slot
+    /// encloses at rest.
+    ///
+    /// The rule is PRESERVATION, not opposition. A smooth joint reads minus one and a cusp reads
+    /// plus one, both authored, and demanding either would flip a neighbour that was never wrong.
+    /// What the seam may not do is CHANGE the reading: the crossing arc's own flip negates it, so
+    /// the neighbour flips to negate it back. A corner too square to read is left alone, and so is
+    /// a joint where anything other than exactly two arcs meets, because propagation carries an
+    /// inversion along a CHAIN and a three-way point has no unique continuation. Each arc is
+    /// reached at most once, so a loop whose inversion cannot close leaves one joint standing
+    /// rather than oscillating.
+    fn arcs_this_frame_turns_over(
+        &self,
+        crossing: Vec<EntityId>,
+        at: &dyn Fn(EntityId) -> Option<[f64; 2]>,
+    ) -> TheArcsThisFrameTurnsOver {
+        let mut flipping = crossing.clone();
+        let mut asked = 0;
+        while asked < flipping.len() {
+            let id = flipping[asked];
+            asked += 1;
+            let Some(ends) = self
+                .arcs
+                .iter()
+                .find(|arc| arc.id == id)
+                .map(|arc| [arc.from, arc.to])
+            else {
+                continue;
+            };
+            for shared in ends {
+                let [SketchCurve::Arc(one), SketchCurve::Arc(other)] =
+                    self.curve_ends_standing_on(shared)[..]
+                else {
+                    continue;
+                };
+                let Some(neighbour) = [one, other].into_iter().find(|held| *held != id) else {
+                    continue;
+                };
+                if flipping.contains(&neighbour) {
+                    continue;
+                }
+                let joined = [id, neighbour];
+                let (Some(stood), Some(standing)) = (
+                    self.joint_reading(shared, joined, &|point| self.point_in_plane(point), &[]),
+                    self.joint_reading(shared, joined, at, &flipping),
+                ) else {
+                    continue;
+                };
+                if stood.abs() < A_CORNER_TOO_SQUARE_TO_READ
+                    || standing.abs() < A_CORNER_TOO_SQUARE_TO_READ
+                {
+                    continue;
+                }
+                if stood * standing < 0.0 {
+                    flipping.push(neighbour);
+                }
+            }
+        }
+        flipping.retain(|id| !crossing.contains(id));
+        TheArcsThisFrameTurnsOver {
+            crossing,
+            carried: flipping,
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn settle_again_the_other_way_round(
         &mut self,
-        crossing: &[EntityId],
+        turning: &TheArcsThisFrameTurnsOver,
         first: Option<constraint::ApplyPlan>,
         hands: &[Hand],
         was: &[(EntityId, [f64; 2])],
@@ -4204,8 +4377,8 @@ impl Sketch {
         carries: &mut [ArcTurnUnderAGesture],
     ) -> Result<DragAnswer, SketchEvaluationError> {
         let mut relabelled = self.clone();
-        for id in crossing {
-            relabelled.reverse_arc(*id);
+        for id in turning.every_one() {
+            relabelled.reverse_arc(id);
         }
         let answered =
             relabelled.settle_under_the_hands(hands, was, context, snap_reach, &mut [])?;
@@ -4221,6 +4394,9 @@ impl Sketch {
             );
             *self = relabelled;
             for carry in carries.iter_mut() {
+                if turning.carried.contains(&carry.arc) {
+                    carry.carried_over_by_a_neighbour();
+                }
                 carry.commit(self);
             }
         }
@@ -4333,23 +4509,23 @@ impl Sketch {
         };
         // Which way round each arc is DRAWN is settled BEFORE the frame is validated, because one
         // validator reads it — see [`settle_again_the_other_way_round`](Self::settle_again_the_other_way_round).
+        let settled_at = |id: EntityId| {
+            prepared
+                .point(id)
+                .and_then(|point| settled.solution.position(point))
+                .or_else(|| self.point_in_plane(id))
+        };
         let crossing: Vec<EntityId> = carries
             .iter()
-            .filter_map(|carry| {
-                carry.crossing_under(&self.arcs, &|id| {
-                    prepared
-                        .point(id)
-                        .and_then(|point| settled.solution.position(point))
-                        .or_else(|| self.point_in_plane(id))
-                })
-            })
+            .filter_map(|carry| carry.crossing_under(&self.arcs, &settled_at))
             .collect();
         if !crossing.is_empty() {
+            let turning = self.arcs_this_frame_turns_over(crossing, &settled_at);
             let first = prepared
                 .plan_apply(&self.points, &self.circles, &settled.solution)
                 .ok();
             return self.settle_again_the_other_way_round(
-                &crossing, first, hands, &was, context, snap_reach, carries,
+                &turning, first, hands, &was, context, snap_reach, carries,
             );
         }
         validate_prepared_tangent_contacts(&prepared, &settled.solution)?;
@@ -6954,6 +7130,11 @@ pub struct ArcTurnUnderAGesture {
     /// past a whole turn and on past none. Winding an arc up toward a full circle is a real gesture
     /// and the count has to carry it.
     carried_degrees: f64,
+    /// Whether a NEIGHBOUR has turned this arc over. Such a flip sweeps nothing, so the carry
+    /// cannot see it, and parity alone would report the arc as crossing on the next frame and turn
+    /// it straight back. Held as its own fact rather than folded into the carry as a lap nobody
+    /// turned.
+    carried_over: bool,
 }
 
 impl ArcTurnUnderAGesture {
@@ -6981,6 +7162,7 @@ impl ArcTurnUnderAGesture {
             first: stood.from,
             second: stood.to,
             carried_degrees: sketch.drawn_sweep_between(stood.center, stood.from, stood.to)?,
+            carried_over: false,
         })
     }
 
@@ -6998,11 +7180,18 @@ impl ArcTurnUnderAGesture {
     /// Which end the arc should be drawn FROM at a given carry. Parity, not sign: the ends meet
     /// whenever the carry passes a multiple of a whole circle.
     fn leads_at(&self, carried: f64) -> EntityId {
-        if ((carried / 360.0).floor() % 2.0).abs() > 0.5 {
+        let odd = ((carried / 360.0).floor() % 2.0).abs() > 0.5;
+        if odd ^ self.carried_over {
             self.second
         } else {
             self.first
         }
+    }
+
+    /// Record that a neighbour's flip turned this arc over, so parity keeps agreeing with the
+    /// drawing. Called on WRITTEN frames only, alongside [`commit`](Self::commit).
+    fn carried_over_by_a_neighbour(&mut self) {
+        self.carried_over = !self.carried_over;
     }
 
     /// This arc's id, if the frame `at` describes turns it round the other way.

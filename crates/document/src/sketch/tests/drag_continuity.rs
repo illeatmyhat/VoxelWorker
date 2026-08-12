@@ -370,6 +370,94 @@ fn an_arc_slots_rails_turn_with_the_spine_they_are_drawn_from() {
     }
 }
 
+/// **A cap stays on the far side of the body it closes, across both seams.**
+///
+/// Crossing parity measures each arc from its OWN two ends, which is what lets a slot's rails turn
+/// with the spine that names them. A cap is invisible to it: its ends stay diametrically opposite
+/// about its own center, so its sweep is a steady half turn and it crosses nothing, ever. But which
+/// HALF of its circle it draws is a fact about the BODY, and at the seam the body moves to the
+/// other side of both caps. Measured before the fix on a 30 degree slot of half-width 2 about an r8
+/// spine: the caps bulged inward and the profile enclosed 4.19 where the same slot at rest encloses
+/// 29.32.
+///
+/// Two witnesses, because area alone is blind to errors that cancel. The AREA is the integral one:
+/// the body is an annular sector, so the area moves with the sweep and the honest claim is that it
+/// moves no faster than the hand does. Each JOINT'S READING is the differential one: how the two
+/// drawn pieces leave a shared point is a number the drawing already holds, and a seam is not
+/// allowed to change it.
+#[test]
+fn an_arc_slots_caps_stay_on_the_far_side_of_the_body_they_close() {
+    use crate::sketch::SketchCurve;
+    // The widest the area may move in one step: the body is an annular sector between the rails,
+    // and a stood seam frame puts two steps of hand between two written frames.
+    let step = 15.0_f64;
+    let sector = std::f64::consts::PI * (44.0 * 44.0 - 36.0 * 36.0) / 360.0;
+    let widest = 2.0 * step * sector + 5.0;
+    for way in [-1.0_f64, 1.0] {
+        let mut sketch = curved_slot();
+        let held = spine_end(&sketch, [0.0, 40.0]);
+        let mut turns = crate::sketch::ArcTurnUnderAGesture::opening_over(&sketch);
+        let joints = |sketch: &Sketch| -> Vec<(EntityId, f64)> {
+            sketch
+                .points()
+                .iter()
+                .filter_map(|point| {
+                    let [SketchCurve::Arc(one), SketchCurve::Arc(other)] =
+                        sketch.curve_ends_standing_on(point.id)[..]
+                    else {
+                        return None;
+                    };
+                    sketch
+                        .joint_reading(point.id, [one, other], &|id| sketch.point_in_plane(id), &[])
+                        .map(|reading| (point.id, reading))
+                })
+                .collect()
+        };
+        let enclosed =
+            |sketch: &Sketch| -> f64 { sketch.faces(ctx(16)).iter().map(|face| face.area).sum() };
+        let mut drawn = enclosed(&sketch);
+        let mut read = joints(&sketch);
+        assert_eq!(read.len(), 4, "an arc slot has four joints, two per cap");
+        for taken in 1..=42 {
+            let asked = 90.0 + way * step * f64::from(taken);
+            let hand = [
+                40.0 * asked.to_radians().cos(),
+                40.0 * asked.to_radians().sin(),
+            ];
+            let moved = sketch
+                .move_point_reporting_its_snap(
+                    held,
+                    SketchPoint::from_continuous(hand[0], hand[1]),
+                    ctx(16),
+                    SnapReach::UNBOUNDED,
+                    &mut turns,
+                )
+                .expect("evaluation context")
+                .moved;
+            if !moved {
+                continue;
+            }
+            let now = enclosed(&sketch);
+            assert!(
+                (now - drawn).abs() < widest,
+                "at {asked} degrees the slot enclosed {now} where it enclosed {drawn} one step ago"
+            );
+            drawn = now;
+            let standing = joints(&sketch);
+            for (point, reading) in &standing {
+                let Some((_, was)) = read.iter().find(|(named, _)| named == point) else {
+                    panic!("at {asked} degrees the joint at {point:?} stopped being a joint");
+                };
+                assert!(
+                    (reading - was).abs() < 0.05,
+                    "at {asked} degrees the joint at {point:?} reads {reading} where it read {was}"
+                );
+            }
+            read = standing;
+        }
+    }
+}
+
 /// **A contact is judged against the piece the frame is about to draw, not the one it inherited.**
 ///
 /// Which way round an arc is drawn is decided from the settled solution, because an arc a gesture
