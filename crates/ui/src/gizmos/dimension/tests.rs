@@ -1521,6 +1521,65 @@ fn a_station_falls_back_to_the_chord_where_the_frame_declines() {
     assert_eq!(behind.along(near, far, 0.5), near.lerp(far, 0.5));
 }
 
+/// The owner's own repro camera, zoomed past the cliff: a `PlaneAxis::Z` sketch seen from exactly
+/// the equator (`orbit_phi` = pi/2), orthographic, at `orbit_distance` 5000.
+///
+/// One plane axis images at 0.24 pixels per plane unit and the other at 8.5e-8 — a collapse of
+/// three million to one, which is a plane drawn as a LINE. Struck from the measured values rather
+/// than invented, so the numbers below are the shell's, not a fixture's taste.
+fn a_plane_seen_edge_on() -> PlaneFrame {
+    PlaneFrame::from_plane_to_screen([
+        [0.244_524, 4.3e-8, 300.0],
+        [0.0, 7.3e-8, 200.0],
+        [0.0, 0.0, 1.0],
+    ])
+    .expect("a collapsed plane is still invertible")
+}
+
+/// **A plane drawn as a line has a SHORT square, and the frame must say so rather than reaching
+/// for the screen's.**
+///
+/// This is the whole eighth report in one assertion. Every decline inside the frame hands back
+/// `screens_own` — the screen's own perpendicular AT FULL LENGTH — and the tests that decline are
+/// absolute thresholds on quantities measured in PIXELS PER PLANE UNIT, which shrink as the author
+/// zooms out. So a figure that is lying correctly in the plane at one zoom stands straight up off
+/// it at the next, with a hard pop at the crossing. A collapsed side is not an error to be papered
+/// over; it is what a figure in the plane LOOKS like edge-on, and its length is the answer.
+///
+/// **Seen red** at length 1.0 — a full-length screen perpendicular where the honest answer is
+/// 3.5e-7.
+#[test]
+fn a_plane_seen_edge_on_squares_short_rather_than_reaching_for_the_screens() {
+    let frame = a_plane_seen_edge_on();
+    let at = Pos2::new(300.0, 200.0);
+
+    // Discriminability, named from the fixture and never from the code under test: the second
+    // plane axis really has collapsed here, so the only honest square is microscopic.
+    let [across, down] = frame
+        .axes_at(at)
+        .expect("a collapsed plane still has a Jacobian");
+    assert!(
+        across.length() > 0.2 && down.length() < 1e-6,
+        "the fixture must actually be collapsed: across {}, down {}",
+        across.length(),
+        down.length()
+    );
+
+    let square = frame.square_to(Vec2::X, at);
+    assert!(
+        square.length() < 0.01,
+        "a collapsed plane's square must be short, got {}",
+        square.length()
+    );
+
+    // And the parity that keeps the rest of the drawing honest: a healthy frame is untouched.
+    let healthy = a_three_quarter_plane();
+    assert!(
+        healthy.square_to(Vec2::X, Pos2::new(300.0, 200.0)).length() > 0.1,
+        "a plane that is not collapsed still squares at a usable length"
+    );
+}
+
 /// A screen direction read back into the plane's OWN coordinates at `at`, which is where a claim
 /// about a right angle in the plane can actually be tested.
 fn in_the_plane_at(frame: PlaneFrame, at: Pos2, screen: Vec2) -> Vec2 {

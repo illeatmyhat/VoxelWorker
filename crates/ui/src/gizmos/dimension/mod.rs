@@ -296,9 +296,19 @@ impl PlaneFrame {
             )
         };
         let axes = [column(0), column(1)];
-        axes.iter()
-            .all(|axis| axis.is_finite() && axis.length() > f32::EPSILON)
-            .then_some(axes)
+        // NAMED AND LEFT: the plane coordinate this was evaluated at comes back through the
+        // inverse, which is itself ill-conditioned on a near-singular frame — under a projection
+        // that divides, the columns are then read at the wrong place. The window where that bites
+        // is the window where everything it could mis-draw has already collapsed, so fixing it
+        // here would be fixing an unmeasured bug behind a measured one. Under an orthographic
+        // projection the Jacobian is constant and the wrong place costs nothing.
+        //
+        // Finite, and nothing else. A SHORT column is not a failure to answer — it is the answer:
+        // the plane reaches almost nowhere in that direction, which is what a plane drawn nearly
+        // edge-on does. Declining on shortness meant declining on a quantity measured in pixels
+        // per plane unit, so the frame stopped answering once the author zoomed out far enough,
+        // and every caller's decline is the SCREEN's reading at full length.
+        axes.iter().all(|axis| axis.is_finite()).then_some(axes)
     }
 
     /// The plane's own +X where it passes through `at`, as a unit screen direction, folded upright.
@@ -377,12 +387,16 @@ impl PlaneFrame {
         let Some([reading, lifting]) = stepped_in_plane([across, down], along) else {
             return screens_own;
         };
+        // Only a frame that cannot answer at all falls back to the screen's. A SHORT square is
+        // the answer for a plane seen nearly edge-on, and handing back a unit-length screen
+        // perpendicular there is the frame telling a figure to stand up out of the plane it is
+        // lying in — which is the whole eighth report.
         let pace = (across * reading + down * lifting).length();
-        if pace <= f32::EPSILON {
+        if !pace.is_finite() || pace <= 0.0 {
             return screens_own;
         }
         let square = (across * -lifting + down * reading) / pace;
-        if !square.is_finite() || square.length() <= f32::EPSILON {
+        if !square.is_finite() {
             return screens_own;
         }
         if square.dot(screens_own) >= 0.0 {
@@ -443,14 +457,24 @@ impl PlaneFrame {
 /// a question about the plane's own metric is answered by carrying the screen direction back into
 /// the plane, doing the plane geometry THERE, and carrying the answer out again.
 fn stepped_in_plane([across, down]: [Vec2; 2], direction: Vec2) -> Option<[f32; 2]> {
+    // The adjugate's two rows, WITHOUT the divide by the determinant that would turn them into
+    // the plane coordinates themselves. The step is normalized on the next line, so that divide
+    // cancels out of the answer completely — everything except its SIGN, which is folded back in
+    // at the end. Dividing first would blow up on a plane drawn as a line and then be undone, and
+    // the guard that used to stop it blowing up was a threshold on pixels per plane unit: the
+    // reason the whole reading was a function of how far the author had zoomed out.
     let spread = across.x.mul_add(down.y, -(across.y * down.x));
-    if spread.abs() <= f32::EPSILON {
+    let reading = direction.x.mul_add(down.y, -(direction.y * down.x));
+    let lifting = across.x.mul_add(direction.y, -(across.y * direction.x));
+    let step = reading.hypot(lifting);
+    if !step.is_finite() || step <= 0.0 {
         return None;
     }
-    let reading = direction.x.mul_add(down.y, -(direction.y * down.x)) / spread;
-    let lifting = across.x.mul_add(direction.y, -(across.y * direction.x)) / spread;
-    let step = reading.hypot(lifting);
-    (step > f32::EPSILON).then(|| [reading / step, lifting / step])
+    // Near collapse the determinant is f32 noise, so this reads the NOISE's sign and the answer
+    // can flip between frames. Self-limiting rather than a flicker to chase: what flips is a
+    // vector whose length has collapsed with the plane, so the flip is ratio-scale invisible.
+    let turn = if spread < 0.0 { -1.0 } else { 1.0 };
+    Some([turn * reading / step, turn * lifting / step])
 }
 
 /// The chrome weight: dimension line, extension line and leader all share it, per ISO 128-20.
