@@ -182,27 +182,185 @@ pub use radius::radius;
 
 pub use span::axis_span;
 
-/// How the sketch plane runs on screen, as the one 3x3 that says it exactly.
+/// Where the sketch plane's own coordinates land on screen, as the one 3x3 that says it exactly.
 ///
 /// A sketch plane reaches the viewport by an affine into the world, a matrix into clip space and a
 /// divide into pixels, and the composition of those on a PLANE is a homography — three by three, no
-/// approximation anywhere in it. Carrying that matrix is what lets a dimension ask two questions no
-/// pair of screen directions can answer: which way a plane direction runs AT A GIVEN PLACE, since a
-/// projection that divides answers differently at every point, and HOW FAR a plane unit reaches
-/// there, which is the foreshortening that makes text look like it is lying on the plane rather
-/// than merely leaning.
+/// approximation anywhere in it.
 ///
-/// The inverse is kept beside it, so a mark standing at a bare screen point — a leader's jog, a
-/// value's standoff — is answered as exactly as one sitting on the geometry. There is no nearest-
-/// on-plane-point approximation and no species distinction: every pixel in the viewport has a plane
-/// coordinate under it.
+/// **Forward only, and therefore always constructible.** A plane seen exactly edge-on images to a
+/// LINE: the map is rank one and has no inverse, and that is not a failure of anything — projecting
+/// a point through it still answers, exactly, which is all a mark laid out in plane coordinates
+/// ever asks. The sketch curves have always used this much and no more, which is why they draw
+/// correctly at every camera; [`PlaneFrame`] is this plus the inverse, for the marks that genuinely
+/// need to ask which plane coordinate is under a pixel.
+///
+/// Every reading here takes a PLANE coordinate. That is the difference that matters: the same
+/// question asked at a screen point has to invert first, and at the one camera this type exists for
+/// there is nothing to invert.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct PlaneFrame {
+pub struct PlaneMap {
     /// Plane coordinates to screen points, homogeneous. The last row is the clip `w`, so its sign
     /// is the in-front-of-the-camera test and it is never rescaled.
     to_screen: [[f64; 3]; 3],
+}
+
+impl PlaneMap {
+    /// The map for a given plane-to-screen homography.
+    ///
+    /// Rows map `(u, v, 1)` to a homogeneous screen point. The last row must be the projection's
+    /// own `w` UNSCALED, because its sign is what [`PlaneMap::at`] culls on. Singular is allowed and
+    /// means the plane draws as a line.
+    #[must_use]
+    pub const fn new(to_screen: [[f64; 3]; 3]) -> Self {
+        Self { to_screen }
+    }
+
+    /// A plane facing the camera, where the plane's axes are the screen's own.
+    ///
+    /// The flat page — what a drawing was laid out in before any of this existed, and what every
+    /// projected view approaches as it comes square. A legitimate thing for a TEST to pose, and not
+    /// a legitimate thing to fall back to: see [`PlaneFrame::facing`].
+    #[must_use]
+    pub const fn flat() -> Self {
+        Self::new([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
+    }
+
+    /// Where a plane coordinate lands on screen — `None` behind the camera.
+    #[must_use]
+    pub fn at(&self, plane: [f64; 2]) -> Option<Pos2> {
+        let [x, y, w] = carried(&self.to_screen, [plane[0], plane[1], 1.0]);
+        (w > 0.0 && w.is_finite()).then(|| Pos2::new((x / w) as f32, (y / w) as f32))
+    }
+
+    /// What the plane's two unit steps reach on screen at a PLANE coordinate — the projection's
+    /// Jacobian there, in points per plane unit.
+    ///
+    /// These are the columns everything else is built out of. Their DIRECTIONS give the plane's two
+    /// families of lines as the screen bends them; their LENGTHS give the foreshortening, which no
+    /// construction from vanishing points can recover.
+    ///
+    /// Analytic in the forward map alone. A rank-one map answers here — with one column collapsed
+    /// to nothing, which is the honest reading of a plane drawn as a line.
+    #[must_use]
+    pub fn axes_at_plane(&self, plane: [f64; 2]) -> Option<[Vec2; 2]> {
+        let [x, y, w] = carried(&self.to_screen, [plane[0], plane[1], 1.0]);
+        if w.abs() <= f64::EPSILON || !w.is_finite() {
+            return None;
+        }
+        let (x, y) = (x / w, y / w);
+        let column = |index: usize| {
+            Vec2::new(
+                ((self.to_screen[0][index] - x * self.to_screen[2][index]) / w) as f32,
+                ((self.to_screen[1][index] - y * self.to_screen[2][index]) / w) as f32,
+            )
+        };
+        let axes = [column(0), column(1)];
+        // Finite, and nothing else. A SHORT column is not a failure to answer — it is the answer:
+        // the plane reaches almost nowhere in that direction, which is what a plane drawn nearly
+        // edge-on does. Declining on shortness meant declining on a quantity measured in points
+        // per plane unit, so the map stopped answering once the author zoomed out far enough, and
+        // every caller's decline is the SCREEN's reading at full length.
+        axes.iter().all(|axis| axis.is_finite()).then_some(axes)
+    }
+
+    /// The FURTHEST any unit step in the plane reaches on screen at a PLANE coordinate, in points
+    /// per plane unit.
+    ///
+    /// The scale a mark that must hold a constant screen size is sized against: divide the size it
+    /// wants in points by this and the answer is how big to draw it IN PLANE UNITS. Every other
+    /// direction then images shorter, so the mark's largest extent on screen is exactly the size
+    /// asked for and it can never overshoot — where normalizing on one named axis blows up the
+    /// moment that axis is the collapsed one.
+    ///
+    /// A MAGNITUDE and not a direction, which is the one class of reading that stays honest as a
+    /// plane goes edge-on: magnitudes collapse toward zero truthfully, while the direction of a
+    /// vector with no length left is noise. Nonzero on a plane imaged to a line — a line still has
+    /// a length — and zero only where the plane images to a single point.
+    #[must_use]
+    pub fn largest_reach_at_plane(&self, plane: [f64; 2]) -> f32 {
+        self.reaches_at_plane(plane)
+            .map_or(0.0, |[larger, _]| larger)
+    }
+
+    /// How far OPEN the plane stands to the camera where it passes through a PLANE coordinate: one
+    /// when its two unit steps image equally long and square to each other, zero when the plane has
+    /// collapsed to a line and there is no second direction left.
+    ///
+    /// The inverse condition number of the Jacobian — its smaller singular value over its larger —
+    /// which is the one reading of a projected plane's health that is DIMENSIONLESS. Every guard in
+    /// this drawing that has ever been wrong about a degenerate plane was wrong because it measured
+    /// something with units: a length in points per plane unit, or a determinant in the square of
+    /// that, both of which shrink as the author zooms out and neither of which says anything about
+    /// the plane. This does not move when the camera pulls back.
+    ///
+    /// Not the same as the sine between the two projected DIRECTIONS, and the difference is the
+    /// eighth report: an axis can collapse in LENGTH while its direction still reads square, and at
+    /// that point the direction being read is the direction of a vector too short to have one.
+    #[must_use]
+    pub fn opening_at_plane(&self, plane: [f64; 2]) -> f32 {
+        let Some([larger, smaller]) = self.reaches_at_plane(plane) else {
+            return 0.0;
+        };
+        if larger <= 0.0 {
+            return 0.0;
+        }
+        let opening = smaller / larger;
+        if opening.is_finite() {
+            opening.clamp(0.0, 1.0)
+        } else {
+            0.0
+        }
+    }
+
+    /// The Jacobian's two singular values at a PLANE coordinate, largest first — how far the
+    /// plane's best and worst unit steps reach on screen, in points per plane unit.
+    ///
+    /// `sigma_1 * sigma_2` is `|det|` and `sigma_1^2 + sigma_2^2` is the squared Frobenius norm, so
+    /// both fall out of one quadratic and neither needs an eigen decomposition.
+    fn reaches_at_plane(&self, plane: [f64; 2]) -> Option<[f32; 2]> {
+        let [across, down] = self.axes_at_plane(plane)?;
+        let determinant = across.x.mul_add(down.y, -(across.y * down.x)).abs();
+        let frobenius = across.length_sq() + down.length_sq();
+        let gap = frobenius.mul_add(frobenius, -(4.0 * determinant * determinant));
+        let larger = ((frobenius + gap.max(0.0).sqrt()) / 2.0).max(0.0).sqrt();
+        if !larger.is_finite() || larger <= 0.0 {
+            return None;
+        }
+        let smaller = determinant / larger;
+        smaller.is_finite().then_some([larger, smaller])
+    }
+}
+
+/// A [`PlaneMap`] that can also be run BACKWARDS: which plane coordinate lies under a pixel.
+///
+/// Carrying the inverse is what lets a dimension answer for a mark standing at a bare screen point
+/// — a leader's jog, a value's standoff, a place with no sketch coordinate of its own. There is no
+/// nearest-on-plane-point approximation and no species distinction: every pixel in the viewport has
+/// a plane coordinate under it.
+///
+/// **Which is exactly why this type does not always exist.** A plane imaged to a line has a whole
+/// LINE of plane coordinates under each of its pixels, so "which one" is not expensive there, it is
+/// unanswerable, and [`PlaneFrame::from_plane_to_screen`] declines. A mark that must survive that
+/// camera takes the [`PlaneMap`] instead and never asks the question. Marks that genuinely need the
+/// inverse keep needing it, and by holding it as a separate type they cannot be handed a plane that
+/// has not got one.
+///
+/// Derefs to the forward map, so every reading that takes a plane coordinate is available here too.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PlaneFrame {
+    /// The forward homography.
+    map: PlaneMap,
     /// Its inverse, computed once at construction.
     to_plane: [[f64; 3]; 3],
+}
+
+impl std::ops::Deref for PlaneFrame {
+    type Target = PlaneMap;
+
+    fn deref(&self) -> &PlaneMap {
+        &self.map
+    }
 }
 
 /// Multiply a homogeneous 3-vector by a 3x3.
@@ -222,11 +380,16 @@ impl PlaneFrame {
     /// What a drawing on a flat page has always been laid out in, and what every projected view
     /// approaches as it comes square. Every layout rule in this module reduces to the one it had
     /// before any of this existed when handed this frame — that is the parity the tests hold.
+    ///
+    /// **For posing a flat page, not for standing in when a real plane declines.** A mark that
+    /// substitutes this where its own plane could not answer is drawing the SCREEN's reading at
+    /// full length on a plane that reaches almost nowhere, which is the eighth report's whole
+    /// species. Where the frame declines, decline.
     #[must_use]
-    pub fn facing() -> Self {
+    pub const fn facing() -> Self {
         let identity = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
         Self {
-            to_screen: identity,
+            map: PlaneMap::new(identity),
             to_plane: identity,
         }
     }
@@ -234,7 +397,7 @@ impl PlaneFrame {
     /// The frame for a given plane-to-screen homography, or `None` if it is singular.
     ///
     /// Rows map `(u, v, 1)` to a homogeneous screen point. The last row must be the projection's
-    /// own `w` UNSCALED, because its sign is what [`PlaneFrame::at`] culls on.
+    /// own `w` UNSCALED, because its sign is what [`PlaneMap::at`] culls on.
     #[must_use]
     pub fn from_plane_to_screen(to_screen: [[f64; 3]; 3]) -> Option<Self> {
         let cofactor = |row: usize, column: usize| {
@@ -268,16 +431,16 @@ impl PlaneFrame {
             return None;
         }
         Some(Self {
-            to_screen,
+            map: PlaneMap::new(to_screen),
             to_plane,
         })
     }
 
-    /// Where a plane coordinate lands on screen — `None` behind the camera.
+    /// The forward map on its own, for a mark that is laid out in plane coordinates and must not
+    /// inherit a requirement it does not have.
     #[must_use]
-    pub fn at(&self, plane: [f64; 2]) -> Option<Pos2> {
-        let [x, y, w] = carried(&self.to_screen, [plane[0], plane[1], 1.0]);
-        (w > 0.0 && w.is_finite()).then(|| Pos2::new((x / w) as f32, (y / w) as f32))
+    pub const fn forward(&self) -> PlaneMap {
+        self.map
     }
 
     /// Which plane coordinate lies under a screen point — every pixel has one.
@@ -287,106 +450,26 @@ impl PlaneFrame {
         (w.abs() > f64::EPSILON && w.is_finite()).then(|| [u / w, v / w])
     }
 
-    /// What the plane's two unit steps reach on screen at `at` — the projection's Jacobian there,
-    /// in pixels per plane unit.
+    /// [`PlaneMap::axes_at_plane`] asked at a SCREEN point instead.
     ///
-    /// These are the columns everything else in the frame is built out of. Their DIRECTIONS give
-    /// the plane's two families of lines as the screen bends them; their LENGTHS give the
-    /// foreshortening, which no construction from vanishing points can recover.
+    /// NAMED AND LEFT: the plane coordinate this is evaluated at comes back through the inverse,
+    /// which is itself ill-conditioned on a near-singular frame — under a projection that divides,
+    /// the columns are then read at the wrong place. The window where that bites is the window
+    /// where everything it could mis-draw has already collapsed, so fixing it here would be fixing
+    /// an unmeasured bug behind a measured one. Under an orthographic projection the Jacobian is
+    /// constant and the wrong place costs nothing. A mark that cannot afford this asks the forward
+    /// map at a plane coordinate, which is what the constraint badges do.
     #[must_use]
     pub fn axes_at(&self, at: Pos2) -> Option<[Vec2; 2]> {
-        let plane = self.plane_of(at)?;
-        let [x, y, w] = carried(&self.to_screen, [plane[0], plane[1], 1.0]);
-        if w.abs() <= f64::EPSILON || !w.is_finite() {
-            return None;
-        }
-        let (x, y) = (x / w, y / w);
-        let column = |index: usize| {
-            Vec2::new(
-                ((self.to_screen[0][index] - x * self.to_screen[2][index]) / w) as f32,
-                ((self.to_screen[1][index] - y * self.to_screen[2][index]) / w) as f32,
-            )
-        };
-        let axes = [column(0), column(1)];
-        // NAMED AND LEFT: the plane coordinate this was evaluated at comes back through the
-        // inverse, which is itself ill-conditioned on a near-singular frame — under a projection
-        // that divides, the columns are then read at the wrong place. The window where that bites
-        // is the window where everything it could mis-draw has already collapsed, so fixing it
-        // here would be fixing an unmeasured bug behind a measured one. Under an orthographic
-        // projection the Jacobian is constant and the wrong place costs nothing.
-        //
-        // Finite, and nothing else. A SHORT column is not a failure to answer — it is the answer:
-        // the plane reaches almost nowhere in that direction, which is what a plane drawn nearly
-        // edge-on does. Declining on shortness meant declining on a quantity measured in pixels
-        // per plane unit, so the frame stopped answering once the author zoomed out far enough,
-        // and every caller's decline is the SCREEN's reading at full length.
-        axes.iter().all(|axis| axis.is_finite()).then_some(axes)
+        self.map.axes_at_plane(self.plane_of(at)?)
     }
 
-    /// How far OPEN the plane stands to the camera where it passes through `at`: one when its two
-    /// unit steps image equally long and square to each other, zero when the plane has collapsed
-    /// to a line and there is no second direction left.
-    ///
-    /// The inverse condition number of the Jacobian — its smaller singular value over its larger —
-    /// which is the one reading of a projected plane's health that is DIMENSIONLESS. Every guard
-    /// in this drawing that has ever been wrong about a degenerate plane was wrong because it
-    /// measured something with units: a length in pixels per plane unit, or a determinant in the
-    /// square of that, both of which shrink as the author zooms out and neither of which says
-    /// anything about the plane. This does not move when the camera pulls back.
-    ///
-    /// Not the same as the sine between the two projected DIRECTIONS, and the difference is the
-    /// eighth report: an axis can collapse in LENGTH while its direction still reads square, and
-    /// at that point the direction being read is the direction of a vector too short to have one.
-    ///
-    /// Zero where the frame cannot answer at all.
+    /// [`PlaneMap::opening_at_plane`] asked at a SCREEN point instead. Zero where the frame cannot
+    /// answer at all — including a frame that does not exist, since one cannot be built.
     #[must_use]
     pub fn opening_at(&self, at: Pos2) -> f32 {
-        let Some([larger, smaller]) = self.reaches_at(at) else {
-            return 0.0;
-        };
-        if larger <= 0.0 {
-            return 0.0;
-        }
-        let opening = smaller / larger;
-        if opening.is_finite() {
-            opening.clamp(0.0, 1.0)
-        } else {
-            0.0
-        }
-    }
-
-    /// The FURTHEST any unit step in the plane reaches on screen at `at`, in points per plane unit.
-    ///
-    /// The scale a mark that must hold a constant screen size is sized against: divide the size it
-    /// wants in points by this and the answer is how big to draw it IN PLANE UNITS. Every other
-    /// direction then images shorter, so the mark's largest extent on screen is exactly the size
-    /// asked for and it can never overshoot — where normalizing on one named axis blows up the
-    /// moment that axis is the collapsed one.
-    ///
-    /// A MAGNITUDE and not a direction, which is the one class of frame reading that stays honest
-    /// as a plane goes edge-on: magnitudes collapse toward zero truthfully, while the direction of a
-    /// vector with no length left is noise. Zero where the frame cannot answer at all.
-    #[must_use]
-    pub fn largest_reach_at(&self, at: Pos2) -> f32 {
-        self.reaches_at(at).map_or(0.0, |[larger, _]| larger)
-    }
-
-    /// The Jacobian's two singular values at `at`, largest first — how far the plane's best and
-    /// worst unit steps reach on screen, in points per plane unit.
-    ///
-    /// `sigma_1 * sigma_2` is `|det|` and `sigma_1^2 + sigma_2^2` is the squared Frobenius norm, so
-    /// both fall out of one quadratic and neither needs an eigen decomposition.
-    fn reaches_at(&self, at: Pos2) -> Option<[f32; 2]> {
-        let [across, down] = self.axes_at(at)?;
-        let determinant = across.x.mul_add(down.y, -(across.y * down.x)).abs();
-        let frobenius = across.length_sq() + down.length_sq();
-        let gap = frobenius.mul_add(frobenius, -(4.0 * determinant * determinant));
-        let larger = ((frobenius + gap.max(0.0).sqrt()) / 2.0).max(0.0).sqrt();
-        if !larger.is_finite() || larger <= 0.0 {
-            return None;
-        }
-        let smaller = determinant / larger;
-        smaller.is_finite().then_some([larger, smaller])
+        self.plane_of(at)
+            .map_or(0.0, |plane| self.map.opening_at_plane(plane))
     }
 
     /// The plane's own +X where it passes through `at`, as a unit screen direction, folded upright.

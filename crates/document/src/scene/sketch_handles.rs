@@ -112,6 +112,16 @@ pub struct SketchHandles {
     /// including free points and the vertices of an open graph — so any entity is selectable,
     /// not just the ones on a closed loop.
     pub vertices: Vec<[f32; 3]>,
+    /// The same points BEFORE the placement, in the sketch plane's own coordinates and in the same
+    /// order — the profile coordinate each vertex was authored at.
+    ///
+    /// [`vertices`](Self::vertices) is this run through
+    /// [`profile_to_render`](Self::profile_to_render), so the two cannot disagree. It is carried
+    /// rather than recovered because a mark that must lie IN the plane has to be laid out in these
+    /// coordinates, and recovering them from a projected pixel is impossible at exactly the camera
+    /// where lying in the plane matters most: a plane seen edge-on images to a line, and every
+    /// point of that line has a whole line of plane coordinates under it.
+    pub profile: Vec<[f64; 2]>,
     /// The point id of each vertex, in the SAME order as [`vertices`](Self::vertices), so a
     /// drag / delete can map a hit index back to the stable entity it must mutate (the entity
     /// store has no positional index).
@@ -314,10 +324,8 @@ impl Scene {
             (world - recenter_vec).to_array()
         };
 
-        let vertices: Vec<[f32; 3]> = points
-            .iter()
-            .map(|point| to_render(point.at.in_plane()))
-            .collect();
+        let profile: Vec<[f64; 2]> = points.iter().map(|point| point.at.in_plane()).collect();
+        let vertices: Vec<[f32; 3]> = profile.iter().map(|coord| to_render(*coord)).collect();
 
         // Segment connectivity, mapped to vertex indices; a dangling endpoint drops the segment.
         let index_of = |id: EntityId| point_ids.iter().position(|&pid| pid == id);
@@ -420,6 +428,7 @@ impl Scene {
 
         Some(SketchHandles {
             vertices,
+            profile,
             point_ids,
             derived,
             segments,

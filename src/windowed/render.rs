@@ -4675,286 +4675,41 @@ impl WindowedState {
             return;
         };
         let context = self.sketch_evaluation_context();
-        let handles = self
+        // No handles is no sketch plane, and therefore no badges. Not the flat page: a mark laid
+        // out on the glass because its own plane could not be struck is the eighth report's
+        // species, and the dimension pass beside this one has always declined instead.
+        let Some(handles) = self
             .panel_state
             .scene
-            .sketch_handles(target, self.panel_state.geometry.voxels_per_block);
-        let at = |index: usize| -> Option<egui::Pos2> {
-            let px = (*self.sketch_vertex_px.get(index)?)?;
-            Some(egui::Pos2::new(
-                px.x / pixels_per_point,
-                px.y / pixels_per_point,
-            ))
+            .sketch_handles(target, self.panel_state.geometry.voxels_per_block)
+        else {
+            return;
         };
-        let point_index = |id: document::sketch::EntityId| {
-            self.sketch_point_ids.iter().position(|held| *held == id)
-        };
-        // The plane's whole projection as one matrix, so a badge can ask it for a direction at
-        // any point in the viewport — including the standoff positions, which are pixel offsets
-        // and so have no sketch coordinate of their own. `facing` where the sketch has no
-        // placement yet or the plane is edge-on: the flat-page reading, which is what every one
-        // of these conventions used to be unconditionally.
+        // **The plane's projection, FORWARD only** — the same door the sketch curves go through,
+        // and the reason this pass now draws at every camera. A badge is built out of plane
+        // coordinates and only ever asks where one lands, so it has no use for the inverse; taking
+        // the type that has not got one is what stops it inheriting the inverse's one failure.
+        //
+        // Exactly edge-on the plane images to a LINE. A frame cannot exist there, because every
+        // pixel of that line has a whole line of plane coordinates under it — and this pass used to
+        // ask for one, fail, and lay every badge out on the flat page at full size, which is the
+        // marks standing up out of a drawing that had gone to a line.
         let [vx, vy, vw, vh] = viewport_px.map(|value| value as f32);
-        let plane = handles
-            .as_ref()
-            .and_then(|handles| {
-                let clip_of = |coord: [f64; 2]| {
-                    let vertex = handles.profile_to_render(coord);
-                    view_projection * glam::Vec4::new(vertex[0], vertex[1], vertex[2], 1.0)
-                };
-                a_sketch_planes_frame(&clip_of, [vx, vy, vw, vh], pixels_per_point)
-            })
-            .unwrap_or_else(ui::gizmos::dimension::PlaneFrame::facing);
-        // A badge with no geometry to take a direction from steps out along the plane's own 45
-        // degree diagonal, which is where a lock hangs in every CAD tool. Read in the glyph's own
-        // basis, so "up and to the right" is up and to the right OF THE MARK as it is drawn.
-        let out_of_the_corner = move |seat: [f64; 2]| -> Option<[f64; 2]> {
-            let ([rights, _], [_, ups]) = ui::chrome::a_planes_upright_axes(plane, seat)?;
-            let diagonal = std::f64::consts::FRAC_1_SQRT_2;
-            Some([rights * diagonal, ups * diagonal])
-        };
-        // Which plane coordinate a projected vertex sits at. The round trip through the inverse
-        // costs under a hundredth of a point, measured, and it lets every anchor rule below stay
-        // written against the same entity arrays the handles and lines use.
-        let seat_of = |screen: egui::Pos2| plane.plane_of(screen);
-        let seat_at = |index: usize| seat_of(at(index)?);
-        // How many badges already stand on this anchor, so the next one steps clear of them.
-        let mut stacked: std::collections::HashMap<[u32; 2], f32> =
-            std::collections::HashMap::new();
-
-        // A badge stands at a segment's midpoint, offset along that segment's normal — and both
-        // of those are said in PLANE coordinates, where a midpoint is an average and a normal is a
-        // quarter turn. Neither asks the projection anything.
-        let beside_segment = |segment: document::sketch::EntityId| {
-            let held = self
-                .sketch_segments
-                .iter()
-                .find(|held| held.entity == segment)?;
-            let (from, to) = (at(held.from)?, at(held.to)?);
-            let (near, far) = (seat_of(from)?, seat_of(to)?);
-            let along = [far[0] - near[0], far[1] - near[1]];
-            let length = along[0].hypot(along[1]);
-            if length <= 0.0 {
-                return None;
-            }
-            // The middle of the SEGMENT. In the plane that is the average of its ends; on screen it
-            // is not, because a homography carries the segment to the segment but not the FRACTION.
-            let middle = [(near[0] + far[0]) / 2.0, (near[1] + far[1]) / 2.0];
-            let square = [along[1] / length, -along[0] / length];
-            // Which of the two sides. The badge has always stood on the one that images clockwise
-            // from the run and this keeps it there — a SIGN off an imaged direction, which is all a
-            // tie-break needs and the only reading that survives the plane going edge-on.
-            let chord = to - from;
-            let sideways = egui::vec2(chord.y, -chord.x);
-            let stepped = plane
-                .at([middle[0] + square[0], middle[1] + square[1]])
-                .zip(plane.at(middle))
-                .map_or(0.0, |(there, here)| (there - here).dot(sideways));
-            let turn = if stepped <= 0.0 { 1.0 } else { -1.0 };
-            Some((middle, [square[0] * turn, square[1] * turn]))
-        };
-        // A badge on a point sits up and to the right of it — there is no geometry to take a
-        // normal from, so the direction is a convention, read in the plane the point lies in.
-        let beside_point = |id: document::sketch::EntityId| {
-            let seat = seat_at(point_index(id)?)?;
-            Some((seat, out_of_the_corner(seat)?))
-        };
-        let ends_of = |segment: document::sketch::EntityId| {
-            self.sketch_segments
-                .iter()
-                .find(|held| held.entity == segment)
-                .map(|held| (held.from, held.to))
-        };
-        // Where two segments MEET, offset into the angle they make — the square that the mark
-        // asserts is the one the badge is sitting in. `None` when they share no endpoint.
-        let inside_the_corner = |first, second| {
-            let (first_from, first_to) = ends_of(first)?;
-            let (second_from, second_to) = ends_of(second)?;
-            let corner = [first_from, first_to]
-                .into_iter()
-                .find(|end| *end == second_from || *end == second_to)?;
-            let here = seat_at(corner)?;
-            let arm = |(from, to): (usize, usize)| {
-                let there = seat_at(if from == corner { to } else { from })?;
-                let away = [there[0] - here[0], there[1] - here[1]];
-                let length = away[0].hypot(away[1]);
-                (length > 0.0).then(|| [away[0] / length, away[1] / length])
+        let plane = {
+            let clip_of = |coord: [f64; 2]| {
+                let vertex = handles.profile_to_render(coord);
+                view_projection * glam::Vec4::new(vertex[0], vertex[1], vertex[2], 1.0)
             };
-            let (first_arm, second_arm) =
-                (arm((first_from, first_to))?, arm((second_from, second_to))?);
-            // Bisected IN THE PLANE, where the bisector of two unit vectors is their sum. On screen
-            // it is not, because the angle the drawing shows is not the angle the plane holds them
-            // at. Doubling back means the two arms run along one line and their sum is nothing,
-            // which no direction can be — fall back to the point convention, not to a zero vector.
-            let sum = [first_arm[0] + second_arm[0], first_arm[1] + second_arm[1]];
-            let length = sum[0].hypot(sum[1]);
-            let into = if length > 0.0 {
-                [sum[0] / length, sum[1] / length]
-            } else {
-                out_of_the_corner(here)?
-            };
-            Some((here, into))
+            a_sketch_planes_map(&clip_of, [vx, vy, vw, vh], pixels_per_point)
         };
-        // Tangency, concentricity and symmetry each derive their locus as a scene point and hand it
-        // back already projected. Bring it into the plane and give it the point convention.
-        let derived_locus = |screen: egui::Pos2| {
-            let seat = seat_of(screen)?;
-            Some((seat, out_of_the_corner(seat)?))
-        };
-
-        for constraint in producer.sketch.constraints() {
-            // **A relation with no locus gets a badge on EVERY member.** One badge on a two-segment relation
-            // would read as belonging to whichever segment it stood beside, and the whole job of
-            // the mark is to say which geometry is bound to which — a single mark on one member
-            // leaves the other looking free. They share the constraint id, so a click on either
-            // picks the one relation.
-            let placements: Vec<([f64; 2], [f64; 2])> = match constraint.kind {
-                document::sketch::ConstraintKind::Horizontal { segment }
-                | document::sketch::ConstraintKind::Vertical { segment } => {
-                    beside_segment(segment).into_iter().collect()
-                }
-                document::sketch::ConstraintKind::Fix { point, .. } => {
-                    beside_point(point).into_iter().collect()
-                }
-                document::sketch::ConstraintKind::Quantize { point, .. } => {
-                    beside_point(point).into_iter().collect()
-                }
-                // Both mark the POINT, which is the thing being placed — and for a coincidence
-                // between two points that also settles where the one badge goes, since the pair
-                // ends up in one place and a mark on each would overprint.
-                document::sketch::ConstraintKind::Midpoint { point, .. }
-                | document::sketch::ConstraintKind::Coincident { point, .. } => {
-                    beside_point(point).into_iter().collect()
-                }
-                // Curvature marks the JOINT and not the neighbour curve: the joint is the one
-                // place the claim is about, and the curve it runs out of may be long enough that a
-                // badge on it would land nowhere near the smoothness it is describing.
-                document::sketch::ConstraintKind::Curvature { joint, .. } => {
-                    beside_point(joint).into_iter().collect()
-                }
-                // Perpendicular has a LOCUS, and the rule above does not apply to it: two lines
-                // meeting square make ONE right angle, and the mark belongs in it. Two badges at
-                // two midpoints say the same thing twice and neither says where the corner is
-                // (owner 2026-07-31). Segments that never meet keep the per-member placement —
-                // there is no angle to stand in, and the relation still binds both.
-                document::sketch::ConstraintKind::Perpendicular { first, second } => {
-                    match inside_the_corner(first, second) {
-                        Some(corner) => vec![corner],
-                        None => [first, second]
-                            .into_iter()
-                            .filter_map(beside_segment)
-                            .collect(),
-                    }
-                }
-                document::sketch::ConstraintKind::Parallel { first, second }
-                | document::sketch::ConstraintKind::Equal { first, second }
-                | document::sketch::ConstraintKind::Collinear { first, second } => [first, second]
-                    .into_iter()
-                    .filter_map(beside_segment)
-                    .collect(),
-                // A dimension draws as a dimension gizmo, not a badge — the number IS the mark,
-                // and a glyph beside it would say the same thing twice. True of every member of
-                // the family, so this asks the family and not its members.
-                document::sketch::ConstraintKind::Dimension(_) => Vec::new(),
-                // Tangent has one derived, finite-domain-validated contact, so it gets one badge
-                // at that locus rather than one duplicate mark per member curve.
-                document::sketch::ConstraintKind::Tangent {
-                    first,
-                    second,
-                    branch,
-                } => tangent_badge_anchor(
-                    &producer.sketch,
-                    first,
-                    second,
-                    branch,
-                    context,
-                    handles
-                        .as_ref()
-                        .map(|handles| |coord| handles.profile_to_render(coord)),
-                    (view_projection, viewport_px, pixels_per_point),
-                )
-                .and_then(&derived_locus)
-                .into_iter()
-                .collect(),
-                // Concentric has one semantic locus: the shared center. Radius and evaluation
-                // context do not participate in that placement.
-                document::sketch::ConstraintKind::Concentric { first, second } => {
-                    concentric_badge_anchor(
-                        &producer.sketch,
-                        first,
-                        second,
-                        handles
-                            .as_ref()
-                            .map(|handles| |coord| handles.profile_to_render(coord)),
-                        (view_projection, viewport_px, pixels_per_point),
-                    )
-                    .and_then(&derived_locus)
-                    .into_iter()
-                    .collect()
-                }
-                document::sketch::ConstraintKind::Symmetry {
-                    first,
-                    second,
-                    axis,
-                    branch,
-                } => symmetry_badge_anchor(
-                    &producer.sketch,
-                    first,
-                    second,
-                    axis,
-                    branch,
-                    context,
-                    handles
-                        .as_ref()
-                        .map(|handles| |coord| handles.profile_to_render(coord)),
-                    (view_projection, viewport_px, pixels_per_point),
-                )
-                .and_then(&derived_locus)
-                .into_iter()
-                .collect(),
-            };
-            for (anchor, direction) in placements {
-                let Some(anchor_px) = plane.at(anchor) else {
-                    continue;
-                };
-                // Anchors are keyed by their rounded bits so two constraints on the same midpoint
-                // share a stack; f32 has no Hash, and exact equality is what "same anchor" means.
-                let key = [anchor_px.x.round().to_bits(), anchor_px.y.round().to_bits()];
-                let step = stacked.entry(key).or_insert(1.0);
-                let stand = *step;
-                *step += 1.0;
-                // **The standoff is a screen length converted into a plane length**, by the same
-                // scalar the glyph itself is sized with. It has wanted a plane preimage since the
-                // sixth report and never had one: it was a pixel step off a projected anchor, and
-                // so the one part of a badge that could not lie in the plane however carefully the
-                // glyph was drawn. A badge's whole position is a plane coordinate now.
-                let Some(step_of) = a_points_worth_of_plane(plane, anchor_px) else {
-                    continue;
-                };
-                let out = f64::from(ui::chrome::SKETCH_CONSTRAINT_BADGE_OFFSET * stand) * step_of;
-                let seat = [
-                    direction[0].mul_add(out, anchor[0]),
-                    direction[1].mul_add(out, anchor[1]),
-                ];
-                let picked = self.panel_state.selection.contains(
-                    ui::panel::SelectionTarget::SketchConstraint {
-                        sketch: target,
-                        entity: constraint.id,
-                    },
-                );
-                // Sized where the badge ENDS UP and not at its anchor: the standoff is far enough
-                // that a projection which divides reaches differently there.
-                if let Some(badge) = ui::chrome::ConstraintBadge::seated(
-                    plane,
-                    seat,
-                    ui::panel::constraint_icon(constraint.kind),
-                    constraint.id,
-                    picked,
-                ) {
-                    self.sketch_constraint_badges.push(badge);
-                }
-            }
-        }
+        let selection = &self.panel_state.selection;
+        self.sketch_constraint_badges =
+            a_sketchs_constraint_badges(&producer.sketch, &handles, plane, context, &|entity| {
+                selection.contains(ui::panel::SelectionTarget::SketchConstraint {
+                    sketch: target,
+                    entity,
+                })
+            });
     }
 
     /// The constraint whose badge is under the cursor, in PHYSICAL pixels — the shell's hit-test
@@ -8160,87 +7915,302 @@ fn select_sketch_constraint_refusal_culprits(
     }
 }
 
-/// Derive a Tangent's one finite contact and carry it through the exact profile→render→screen
-/// path used by the overlay. `None` deliberately covers missing evaluation/render context as
-/// well as an invalid current branch: without all three, there is no honest badge locus.
-fn tangent_badge_anchor<F>(
+/// **Every constraint badge a sketch carries, laid out in its own plane.**
+///
+/// One glyph per asserted relation, anchored on the geometry the relation NAMES. The anchor comes
+/// from the constraint's entity ids resolved through the same arrays the handles and lines use, so
+/// a badge cannot drift from its entity — it is placed by the entity graph, not beside it. A
+/// segment's badge sits off the midpoint along the edge normal (perpendicular is the only offset
+/// that reads as "about this line" at every angle); a point's sits up and to the right, where a
+/// lock hangs in every CAD tool.
+///
+/// **Every position here is a PLANE coordinate**, and the only thing the projection is ever asked
+/// is where one of them lands. Square-to-a-segment is the plane's square and not the screen's — 31
+/// degrees apart at a three-quarter view — a midpoint is an average, a corner's bisector is the sum
+/// of two unit arms, and the standoff is a screen length divided by how far the plane reaches. None
+/// of it asks which plane coordinate is under a pixel, which is the question that has no answer on
+/// a plane imaged to a line and the reason the marks used to leave the drawing there.
+///
+/// Several badges on one anchor step further along that same offset rather than overprinting. A
+/// constraint naming geometry that is off-screen or behind the camera simply has no badge: the
+/// drawing is what carries them.
+///
+/// Free of the shell so it can be measured at a named camera without one — nine reports about where
+/// these marks land were closed against a replica of this arithmetic rather than against this
+/// arithmetic.
+pub fn a_sketchs_constraint_badges(
+    sketch: &document::sketch::Sketch,
+    handles: &document::scene::SketchHandles,
+    plane: ui::gizmos::dimension::PlaneMap,
+    context: Option<parametric::EvaluationContext>,
+    picked: &dyn Fn(document::sketch::EntityId) -> bool,
+) -> Vec<ui::chrome::ConstraintBadge> {
+    let point_index =
+        |id: document::sketch::EntityId| handles.point_ids.iter().position(|held| *held == id);
+    // A badge with no geometry to take a direction from steps out along the plane's own 45
+    // degree diagonal, which is where a lock hangs in every CAD tool. Read in the glyph's own
+    // basis, so "up and to the right" is up and to the right OF THE MARK as it is drawn.
+    let out_of_the_corner = move |seat: [f64; 2]| -> Option<[f64; 2]> {
+        let ([rights, _], [_, ups]) = ui::chrome::a_planes_upright_axes(plane, seat)?;
+        let diagonal = std::f64::consts::FRAC_1_SQRT_2;
+        Some([rights * diagonal, ups * diagonal])
+    };
+    // Where a point IS, in the plane's own coordinates — carried from the document beside the
+    // render-frame vertex it was placed into, not recovered from the pixel that vertex drew at.
+    let seat_at = |index: usize| handles.profile.get(index).copied();
+    // How many badges already stand on this anchor, so the next one steps clear of them.
+    let mut stacked: std::collections::HashMap<[u32; 2], f32> = std::collections::HashMap::new();
+
+    // A badge stands at a segment's midpoint, offset along that segment's normal — and both
+    // of those are said in PLANE coordinates, where a midpoint is an average and a normal is a
+    // quarter turn. Neither asks the projection anything.
+    let beside_segment = |segment: document::sketch::EntityId| {
+        let held = handles
+            .segments
+            .iter()
+            .find(|held| held.entity == segment)?;
+        let (near, far) = (seat_at(held.from)?, seat_at(held.to)?);
+        let along = [far[0] - near[0], far[1] - near[1]];
+        let length = along[0].hypot(along[1]);
+        if length <= 0.0 {
+            return None;
+        }
+        // The middle of the SEGMENT. In the plane that is the average of its ends; on screen it
+        // is not, because a homography carries the segment to the segment but not the FRACTION.
+        let middle = [(near[0] + far[0]) / 2.0, (near[1] + far[1]) / 2.0];
+        let square = [along[1] / length, -along[0] / length];
+        // Which of the two sides. The badge has always stood on the one that images clockwise
+        // from the run and this keeps it there — a SIGN off an imaged direction, which is all a
+        // tie-break needs and the only reading that survives the plane going edge-on.
+        let chord = plane.at(far)? - plane.at(near)?;
+        let sideways = egui::vec2(chord.y, -chord.x);
+        let stepped = plane
+            .at([middle[0] + square[0], middle[1] + square[1]])
+            .zip(plane.at(middle))
+            .map_or(0.0, |(there, here)| (there - here).dot(sideways));
+        let turn = if stepped <= 0.0 { 1.0 } else { -1.0 };
+        Some((middle, [square[0] * turn, square[1] * turn]))
+    };
+    // A badge on a point sits up and to the right of it — there is no geometry to take a
+    // normal from, so the direction is a convention, read in the plane the point lies in.
+    let beside_point = |id: document::sketch::EntityId| {
+        let seat = seat_at(point_index(id)?)?;
+        Some((seat, out_of_the_corner(seat)?))
+    };
+    let ends_of = |segment: document::sketch::EntityId| {
+        handles
+            .segments
+            .iter()
+            .find(|held| held.entity == segment)
+            .map(|held| (held.from, held.to))
+    };
+    // Where two segments MEET, offset into the angle they make — the square that the mark
+    // asserts is the one the badge is sitting in. `None` when they share no endpoint.
+    let inside_the_corner = |first, second| {
+        let (first_from, first_to) = ends_of(first)?;
+        let (second_from, second_to) = ends_of(second)?;
+        let corner = [first_from, first_to]
+            .into_iter()
+            .find(|end| *end == second_from || *end == second_to)?;
+        let here = seat_at(corner)?;
+        let arm = |(from, to): (usize, usize)| {
+            let there = seat_at(if from == corner { to } else { from })?;
+            let away = [there[0] - here[0], there[1] - here[1]];
+            let length = away[0].hypot(away[1]);
+            (length > 0.0).then(|| [away[0] / length, away[1] / length])
+        };
+        let (first_arm, second_arm) =
+            (arm((first_from, first_to))?, arm((second_from, second_to))?);
+        // Bisected IN THE PLANE, where the bisector of two unit vectors is their sum. On screen
+        // it is not, because the angle the drawing shows is not the angle the plane holds them
+        // at. Doubling back means the two arms run along one line and their sum is nothing,
+        // which no direction can be — fall back to the point convention, not to a zero vector.
+        let sum = [first_arm[0] + second_arm[0], first_arm[1] + second_arm[1]];
+        let length = sum[0].hypot(sum[1]);
+        let into = if length > 0.0 {
+            [sum[0] / length, sum[1] / length]
+        } else {
+            out_of_the_corner(here)?
+        };
+        Some((here, into))
+    };
+    // Tangency, concentricity and symmetry each derive their locus in the plane's own
+    // coordinates. Give it the point convention and it is placed like any other.
+    let placed_at = |seat: [f64; 2]| Some((seat, out_of_the_corner(seat)?));
+
+    let mut badges = Vec::new();
+    for constraint in sketch.constraints() {
+        // **A relation with no locus gets a badge on EVERY member.** One badge on a two-segment relation
+        // would read as belonging to whichever segment it stood beside, and the whole job of
+        // the mark is to say which geometry is bound to which — a single mark on one member
+        // leaves the other looking free. They share the constraint id, so a click on either
+        // picks the one relation.
+        let placements: Vec<([f64; 2], [f64; 2])> = match constraint.kind {
+            document::sketch::ConstraintKind::Horizontal { segment }
+            | document::sketch::ConstraintKind::Vertical { segment } => {
+                beside_segment(segment).into_iter().collect()
+            }
+            document::sketch::ConstraintKind::Fix { point, .. } => {
+                beside_point(point).into_iter().collect()
+            }
+            document::sketch::ConstraintKind::Quantize { point, .. } => {
+                beside_point(point).into_iter().collect()
+            }
+            // Both mark the POINT, which is the thing being placed — and for a coincidence
+            // between two points that also settles where the one badge goes, since the pair
+            // ends up in one place and a mark on each would overprint.
+            document::sketch::ConstraintKind::Midpoint { point, .. }
+            | document::sketch::ConstraintKind::Coincident { point, .. } => {
+                beside_point(point).into_iter().collect()
+            }
+            // Curvature marks the JOINT and not the neighbour curve: the joint is the one
+            // place the claim is about, and the curve it runs out of may be long enough that a
+            // badge on it would land nowhere near the smoothness it is describing.
+            document::sketch::ConstraintKind::Curvature { joint, .. } => {
+                beside_point(joint).into_iter().collect()
+            }
+            // Perpendicular has a LOCUS, and the rule above does not apply to it: two lines
+            // meeting square make ONE right angle, and the mark belongs in it. Two badges at
+            // two midpoints say the same thing twice and neither says where the corner is
+            // (owner 2026-07-31). Segments that never meet keep the per-member placement —
+            // there is no angle to stand in, and the relation still binds both.
+            document::sketch::ConstraintKind::Perpendicular { first, second } => {
+                match inside_the_corner(first, second) {
+                    Some(corner) => vec![corner],
+                    None => [first, second]
+                        .into_iter()
+                        .filter_map(beside_segment)
+                        .collect(),
+                }
+            }
+            document::sketch::ConstraintKind::Parallel { first, second }
+            | document::sketch::ConstraintKind::Equal { first, second }
+            | document::sketch::ConstraintKind::Collinear { first, second } => [first, second]
+                .into_iter()
+                .filter_map(beside_segment)
+                .collect(),
+            // A dimension draws as a dimension gizmo, not a badge — the number IS the mark,
+            // and a glyph beside it would say the same thing twice. True of every member of
+            // the family, so this asks the family and not its members.
+            document::sketch::ConstraintKind::Dimension(_) => Vec::new(),
+            // Tangent has one derived, finite-domain-validated contact, so it gets one badge
+            // at that locus rather than one duplicate mark per member curve.
+            document::sketch::ConstraintKind::Tangent {
+                first,
+                second,
+                branch,
+            } => tangent_badge_locus(sketch, first, second, branch, context)
+                .and_then(&placed_at)
+                .into_iter()
+                .collect(),
+            // Concentric has one semantic locus: the shared center. Radius and evaluation
+            // context do not participate in that placement.
+            document::sketch::ConstraintKind::Concentric { first, second } => {
+                concentric_badge_locus(sketch, first, second)
+                    .and_then(&placed_at)
+                    .into_iter()
+                    .collect()
+            }
+            document::sketch::ConstraintKind::Symmetry {
+                first,
+                second,
+                axis,
+                branch,
+            } => symmetry_badge_locus(sketch, first, second, axis, branch, context)
+                .and_then(&placed_at)
+                .into_iter()
+                .collect(),
+        };
+        for (anchor, direction) in placements {
+            // Anchors are keyed by their rounded bits so two constraints on the same midpoint
+            // share a stack; f64 has no Hash, and exact equality is what "same anchor" means.
+            // Keyed on the PLANE coordinate: two marks that share a place in the drawing share
+            // a stack whatever the camera does, where a pixel key merges two distinct anchors
+            // into one stack the moment the plane is raked enough to draw them a pixel apart.
+            let key = [
+                (anchor[0].round() as f32).to_bits(),
+                (anchor[1].round() as f32).to_bits(),
+            ];
+            let step = stacked.entry(key).or_insert(1.0);
+            let stand = *step;
+            *step += 1.0;
+            // **The standoff is a screen length converted into a plane length**, by the same
+            // scalar the glyph itself is sized with. It has wanted a plane preimage since the
+            // sixth report and never had one: it was a pixel step off a projected anchor, and
+            // so the one part of a badge that could not lie in the plane however carefully the
+            // glyph was drawn. A badge's whole position is a plane coordinate now.
+            let Some(step_of) = a_points_worth_of_plane(plane, anchor) else {
+                continue;
+            };
+            let out = f64::from(ui::chrome::SKETCH_CONSTRAINT_BADGE_OFFSET * stand) * step_of;
+            let seat = [
+                direction[0].mul_add(out, anchor[0]),
+                direction[1].mul_add(out, anchor[1]),
+            ];
+            // Sized where the badge ENDS UP and not at its anchor: the standoff is far enough
+            // that a projection which divides reaches differently there.
+            if let Some(badge) = ui::chrome::ConstraintBadge::seated(
+                plane,
+                seat,
+                ui::panel::constraint_icon(constraint.kind),
+                constraint.id,
+                picked(constraint.id),
+            ) {
+                badges.push(badge);
+            }
+        }
+    }
+    badges
+}
+
+/// Derive a Tangent's one finite contact, in the SKETCH PLANE's own coordinates. `None`
+/// deliberately covers a missing evaluation context as well as an invalid current branch: without
+/// both, there is no honest badge locus.
+///
+/// A plane coordinate and not a screen point, like every other badge anchor. These three used to
+/// hand back a projected pixel that the badge pass then had to invert, which is a round trip whose
+/// second half does not exist at the one camera the mark most needs to be right at.
+fn tangent_badge_locus(
     sketch: &document::sketch::Sketch,
     first: document::sketch::SketchCurve,
     second: document::sketch::SketchCurve,
     branch: document::sketch::TangentBranch,
     context: Option<parametric::EvaluationContext>,
-    profile_to_render: Option<F>,
-    projection: (glam::Mat4, [u32; 4], f32),
-) -> Option<egui::Pos2>
-where
-    F: FnOnce([f64; 2]) -> [f32; 3],
-{
-    let contact = sketch
-        .tangent_contact(first, second, branch, context?)
-        .ok()?;
-    let render = profile_to_render?(contact.at);
-    let (view_projection, viewport_px, pixels_per_point) = projection;
-    project_to_screen(
-        glam::Vec3::from_array(render),
-        view_projection,
-        viewport_px,
-        pixels_per_point,
+) -> Option<[f64; 2]> {
+    Some(
+        sketch
+            .tangent_contact(first, second, branch, context?)
+            .ok()?
+            .at,
     )
 }
 
-/// Project a Concentric relation's one shared center. Malformed or unsatisfied pairs
-/// have no honest common locus and therefore no badge.
-fn concentric_badge_anchor<F>(
+/// A Concentric relation's one shared center. Malformed or unsatisfied pairs have no honest common
+/// locus and therefore no badge.
+fn concentric_badge_locus(
     sketch: &document::sketch::Sketch,
     first: document::sketch::SketchCurve,
     second: document::sketch::SketchCurve,
-    profile_to_render: Option<F>,
-    projection: (glam::Mat4, [u32; 4], f32),
-) -> Option<egui::Pos2>
-where
-    F: FnOnce([f64; 2]) -> [f32; 3],
-{
-    let center = sketch.concentric_center(first, second)?;
-    let render = profile_to_render?(center);
-    let (view_projection, viewport_px, pixels_per_point) = projection;
-    project_to_screen(
-        glam::Vec3::from_array(render),
-        view_projection,
-        viewport_px,
-        pixels_per_point,
-    )
+) -> Option<[f64; 2]> {
+    sketch.concentric_center(first, second)
 }
 
-/// Project the document-owned witness for one satisfied Symmetry relation.
-#[allow(clippy::too_many_arguments)]
-fn symmetry_badge_anchor<F>(
+/// The document-owned witness for one satisfied Symmetry relation.
+fn symmetry_badge_locus(
     sketch: &document::sketch::Sketch,
     first: document::sketch::SketchCurve,
     second: document::sketch::SketchCurve,
     axis: document::sketch::EntityId,
     branch: document::sketch::SymmetryBranch,
     context: Option<parametric::EvaluationContext>,
-    profile_to_render: Option<F>,
-    projection: (glam::Mat4, [u32; 4], f32),
-) -> Option<egui::Pos2>
-where
-    F: FnOnce([f64; 2]) -> [f32; 3],
-{
-    let locus = sketch
+) -> Option<[f64; 2]> {
+    sketch
         .symmetry_badge_locus(first, second, axis, branch, context?)
-        .ok()?;
-    let render = profile_to_render?(locus);
-    let (view_projection, viewport_px, pixels_per_point) = projection;
-    project_to_screen(
-        glam::Vec3::from_array(render),
-        view_projection,
-        viewport_px,
-        pixels_per_point,
-    )
+        .ok()
 }
 
-/// How much of the sketch plane one egui point covers at a screen position: plane units per
-/// point, or `None` where the frame cannot answer at all.
+/// How much of the sketch plane one egui point covers at a PLANE coordinate: plane units per
+/// point, or `None` where the plane images to a single point.
 ///
 /// **The one conversion a mark needs in order to be built in the plane and still come out a
 /// constant size on screen.** Multiply a length the drawing wants in points by this and the answer
@@ -8253,13 +8223,10 @@ where
 /// instead divides by zero the moment that axis is the collapsed one; this cannot, because the
 /// largest reach is zero only where the plane images to a single point.
 ///
-/// A magnitude, which is the class of frame reading that survives a plane going edge-on: it falls
+/// A magnitude, which is the class of reading that survives a plane going edge-on: it falls
 /// honestly toward zero, where a direction read off a vector with no length left is noise.
-fn a_points_worth_of_plane(
-    plane: ui::gizmos::dimension::PlaneFrame,
-    at: egui::Pos2,
-) -> Option<f64> {
-    let reach = plane.largest_reach_at(at);
+fn a_points_worth_of_plane(plane: ui::gizmos::dimension::PlaneMap, at: [f64; 2]) -> Option<f64> {
+    let reach = plane.largest_reach_at_plane(at);
     (reach > 0.0 && reach.is_finite()).then(|| f64::from(1.0 / reach))
 }
 
@@ -8326,6 +8293,45 @@ pub fn a_sketch_planes_frame<F>(
 where
     F: Fn([f64; 2]) -> glam::Vec4,
 {
+    ui::gizmos::dimension::PlaneFrame::from_plane_to_screen(a_sketch_planes_matrix(
+        clip_of,
+        viewport,
+        pixels_per_point,
+    ))
+}
+
+/// The same projection WITHOUT its inverse, which is the form that always exists.
+///
+/// A plane seen exactly edge-on images to a line: the matrix is rank one, so
+/// [`a_sketch_planes_frame`] declines and a mark that needed one had to substitute something. This
+/// door never declines, because projecting a plane coordinate forward is well defined at every
+/// camera — it is what the sketch CURVES do, vertex by vertex, and why they draw correctly edge-on
+/// while the marks beside them did not.
+pub fn a_sketch_planes_map<F>(
+    clip_of: &F,
+    viewport: [f32; 4],
+    pixels_per_point: f32,
+) -> ui::gizmos::dimension::PlaneMap
+where
+    F: Fn([f64; 2]) -> glam::Vec4,
+{
+    ui::gizmos::dimension::PlaneMap::new(a_sketch_planes_matrix(
+        clip_of,
+        viewport,
+        pixels_per_point,
+    ))
+}
+
+/// The plane-to-screen homography itself: three plane coordinates struck through the projection,
+/// composed with the viewport transform.
+fn a_sketch_planes_matrix<F>(
+    clip_of: &F,
+    viewport: [f32; 4],
+    pixels_per_point: f32,
+) -> [[f64; 3]; 3]
+where
+    F: Fn([f64; 2]) -> glam::Vec4,
+{
     const STRIDE: f32 = 64.0;
     let origin = clip_of([0.0, 0.0]);
     let across = (clip_of([f64::from(STRIDE), 0.0]) - origin) / STRIDE;
@@ -8346,11 +8352,11 @@ where
     let mix = |gain: f64, axis: [f64; 3], bias: f64| {
         [0, 1, 2].map(|index| gain.mul_add(axis[index], bias * to_w[index]))
     };
-    ui::gizmos::dimension::PlaneFrame::from_plane_to_screen([
+    [
         mix(0.5 * wide / ratio, to_x, (left + 0.5 * wide) / ratio),
         mix(-0.5 * tall / ratio, to_y, (top + 0.5 * tall) / ratio),
         to_w,
-    ])
+    ]
 }
 
 fn a_plane_direction_on_screen<F>(at: [f64; 2], step: [f64; 2], to_px: &F) -> Option<egui::Vec2>
@@ -8815,14 +8821,14 @@ mod tests {
         a_dimension_lines_direction, a_plane_direction_on_screen, a_plane_too_edge_on_to_dimension,
         advance_circle_center_diameter_gesture, aggregate_marquee_picks, angle_arc_radius,
         angle_legs, apply_sketch_snap, circle_gesture_is_current, circle_marquee_hit, circle_ring,
-        closest_point_on_segment, complete_circle_center_diameter, concentric_badge_anchor,
+        closest_point_on_segment, complete_circle_center_diameter, concentric_badge_locus,
         marquee_box_px, nearest_sketch_edge_for_requirement, nearest_sketch_edge_from_candidates,
         nearest_tangent_lever, point_in_screen_polygon, point_to_segment_distance,
         pointer_left_the_press, polygon_double_area, reset_failed_sketch_constraint_completion,
         reset_refused_sketch_constraint_completion, segment_touches_rect, segments_intersect,
         select_sketch_constraint_refusal_culprits, sketch_constraint_badge_at,
-        sketch_curve_from_hit, sketch_profile_edit_transaction, symmetry_badge_anchor,
-        tangent_badge_anchor, trim_number, SketchEdgeHit, DIMENSION_STANDOFF_PX,
+        sketch_curve_from_hit, sketch_profile_edit_transaction, symmetry_badge_locus,
+        tangent_badge_locus, trim_number, SketchEdgeHit, DIMENSION_STANDOFF_PX,
     };
     use document::sketch::{
         ConstraintKind, LineSide, PlaneAxis, Sketch, SketchCurve, SketchLength, SketchPoint,
@@ -9426,20 +9432,23 @@ mod tests {
         );
     }
 
+    /// The locus is the contact IN THE SKETCH PLANE, and no camera participates in finding it.
+    ///
+    /// It used to come back as a pixel, which the badge pass then had to put back into the plane
+    /// through an inverse that does not exist edge-on. The assertion is the same contact it always
+    /// was — `[5, 0]` here is exactly what `(75, 25)` points decoded to on the posed camera.
     #[test]
-    fn tangent_badge_has_one_projected_contact_anchor_or_none() {
+    fn tangent_badge_has_one_contact_locus_or_none() {
         let (sketch, segment, circle) = tangent_ready_sketch();
-        let anchor = tangent_badge_anchor(
+        let locus = tangent_badge_locus(
             &sketch,
             SketchCurve::Segment(segment),
             SketchCurve::Circle(circle),
             TangentBranch::Line(LineSide::Left),
             Some(context()),
-            Some(|at: [f64; 2]| [at[0] as f32 / 10.0, at[1] as f32 / 10.0, 0.0]),
-            (glam::Mat4::IDENTITY, [0, 0, 200, 100], 2.0),
         );
-        let anchors: Vec<_> = anchor.into_iter().collect();
-        assert_eq!(anchors, vec![pos2(75.0, 25.0)]);
+        let loci: Vec<_> = locus.into_iter().collect();
+        assert_eq!(loci, vec![[5.0, 0.0]]);
 
         let mut off_domain = Sketch::empty(PlaneAxis::Z);
         let from = off_domain.add_free_point(SketchPoint::new(0, 0));
@@ -9463,17 +9472,15 @@ mod tests {
             ),
         ] {
             assert!(
-                tangent_badge_anchor(
+                tangent_badge_locus(
                     sketch,
                     first,
                     second,
                     TangentBranch::Line(LineSide::Left),
                     evaluation,
-                    Some(|at: [f64; 2]| [at[0] as f32, at[1] as f32, 0.0]),
-                    (glam::Mat4::IDENTITY, [0, 0, 200, 100], 1.0),
                 )
                 .is_none(),
-                "off-domain or missing-context Tangents have no badge anchor"
+                "off-domain or missing-context Tangents have no badge locus"
             );
         }
     }
@@ -9491,12 +9498,11 @@ mod tests {
                 context(),
             )
             .expect("valid tangent");
-        // Seated on the flat-page frame, where a plane coordinate IS a screen point: the hit
-        // rect is the constant screen square whatever the plane does, so the test stays about
-        // the pick. Built through the real constructor so it cannot pose a badge the app could
-        // never lay out.
+        // Seated on the flat page, where a plane coordinate IS a screen point: the hit rect is
+        // the constant screen square whatever the plane does, so the test stays about the pick.
+        // Built through the real constructor so it cannot pose a badge the app could never lay out.
         let badges = [ui::chrome::ConstraintBadge::seated(
-            ui::gizmos::dimension::PlaneFrame::facing(),
+            ui::gizmos::dimension::PlaneMap::flat(),
             [40.0, 20.0],
             ui::icons::Icon::ConstraintTangent,
             constraint,
@@ -9522,7 +9528,7 @@ mod tests {
     }
 
     #[test]
-    fn concentric_badge_projects_shared_center_and_uses_generic_delete_path() {
+    fn concentric_badge_seats_on_the_shared_center_and_uses_generic_delete_path() {
         let mut sketch = Sketch::empty(PlaneAxis::Z);
         let first = sketch
             .add_circle(SketchPoint::new(2, 3), SketchLength::new(2))
@@ -9531,15 +9537,14 @@ mod tests {
         let second = sketch
             .circle_about(center, SketchLength::new(6))
             .expect("second circle");
-        let anchor = concentric_badge_anchor(
+        let seat = concentric_badge_locus(
             &sketch,
             SketchCurve::Circle(first),
             SketchCurve::Circle(second),
-            Some(|at: [f64; 2]| [at[0] as f32 / 10.0, at[1] as f32 / 10.0, 0.0]),
-            (glam::Mat4::IDENTITY, [0, 0, 200, 100], 2.0),
-        );
-        let anchor = anchor.expect("projected anchor");
-        assert!((anchor.x - 60.0).abs() < 1e-5 && (anchor.y - 17.5).abs() < 1e-5);
+        )
+        .expect("a shared center");
+        // The center the two circles were authored about, in the plane's own coordinates.
+        assert!((seat[0] - 2.0).abs() < 1e-9 && (seat[1] - 3.0).abs() < 1e-9);
 
         let (producer, constraint) = SketchSolid::extrude(sketch, 3)
             .with_constraint(
@@ -9547,20 +9552,19 @@ mod tests {
                 context(),
             )
             .expect("concentric");
-        // Seated on the flat-page frame, where a plane coordinate IS a screen point: the hit
-        // rect is the constant screen square whatever the plane does, so the test stays about
-        // the pick. Built through the real constructor so it cannot pose a badge the app could
-        // never lay out.
+        // Seated on the flat page, where a plane coordinate IS a screen point: the hit rect is
+        // the constant screen square whatever the plane does, so the test stays about the pick.
+        // Built through the real constructor so it cannot pose a badge the app could never lay out.
         let badges = [ui::chrome::ConstraintBadge::seated(
-            ui::gizmos::dimension::PlaneFrame::facing(),
-            [f64::from(anchor.x), f64::from(anchor.y)],
+            ui::gizmos::dimension::PlaneMap::flat(),
+            seat,
             ui::icons::Icon::ConstraintConcentric,
             constraint,
             false,
         )
         .expect("the flat page seats a badge")];
         assert_eq!(
-            sketch_constraint_badge_at(&badges, pos2(120.0, 35.0), 2.0),
+            sketch_constraint_badge_at(&badges, pos2(4.0, 6.0), 2.0),
             Some(constraint)
         );
         assert!(producer
@@ -9576,18 +9580,16 @@ mod tests {
         let second = invalid
             .add_circle(SketchPoint::new(4, 0), SketchLength::new(3))
             .expect("second");
-        assert!(concentric_badge_anchor(
+        assert!(concentric_badge_locus(
             &invalid,
             SketchCurve::Circle(first),
             SketchCurve::Circle(second),
-            Some(|at: [f64; 2]| [at[0] as f32, at[1] as f32, 0.0]),
-            (glam::Mat4::IDENTITY, [0, 0, 200, 100], 1.0),
         )
         .is_none());
     }
 
     #[test]
-    fn symmetry_badge_projects_document_witness_and_uses_generic_delete_path() {
+    fn symmetry_badge_seats_on_the_document_witness_and_uses_generic_delete_path() {
         let mut sketch = Sketch::empty(PlaneAxis::Z);
         let axis_from = sketch.add_free_point(SketchPoint::new(-4, -4));
         let axis_to = sketch.add_free_point(SketchPoint::new(4, 4));
@@ -9598,17 +9600,15 @@ mod tests {
         let b1 = sketch.add_free_point(SketchPoint::new(1, -1));
         let first = sketch.connect(a0, a1).expect("first");
         let second = sketch.connect(b0, b1).expect("second");
-        let anchor = symmetry_badge_anchor(
+        let seat = symmetry_badge_locus(
             &sketch,
             SketchCurve::Segment(first),
             SketchCurve::Segment(second),
             axis,
             SymmetryBranch::Direct,
             Some(context()),
-            Some(|at: [f64; 2]| [at[0] as f32 / 10.0, at[1] as f32 / 10.0, 0.0]),
-            (glam::Mat4::IDENTITY, [0, 0, 200, 100], 2.0),
         )
-        .expect("projected witness");
+        .expect("a witness");
         let (producer, constraint) = SketchSolid::extrude(sketch, 3)
             .with_constraint(
                 ConstraintKind::symmetry(
@@ -9620,20 +9620,23 @@ mod tests {
                 context(),
             )
             .expect("symmetry");
-        // Seated on the flat-page frame, where a plane coordinate IS a screen point: the hit
-        // rect is the constant screen square whatever the plane does, so the test stays about
-        // the pick. Built through the real constructor so it cannot pose a badge the app could
-        // never lay out.
+        // Seated on the flat page, where a plane coordinate IS a screen point: the hit rect is
+        // the constant screen square whatever the plane does, so the test stays about the pick.
+        // Built through the real constructor so it cannot pose a badge the app could never lay out.
         let badges = [ui::chrome::ConstraintBadge::seated(
-            ui::gizmos::dimension::PlaneFrame::facing(),
-            [f64::from(anchor.x), f64::from(anchor.y)],
+            ui::gizmos::dimension::PlaneMap::flat(),
+            seat,
             ui::icons::Icon::ConstraintSymmetry,
             constraint,
             false,
         )
         .expect("the flat page seats a badge")];
         assert_eq!(
-            sketch_constraint_badge_at(&badges, anchor * 2.0, 2.0),
+            sketch_constraint_badge_at(
+                &badges,
+                pos2((seat[0] * 2.0) as f32, (seat[1] * 2.0) as f32),
+                2.0
+            ),
             Some(constraint)
         );
         assert!(producer

@@ -20,7 +20,7 @@
 
 use camera::{OrbitCamera, ProjectionMode};
 use ui::chrome::ConstraintBadge;
-use ui::gizmos::dimension::PlaneFrame;
+use ui::gizmos::dimension::{PlaneFrame, PlaneMap};
 
 /// The dump's camera, field for field. `%TEMP%/voxelworker-repro.json`, written 2026-08-12.
 const THETA: f32 = -7.853_982;
@@ -262,8 +262,14 @@ fn a_badge_at(distance: f32, phi: f32) -> ConstraintBadge {
     let seat = frame
         .plane_of(the_middle())
         .expect("the frame answers under the middle of the viewport");
-    ConstraintBadge::seated(frame, seat, ui::icons::Icon::ConstraintParallel, 1, false)
-        .expect("a badge seats where the drawing is")
+    ConstraintBadge::seated(
+        frame.forward(),
+        seat,
+        ui::icons::Icon::ConstraintParallel,
+        1,
+        false,
+    )
+    .expect("a badge seats where the drawing is")
 }
 
 /// The glyph's four corners on screen: the images of the four plane points its sides span.
@@ -330,9 +336,9 @@ fn a_badges_ink_lies_on_the_line_its_plane_images_to() {
         "the badge has no extent to be wrong about: {spread} points"
     );
     assert!(
-        badge.plane.opening_at(badge.center) < 1e-5,
+        badge.plane.opening_at_plane(badge.seat) < 1e-5,
         "this camera is not edge-on, so the test cannot fail: opening {}",
-        badge.plane.opening_at(badge.center)
+        badge.plane.opening_at_plane(badge.seat)
     );
 
     for corner in corners_of(badge) {
@@ -377,5 +383,282 @@ fn a_badge_holds_its_screen_size_while_its_seat_spreads_with_the_zoom() {
     assert!(
         (grew - 100.0).abs() < 1.0,
         "a hundred times the distance must be a hundred times the plane units: {grew}"
+    );
+}
+
+/// A plane whose second axis images to NOTHING: the projection is exactly rank one and the plane
+/// draws as the horizontal line `y = 240`.
+///
+/// The tenth report's camera, posed as a matrix rather than found with an orbit angle, because
+/// exactly singular is a different branch from very nearly singular and an angle can only be asked
+/// to land near it. Every fixture in this file before this one was invertible, including the ones
+/// named for being edge-on — which is why eight rounds of work never reached the branch the report
+/// is about.
+const fn a_plane_imaged_to_a_line() -> PlaneMap {
+    PlaneMap::new([[0.6, 0.0, 320.0], [0.0, 0.0, 240.0], [0.0, 0.0, 1.0]])
+}
+
+/// **A badge on a plane that images to a line is a sliver ON that line — the mark does not exist
+/// at full size on the glass.**
+///
+/// The tenth report: *"It works up until I'm exactly edge-on, then the badges pop out of the
+/// plane."* The frame the pass used to build carries the projection's INVERSE, which asks which
+/// plane coordinate lies under a pixel — a question with no answer here, because every pixel of the
+/// line has a whole line of plane coordinates under it. So the frame declined, the pass substituted
+/// the flat page, and every badge drew as an upright 32-point square standing off a drawing that had
+/// gone to a line. The forward map has no such trouble: projecting a plane coordinate is well
+/// defined at every camera, which is exactly why the sketch CURVES were still drawing correctly
+/// while the marks beside them were not.
+///
+/// **Seen red** by the substitution the pass actually made, asserted below: the flat page puts the
+/// same glyph's corners 16 points off the line, which is half a badge.
+#[test]
+fn a_badge_on_a_plane_imaged_to_a_line_lies_along_that_line() {
+    let plane = a_plane_imaged_to_a_line();
+    let seat = [10.0, -4.0];
+    let badge = ConstraintBadge::seated(plane, seat, ui::icons::Icon::ConstraintParallel, 1, false)
+        .expect("a plane drawn as a line still seats a badge");
+
+    // The line, from the plane and not from the badge.
+    let (near, far) = (
+        plane.at([-500.0, 0.0]).expect("in front of the camera"),
+        plane.at([500.0, 0.0]).expect("in front of the camera"),
+    );
+    let along = (far - near).normalized();
+    let off = |point: egui::Pos2| {
+        let away = point - near;
+        (away - along * away.dot(along)).length()
+    };
+
+    for corner in corners_of(badge) {
+        assert!(
+            off(corner) < 1e-3,
+            "a corner of the glyph stands {} points off the line its own plane draws",
+            off(corner)
+        );
+    }
+    // And it is still a badge: 32 points of it, along the one direction there is.
+    let extent = corners_of(badge)
+        .into_iter()
+        .map(|corner| (corner - badge.center).length())
+        .fold(0.0_f32, f32::max);
+    assert!(
+        (extent - 16.0).abs() < 0.01,
+        "the sliver is not a badge long: {extent} points from its center"
+    );
+
+    // The red: what the pass substituted when the frame declined. Same glyph, same screen place,
+    // laid out on the flat page — a full-size upright square standing clear of the drawing.
+    let substituted = ConstraintBadge::seated(
+        PlaneMap::flat(),
+        [f64::from(badge.center.x), f64::from(badge.center.y)],
+        ui::icons::Icon::ConstraintParallel,
+        1,
+        false,
+    )
+    .expect("the flat page seats a badge");
+    let stood_off = corners_of(substituted)
+        .into_iter()
+        .map(off)
+        .fold(0.0_f32, f32::max);
+    assert!(
+        stood_off > 15.0,
+        "the fallback this test exists to condemn is not measurably wrong here: {stood_off} points"
+    );
+}
+
+/// **No camera makes the badge pass decline.** The forward map is total.
+///
+/// The frame beside it is not, and that asymmetry is the whole fix: a mark that only ever projects
+/// plane coordinates forward has nothing to fail at, while one that asks the inverse a question
+/// loses its answer at exactly the camera that makes the question ill-posed.
+#[test]
+fn the_planes_forward_map_answers_at_every_orbit_angle() {
+    let mut declined = 0;
+    for step in 0_u8..=36 {
+        let phi = f32::from(step) * std::f32::consts::PI / 36.0 - std::f32::consts::FRAC_PI_2;
+        let camera = OrbitCamera {
+            orbit_phi: phi,
+            ..the_dumps_camera(DISTANCE)
+        };
+        let aspect = VIEWPORT_PX[2] / VIEWPORT_PX[3];
+        let view_projection = camera.view_projection(aspect, glam::Vec3::ZERO, 64.0);
+        let clip_of = |coord: [f64; 2]| {
+            view_projection * glam::Vec4::new(coord[0] as f32, coord[1] as f32, 0.0, 1.0)
+        };
+        let map =
+            voxel_worker::windowed::a_sketch_planes_map(&clip_of, VIEWPORT_PX, PIXELS_PER_POINT);
+        assert!(
+            ConstraintBadge::seated(
+                map,
+                [0.0, 0.0],
+                ui::icons::Icon::ConstraintParallel,
+                1,
+                false
+            )
+            .is_some(),
+            "no badge at orbit angle {phi}"
+        );
+        if voxel_worker::windowed::a_sketch_planes_frame(&clip_of, VIEWPORT_PX, PIXELS_PER_POINT)
+            .is_none()
+        {
+            declined += 1;
+        }
+    }
+    // Reported and not asserted on: whether an ORBIT ANGLE lands exactly on the singular matrix is
+    // a question about float arithmetic, not about the drawing, and the branch itself is gated by
+    // `a_badge_on_a_plane_imaged_to_a_line`, which poses the matrix directly.
+    println!("the frame declined at {declined} of 37 orbit angles");
+}
+
+/// A drawing with something of every badge-placing species on it: a segment relation, a point
+/// relation, and a corner relation.
+///
+/// On `PlaneAxis::Z`, so the profile lies on the ground plane and the dump's camera — polar angle
+/// pi/2 — sees it exactly edge-on.
+fn a_scene_with_marked_up_geometry() -> (document::scene::Scene, document::scene::NodeId) {
+    use document::sketch::{ConstraintKind, Sketch, SketchPoint};
+
+    let mut sketch = Sketch::empty(document::sketch::PlaneAxis::Z);
+    let corner = sketch.add_free_point(SketchPoint::new(0, 0));
+    let right = sketch.add_free_point(SketchPoint::new(40, 0));
+    let up = sketch.add_free_point(SketchPoint::new(0, 30));
+    let along = sketch.connect(corner, right).expect("a run");
+    let rising = sketch.connect(corner, up).expect("a rise");
+
+    let context =
+        parametric::EvaluationContext::new(std::num::NonZeroU32::new(16).expect("a density"));
+    let producer = document::sketch::SketchSolid::extrude(sketch, 4);
+    let producer = producer
+        .with_constraint(ConstraintKind::Horizontal { segment: along }, context)
+        .expect("horizontal")
+        .0;
+    let producer = producer
+        .with_constraint(
+            ConstraintKind::Perpendicular {
+                first: along,
+                second: rising,
+            },
+            context,
+        )
+        .expect("perpendicular")
+        .0;
+    let producer = producer
+        .with_constraint(
+            ConstraintKind::Fix {
+                point: up,
+                at: SketchPoint::new(0, 30),
+            },
+            context,
+        )
+        .expect("fix")
+        .0;
+
+    let node = document::scene::Node::new(
+        "Sketch",
+        document::scene::NodeContent::SketchTool {
+            producer,
+            material: voxel_core::core_geom::MaterialChoice::Stone,
+        },
+    );
+    let scene = document::scene::Scene::single_node(node);
+    let id = scene.roots[0];
+    (scene, id)
+}
+
+/// **The badges the app would actually draw, at the camera the reports were filed from, all lie on
+/// the line the sketch plane images to.**
+///
+/// The other tests in this file pose a badge; this one runs the SHELL's own layout — the anchor
+/// rules, the standoff, the stacking, the constructor — over a real scene, and measures where every
+/// mark of every species lands. Nine rounds of these reports were closed against a posed badge or a
+/// replica of the arithmetic, and the tenth was a defect in the layout rather than in the mark.
+///
+/// **Seen red at 16 points off the line**, measured in the test itself: the flat page posed at each
+/// badge's own screen place, which is half a badge of standoff on a drawing that has no width.
+#[test]
+fn every_badge_the_shell_lays_out_lies_on_the_line_at_the_reporters_camera() {
+    let (scene, id) = a_scene_with_marked_up_geometry();
+    let handles = scene.sketch_handles(id, 16).expect("handles");
+    let document::scene::NodeContent::SketchTool { producer, .. } =
+        &scene.node_by_id(id).expect("the node").content
+    else {
+        panic!("a sketch node");
+    };
+
+    let camera = the_dumps_camera(DISTANCE);
+    let aspect = VIEWPORT_PX[2] / VIEWPORT_PX[3];
+    let view_projection = camera.view_projection(aspect, glam::Vec3::ZERO, 64.0);
+    let clip_of = |coord: [f64; 2]| {
+        let vertex = handles.profile_to_render(coord);
+        view_projection * glam::Vec4::new(vertex[0], vertex[1], vertex[2], 1.0)
+    };
+    let plane =
+        voxel_worker::windowed::a_sketch_planes_map(&clip_of, VIEWPORT_PX, PIXELS_PER_POINT);
+
+    let context = Some(parametric::EvaluationContext::new(
+        std::num::NonZeroU32::new(16).expect("a density"),
+    ));
+    let badges = voxel_worker::windowed::a_sketchs_constraint_badges(
+        &producer.sketch,
+        &handles,
+        plane,
+        context,
+        &|_| false,
+    );
+    assert!(
+        badges.len() >= 3,
+        "the drawing carries no marks to be wrong about: {}",
+        badges.len()
+    );
+
+    // The line, struck from the plane and not from any badge.
+    let (near, far) = (
+        plane.at([-5000.0, 0.0]).expect("in front of the camera"),
+        plane.at([5000.0, 0.0]).expect("in front of the camera"),
+    );
+    let along = (far - near).normalized();
+    let off = |point: egui::Pos2| {
+        let away = point - near;
+        (away - along * away.dot(along)).length()
+    };
+
+    let mut worst = 0.0_f32;
+    for badge in &badges {
+        for corner in corners_of(*badge) {
+            worst = worst.max(off(corner));
+        }
+        // Including the selection plate, which is drawn and therefore has to lie in the plane too.
+        for corner in badge.plate() {
+            worst = worst.max(off(corner));
+        }
+        worst = worst.max(off(badge.center));
+    }
+    assert!(
+        worst < 0.05,
+        "a badge stands {worst} points off the line its own sketch plane draws"
+    );
+
+    // The red, measured rather than asserted from memory: the flat page this pass fell back to
+    // when the frame declined, posed at each badge's own screen place, so the only difference is
+    // the plane the mark is built in.
+    let substituted = badges
+        .iter()
+        .filter_map(|badge| {
+            ConstraintBadge::seated(
+                PlaneMap::flat(),
+                [f64::from(badge.center.x), f64::from(badge.center.y)],
+                badge.icon,
+                badge.constraint,
+                false,
+            )
+        })
+        .flat_map(corners_of)
+        .map(off)
+        .fold(0.0_f32, f32::max);
+    println!("the flat page stood {substituted} points off the line");
+    assert!(
+        substituted > 10.0,
+        "the fallback this test exists to condemn is not measurably wrong here: {substituted}"
     );
 }

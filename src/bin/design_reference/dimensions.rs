@@ -807,7 +807,7 @@ impl Sheet {
                         .plane_of(center)
                         .expect("a posed frame answers under its own panel");
                     let badge = ui::chrome::ConstraintBadge::seated(
-                        plane,
+                        plane.forward(),
                         seat,
                         ui::icons::Icon::ConstraintQuantize,
                         1,
