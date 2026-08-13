@@ -8266,7 +8266,7 @@ const A_PROJECTION_TOO_FLAT_TO_CONVERGE: f32 = 1.0e-4;
 /// POINTS and needs nothing downstream. The last row is left as the projection's `w` untouched,
 /// because its SIGN is the in-front-of-the-camera test every caller of
 /// [`PlaneFrame::at`](ui::gizmos::dimension::PlaneFrame::at) relies on.
-fn a_sketch_planes_frame<F>(
+pub fn a_sketch_planes_frame<F>(
     clip_of: &F,
     viewport: [f32; 4],
     pixels_per_point: f32,

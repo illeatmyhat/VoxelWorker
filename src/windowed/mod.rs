@@ -57,6 +57,13 @@ mod palette;
 mod point_circle;
 mod polygon;
 mod render;
+
+/// The plane-to-screen strike, re-exported so a test can measure the REAL one.
+///
+/// Two rounds of this thread's diagnosis rested on a Python replica of the arithmetic below,
+/// which is a second authority over the same question and the class this repo kills on sight.
+/// The frame a test asks about has to be the frame the shell draws with.
+pub use render::a_sketch_planes_frame;
 mod sketch_target;
 mod slot;
 mod tangent_arc;
