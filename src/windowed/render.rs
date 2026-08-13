@@ -8382,6 +8382,18 @@ where
 /// A degenerate direction is NOT edge-on and does not decline here: a span whose two points the
 /// solver has driven together still wants its number on screen so the author can see what to fix,
 /// and the gizmo already draws that case finitely.
+///
+/// **DELIBERATELY BLIND TO THE CASE ITS NAME PROMISES, and the name is kept anyway.** It normalizes
+/// both directions and reads only the sine, so it sees SKEW — two directions with real length
+/// converging — and cannot see COLLAPSE, where one axis has no length left to have a direction. On
+/// the camera of the eighth report, one axis is projected three million to one shorter than the
+/// other and this reads 0.1325, above its own band, out of f32 noise; a further 0.0055 degrees onto
+/// the equator and it reads 1.0000.
+/// [`PlaneFrame::opening_at`](ui::gizmos::dimension::PlaneFrame::opening_at) is the reading for that
+/// regime, and nothing calls it here on purpose: the owner's ruling is that a mark is ink and ink
+/// collapses with its paper, so declining at edge-on would delete exactly the marks he asked to see
+/// lie flat. What survives is the skew guard, which is a real construction failure — two lines that
+/// barely cross put a foot where the geometry never went — and is unaffected by the blindness.
 fn a_plane_too_edge_on_to_dimension(along: egui::Vec2, across: [egui::Vec2; 2]) -> bool {
     let along = along.normalized();
     if along.length() <= f32::EPSILON {
