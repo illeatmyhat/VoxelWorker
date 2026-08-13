@@ -193,7 +193,7 @@ pub const STROKE_WIDTH: f32 = GRID / STROKE_RATIO;
 /// How far a CONSTRAINT glyph's ink reaches from its center, as a fraction of the box's
 /// half-width. The shelf is drawn inside a margin; none of its glyphs fills its box to the corner.
 ///
-/// It exists because a glyph drawn onto a SHEARED frame — see [`IconPainter::on_frame`] — reaches
+/// It exists because a glyph projected INTO a plane — see [`IconPainter::on_plane`] — reaches
 /// further from its center than an upright one, and the badge that carries it has to stay inside
 /// the constant screen square that makes it clickable. **Fitting the BOX would shrink every badge
 /// by 29% at an ordinary three-quarter view where no ink escapes at all** — measured, the worst
@@ -227,20 +227,42 @@ pub const INK_REACH: f32 = 0.7778;
 /// to be told which grid it is on.
 pub struct IconPainter<'a> {
     painter: &'a Painter,
-    /// Where grid (0, 0) lands.
-    origin: Pos2,
-    /// The glyph's own +x side, full width, on screen.
-    across: Vec2,
-    /// Its +y side. Not the square of `across` on screen: a glyph drawn onto a projected sketch
-    /// plane is SHEARED, and the pair is what carries that.
-    down: Vec2,
-    /// The glyph's screen SIZE, which is what the pen scales by — see [`IconPainter::on_frame`].
+    /// How a grid coordinate becomes a screen point — see [`GridToScreen`].
+    reach: GridToScreen<'a>,
+    /// The glyph's screen SIZE, which is what the pen scales by — see [`IconPainter::on_plane`].
     span: f32,
     stroke: Stroke,
     grid: f32,
     accent: Color32,
     construction: Color32,
     constraint: Color32,
+}
+
+/// How a glyph's authoring grid reaches the screen — the kit's one seam, in its two species.
+///
+/// Named rather than left as a triple with a nullable override, because the two are different
+/// GEOMETRY and not two settings of one: an affine sends every straight grid line to a straight
+/// screen line at a constant scale, and a projective one does not.
+enum GridToScreen<'a> {
+    /// The glyph is a parallelogram on the glass: grid (0, 0) at `origin`, spanned by the two full
+    /// sides. `down` is not the screen square of `across` — a glyph sheared to sit in a projected
+    /// plane needs both, and the pair is what carries the shear.
+    Sides {
+        origin: Pos2,
+        across: Vec2,
+        down: Vec2,
+    },
+    /// The glyph is a patch OF a plane in the scene, and each grid point is projected the way a
+    /// curve's vertex is — the closure is the caller's own plane-to-screen door.
+    ///
+    /// The difference from `Sides` is not the shear, which a parallelogram already carries; it is
+    /// that a projection DIVIDES. A parallelogram is that projection's derivative sampled at one
+    /// point and held constant across the glyph, so it is exact only in the limit of a small mark
+    /// on a plane the camera is square to, and it degrades in the direction no sample can see:
+    /// square-on it is right, edge-on the sampled sides are noise with no length left. Projecting
+    /// every point instead is exact everywhere and has no degenerate case, because the plane's
+    /// image is wherever the plane's image is.
+    InPlane(&'a dyn Fn(f32, f32) -> Pos2),
 }
 
 impl<'a> IconPainter<'a> {
@@ -262,36 +284,60 @@ impl<'a> IconPainter<'a> {
         grid: f32,
         stroke_width: f32,
     ) -> Self {
-        Self::on_frame(
+        Self::with_reach(
             painter,
-            rect.left_top(),
-            Vec2::new(rect.width(), 0.0),
-            Vec2::new(0.0, rect.height()),
+            GridToScreen::Sides {
+                origin: rect.left_top(),
+                across: Vec2::new(rect.width(), 0.0),
+                down: Vec2::new(0.0, rect.height()),
+            },
+            rect.width(),
             color,
             grid,
             stroke_width,
         )
     }
 
-    /// Bind the kit to a PARALLELOGRAM instead of a box: `origin` is where the glyph's top-left
-    /// grid corner lands, and `across`/`down` are its two full-width sides.
+    /// Bind the kit to a patch of a PLANE IN THE SCENE: `project` carries a grid coordinate all the
+    /// way to the screen through the caller's own projection, the same door the sketch curves go
+    /// through, and `span` is how big the glyph comes out in points.
     ///
-    /// This is how a glyph is drawn as ink lying IN a projected sketch plane rather than pasted on
-    /// the glass in front of it. Every primitive in the kit routes through [`at`](Self::at) —
-    /// ellipses, arcs and cubics are sampled into grid points first and mapped like any other — so
-    /// one general pair of sides shears the whole set, curves included, and no glyph file changes.
+    /// This is what "lies in the plane" means when it is true by construction rather than by
+    /// arithmetic. Binding the glyph to a parallelogram builds the mark from the projection's
+    /// derivative sampled at ONE point; this asks the projection about every point the mark is made
+    /// of, so
+    /// there is no sample to be stale, no direction to be recovered from a vector too short to have
+    /// one, and no camera at which the construction stops being exact. A plane seen edge-on draws
+    /// its glyph as a sliver on the line the plane images to, because that is where the plane's own
+    /// points land.
     ///
-    /// **The pen stays the screen's while the path becomes the plane's.** Stroke width, dash
-    /// period, segment count and a disc's radius all scale by the glyph's `across` length and
-    /// never by its area, exactly as a dimension's type size does: ink on receding paper keeps its
-    /// weight and loses its footprint. So a badge on a steeply raked plane is a squashed drawing
-    /// at an unsquashed line weight. That is a real asymmetry against texture-mapped text, whose
-    /// stroke weights squash with the frame, and it is invisible at the sizes either is drawn at.
-    pub fn on_frame(
+    /// `span` is passed rather than measured because the pen still belongs to the screen: stroke
+    /// width, dash period and segment count scale by the glyph's intended screen size, so ink on
+    /// receding paper keeps its weight and loses only its footprint.
+    pub fn on_plane(
         painter: &'a Painter,
-        origin: Pos2,
-        across: Vec2,
-        down: Vec2,
+        project: &'a dyn Fn(f32, f32) -> Pos2,
+        span: f32,
+        color: Color32,
+        grid: f32,
+        stroke_width: f32,
+    ) -> Self {
+        Self::with_reach(
+            painter,
+            GridToScreen::InPlane(project),
+            span,
+            color,
+            grid,
+            stroke_width,
+        )
+    }
+
+    /// The shared tail of the constructors: the pen and the ink roles, which do not depend on how
+    /// the grid reaches the screen.
+    fn with_reach(
+        painter: &'a Painter,
+        reach: GridToScreen<'a>,
+        span: f32,
         color: Color32,
         grid: f32,
         stroke_width: f32,
@@ -299,13 +345,10 @@ impl<'a> IconPainter<'a> {
         // The stroke scales with the glyph so a 44 pt tile is not drawn with a hairline meant
         // for a 15 pt rail button. A large mark rides a proportionally lighter stroke, which is
         // why this is a ratio and not a constant.
-        let span = across.length();
         let scale = span / grid;
         Self {
             painter,
-            origin,
-            across,
-            down,
+            reach,
             span,
             stroke: Stroke::new(stroke_width * scale.max(0.55), color),
             grid,
@@ -341,16 +384,25 @@ impl<'a> IconPainter<'a> {
         )
     }
 
-    /// Map a point on the authoring grid onto the glyph's frame.
+    /// Map a point on the authoring grid onto the screen.
     ///
     /// The set's ONE grid-to-screen seam: every mark in the kit reaches the screen through here,
-    /// which is what lets [`on_frame`](Self::on_frame) shear all of them at once.
+    /// which is what lets [`on_plane`](Self::on_plane) project all of them — ellipses, arcs and
+    /// cubics are sampled into grid points first and go through here like any other — with no glyph
+    /// file knowing it happened.
     /// The grid coordinate is divided before it scales the side, not after, so an upright glyph
     /// reaches exactly the pixel the box arithmetic this replaced reached — the `down` term is a
     /// zero vector there and adds nothing. Icon parity is a segment-set diff and does not want a
     /// last-bit excuse.
     pub fn at(&self, x: f32, y: f32) -> Pos2 {
-        self.origin + self.across * (x / self.grid) + self.down * (y / self.grid)
+        match self.reach {
+            GridToScreen::Sides {
+                origin,
+                across,
+                down,
+            } => origin + across * (x / self.grid) + down * (y / self.grid),
+            GridToScreen::InPlane(project) => project(x, y),
+        }
     }
 
     /// The glyph's stroke.
@@ -1025,21 +1077,20 @@ impl Icon {
         self.draw_with(&IconPainter::new(painter, rect, color));
     }
 
-    /// Draw the glyph onto a PARALLELOGRAM — the same mark, lying in a projected sketch plane
-    /// rather than on the glass. See [`IconPainter::on_frame`].
-    pub fn draw_on_frame(
+    /// Draw the glyph as a patch OF a plane in the scene — the same mark, made of points the
+    /// plane's own projection places, rather than of points laid out on the glass in front of it.
+    /// See [`IconPainter::on_plane`].
+    pub fn draw_on_plane(
         self,
         painter: &Painter,
-        origin: Pos2,
-        across: Vec2,
-        down: Vec2,
+        project: &dyn Fn(f32, f32) -> Pos2,
+        span: f32,
         color: Color32,
     ) {
-        self.draw_with(&IconPainter::on_frame(
+        self.draw_with(&IconPainter::on_plane(
             painter,
-            origin,
-            across,
-            down,
+            project,
+            span,
             color,
             GRID,
             STROKE_WIDTH,

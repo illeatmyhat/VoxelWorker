@@ -799,18 +799,22 @@ impl Sheet {
                     let plane = dimension::PlaneFrame::from_plane_to_screen(frame)
                         .expect("a posed frame is not singular");
                     let center = Pos2::new(left + 22.0, s.bottom() - 42.0);
-                    let reading = plane.reading_at(center);
-                    ui::chrome::paint_constraint_badges(
-                        p,
-                        &[ui::chrome::ConstraintBadge {
-                            center,
-                            reading,
-                            square: plane.square_to(reading, center),
-                            icon: ui::icons::Icon::ConstraintQuantize,
-                            constraint: 1,
-                            picked,
-                        }],
-                    );
+                    // Seated by its PLANE coordinate, because that is what a badge is now made of.
+                    // The specimen names the screen point it wants the mark centered on and asks
+                    // the frame which plane coordinate is under it, so the row still poses the
+                    // panels on a grid while the badge is built the way the app builds it.
+                    let seat = plane
+                        .plane_of(center)
+                        .expect("a posed frame answers under its own panel");
+                    let badge = ui::chrome::ConstraintBadge::seated(
+                        plane,
+                        seat,
+                        ui::icons::Icon::ConstraintQuantize,
+                        1,
+                        picked,
+                    )
+                    .expect("a posed frame seats a badge");
+                    ui::chrome::paint_constraint_badges(p, &[badge]);
                     p.text(
                         Pos2::new(left, s.bottom() - 16.0),
                         egui::Align2::LEFT_TOP,

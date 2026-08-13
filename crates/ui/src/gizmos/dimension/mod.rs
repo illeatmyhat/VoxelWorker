@@ -282,7 +282,7 @@ impl PlaneFrame {
 
     /// Which plane coordinate lies under a screen point — every pixel has one.
     #[must_use]
-    fn plane_of(&self, at: Pos2) -> Option<[f64; 2]> {
+    pub fn plane_of(&self, at: Pos2) -> Option<[f64; 2]> {
         let [u, v, w] = carried(&self.to_plane, [f64::from(at.x), f64::from(at.y), 1.0]);
         (w.abs() > f64::EPSILON && w.is_finite()).then(|| [u / w, v / w])
     }
@@ -341,24 +341,52 @@ impl PlaneFrame {
     /// Zero where the frame cannot answer at all.
     #[must_use]
     pub fn opening_at(&self, at: Pos2) -> f32 {
-        let Some([across, down]) = self.axes_at(at) else {
+        let Some([larger, smaller]) = self.reaches_at(at) else {
             return 0.0;
         };
-        // sigma_1 * sigma_2 is |det|, and sigma_1^2 + sigma_2^2 is the squared Frobenius norm, so
-        // the larger falls out of one quadratic and the ratio needs no eigen decomposition.
-        let determinant = across.x.mul_add(down.y, -(across.y * down.x)).abs();
-        let frobenius = across.length_sq() + down.length_sq();
-        let gap = frobenius.mul_add(frobenius, -(4.0 * determinant * determinant));
-        let larger_squared = (frobenius + gap.max(0.0).sqrt()) / 2.0;
-        if !larger_squared.is_finite() || larger_squared <= 0.0 {
+        if larger <= 0.0 {
             return 0.0;
         }
-        let opening = determinant / larger_squared;
+        let opening = smaller / larger;
         if opening.is_finite() {
             opening.clamp(0.0, 1.0)
         } else {
             0.0
         }
+    }
+
+    /// The FURTHEST any unit step in the plane reaches on screen at `at`, in points per plane unit.
+    ///
+    /// The scale a mark that must hold a constant screen size is sized against: divide the size it
+    /// wants in points by this and the answer is how big to draw it IN PLANE UNITS. Every other
+    /// direction then images shorter, so the mark's largest extent on screen is exactly the size
+    /// asked for and it can never overshoot — where normalizing on one named axis blows up the
+    /// moment that axis is the collapsed one.
+    ///
+    /// A MAGNITUDE and not a direction, which is the one class of frame reading that stays honest
+    /// as a plane goes edge-on: magnitudes collapse toward zero truthfully, while the direction of a
+    /// vector with no length left is noise. Zero where the frame cannot answer at all.
+    #[must_use]
+    pub fn largest_reach_at(&self, at: Pos2) -> f32 {
+        self.reaches_at(at).map_or(0.0, |[larger, _]| larger)
+    }
+
+    /// The Jacobian's two singular values at `at`, largest first — how far the plane's best and
+    /// worst unit steps reach on screen, in points per plane unit.
+    ///
+    /// `sigma_1 * sigma_2` is `|det|` and `sigma_1^2 + sigma_2^2` is the squared Frobenius norm, so
+    /// both fall out of one quadratic and neither needs an eigen decomposition.
+    fn reaches_at(&self, at: Pos2) -> Option<[f32; 2]> {
+        let [across, down] = self.axes_at(at)?;
+        let determinant = across.x.mul_add(down.y, -(across.y * down.x)).abs();
+        let frobenius = across.length_sq() + down.length_sq();
+        let gap = frobenius.mul_add(frobenius, -(4.0 * determinant * determinant));
+        let larger = ((frobenius + gap.max(0.0).sqrt()) / 2.0).max(0.0).sqrt();
+        if !larger.is_finite() || larger <= 0.0 {
+            return None;
+        }
+        let smaller = determinant / larger;
+        smaller.is_finite().then_some([larger, smaller])
     }
 
     /// The plane's own +X where it passes through `at`, as a unit screen direction, folded upright.

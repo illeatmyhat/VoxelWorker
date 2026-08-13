@@ -19,6 +19,7 @@
 )]
 
 use camera::{OrbitCamera, ProjectionMode};
+use ui::chrome::ConstraintBadge;
 use ui::gizmos::dimension::PlaneFrame;
 
 /// The dump's camera, field for field. `%TEMP%/voxelworker-repro.json`, written 2026-08-12.
@@ -73,6 +74,22 @@ fn axis_reach(frame: PlaneFrame, at: egui::Pos2) -> [f32; 2] {
         .axes_at(at)
         .expect("the frame answers at its own center");
     [across.length(), down.length()]
+}
+
+/// The same, at a chosen polar angle — the badge tests need a camera that is NOT edge-on to say
+/// anything about size, because at edge-on the honest size is a sliver.
+fn the_frame_at_angle(distance: f32, phi: f32) -> PlaneFrame {
+    let camera = OrbitCamera {
+        orbit_phi: phi,
+        ..the_dumps_camera(distance)
+    };
+    let aspect = VIEWPORT_PX[2] / VIEWPORT_PX[3];
+    let view_projection = camera.view_projection(aspect, glam::Vec3::ZERO, 64.0);
+    let clip_of = |coord: [f64; 2]| {
+        view_projection * glam::Vec4::new(coord[0] as f32, coord[1] as f32, 0.0, 1.0)
+    };
+    voxel_worker::windowed::a_sketch_planes_frame(&clip_of, VIEWPORT_PX, PIXELS_PER_POINT)
+        .expect("the camera strikes a frame")
 }
 
 /// Roughly the middle of the viewport in points, which is where the drawing sits.
@@ -236,5 +253,129 @@ fn the_orthographic_frame_ignores_the_scene_radius() {
         "the scene radius moved the frame: {} against {}",
         small[0],
         large[0]
+    );
+}
+
+/// A badge seated where the sketch's own drawing is, on a given camera.
+fn a_badge_at(distance: f32, phi: f32) -> ConstraintBadge {
+    let frame = the_frame_at_angle(distance, phi);
+    let seat = frame
+        .plane_of(the_middle())
+        .expect("the frame answers under the middle of the viewport");
+    ConstraintBadge::seated(frame, seat, ui::icons::Icon::ConstraintParallel, 1, false)
+        .expect("a badge seats where the drawing is")
+}
+
+/// The glyph's four corners on screen: the images of the four plane points its sides span.
+///
+/// Built from the badge's own public geometry rather than by calling the paint, so the assertion is
+/// about the MARK's shape and needs no egui context. These are the same four plane points the
+/// painter walks its grid over.
+fn corners_of(badge: ConstraintBadge) -> Vec<egui::Pos2> {
+    [(0.5, 0.5), (0.5, -0.5), (-0.5, 0.5), (-0.5, -0.5)]
+        .into_iter()
+        .filter_map(|(across, down)| {
+            badge.plane.at([
+                badge.across[0].mul_add(across, badge.down[0].mul_add(down, badge.seat[0])),
+                badge.across[1].mul_add(across, badge.down[1].mul_add(down, badge.seat[1])),
+            ])
+        })
+        .collect()
+}
+
+/// **A constraint badge's ink lies on the LINE the sketch plane images to, at the camera the
+/// eighth report was filed from.**
+///
+/// The ninth report, as a gate. A badge used to be built on the glass from two screen directions
+/// sampled off the projection at one point, and at this camera one of those directions is the
+/// image of an axis three million to one shorter than the other — a vector with no length left to
+/// have a direction, whose reading is f32 noise. The mark stood up out of a plane that draws as a
+/// line. Every point of the glyph is now a point of the plane, so it can only land where the plane
+/// lands.
+///
+/// **Seen red** by making the glyph's second side the screen square of its first, pulled back into
+/// the plane — which is what every version of this before the rewrite amounted to. The corners then
+/// stood 16 points off the line the plane draws, which is half a badge.
+#[test]
+fn a_badges_ink_lies_on_the_line_its_plane_images_to() {
+    let badge = a_badge_at(DISTANCE, PHI);
+    // The line the plane images to, taken from the plane itself and NOT from the badge: two plane
+    // points far apart along the surviving axis. A guard that read the badge would be asking the
+    // mark to agree with itself.
+    let seat = badge.seat;
+    let (near, far) = (
+        badge
+            .plane
+            .at([seat[0] - 500.0, seat[1]])
+            .expect("the plane images in front of the camera"),
+        badge
+            .plane
+            .at([seat[0] + 500.0, seat[1]])
+            .expect("the plane images in front of the camera"),
+    );
+    let along = (far - near).normalized();
+    let off = |point: egui::Pos2| {
+        let away = point - near;
+        (away - along * away.dot(along)).length()
+    };
+
+    // Discriminability: the plane really does draw as a line here, so a mark that left it would
+    // have somewhere to go. Without this the assertion below passes on any camera at all.
+    let spread = corners_of(badge)
+        .into_iter()
+        .map(|corner| (corner - badge.center).length())
+        .fold(0.0_f32, f32::max);
+    assert!(
+        spread > 10.0,
+        "the badge has no extent to be wrong about: {spread} points"
+    );
+    assert!(
+        badge.plane.opening_at(badge.center) < 1e-5,
+        "this camera is not edge-on, so the test cannot fail: opening {}",
+        badge.plane.opening_at(badge.center)
+    );
+
+    for corner in corners_of(badge) {
+        assert!(
+            off(corner) < 0.05,
+            "a corner of the glyph stands {} points off the line its own plane draws",
+            off(corner)
+        );
+    }
+}
+
+/// **A badge keeps its size on screen however far the author zooms out, and its seat converges with
+/// the geometry it names.**
+///
+/// The owner's own prediction of what the fix should look like, run as an assertion: *"I should
+/// expect that if I zoom out far enough all of the badges should overlap each other at the
+/// origin"*, and separately *"It doesn't become a point when I zoom out. The size is still
+/// stable."* Both fall out of the same mechanism and neither is coded for. The glyph is sized in
+/// PLANE units against how far the plane reaches on screen, so the number of points it covers is
+/// the same at both ends while the plane coordinate it occupies grows by the zoom factor — which is
+/// exactly how the drawing under it behaves, so the marks pile up as their anchors do.
+#[test]
+fn a_badge_holds_its_screen_size_while_its_seat_spreads_with_the_zoom() {
+    let isometric = 0.955_316_6;
+    let near = a_badge_at(1000.0, isometric);
+    let far = a_badge_at(100_000.0, isometric);
+
+    let extent = |badge: ConstraintBadge| {
+        corners_of(badge)
+            .into_iter()
+            .map(|corner| (corner - badge.center).length())
+            .fold(0.0_f32, f32::max)
+    };
+    let (near_px, far_px) = (extent(near), extent(far));
+    assert!(
+        (near_px - far_px).abs() < 0.01 * near_px.max(1.0),
+        "the badge changed size across a hundredfold zoom: {near_px} then {far_px} points"
+    );
+
+    let spans = |badge: ConstraintBadge| badge.across[0].hypot(badge.across[1]);
+    let grew = spans(far) / spans(near);
+    assert!(
+        (grew - 100.0).abs() < 1.0,
+        "a hundred times the distance must be a hundred times the plane units: {grew}"
     );
 }

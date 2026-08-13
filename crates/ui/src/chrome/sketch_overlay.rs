@@ -329,59 +329,183 @@ pub fn sketch_draw_preview(ui: &egui::Ui, viewport: Rect, marks: &[SketchPreview
 /// should depend on two vectors staying the same length.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ConstraintBadge {
-    /// Where the badge's box is centered, in egui points, already projected by the shell.
+    /// Where the badge's hit square and its selection plate are centered, in egui points: the
+    /// image of [`seat`](Self::seat). Those two are UI state — "you have hold of this" — and stay
+    /// square to the glass, so they are the one part of a badge that wants a screen point.
     pub center: Pos2,
     /// The glyph — the same mark the rail cell that made this constraint carries.
     pub icon: crate::icons::Icon,
-    /// Which way the glyph READS: the sketch plane's own left-to-right at this badge, imaged,
-    /// unit, and folded upright so a badge is never drawn upside down.
-    pub reading: Vec2,
-    /// The plane direction square to `reading` IN THE PLANE, imaged, on the lift side, scaled so
-    /// one unit along the reading direction is one unit long.
+    /// The glyph's own center, IN SKETCH PLANE COORDINATES.
+    pub seat: [f64; 2],
+    /// The plane vector the glyph's +x side runs along, at full glyph width, in PLANE units.
     ///
-    /// Its length is the foreshortening and its direction is the shear — which is why a pair of
-    /// directions could not do this job, and why it is not `reading` turned a quarter on screen.
-    /// A plane pitched straight away from the camera has no shear at all and is pure squash.
-    pub square: Vec2,
+    /// A plane vector and not a screen one, which is the whole of this type's second attempt at
+    /// coplanarity. The first carried the projection's derivative sampled at the badge's center —
+    /// a pair of screen directions — and built the mark on the glass from them, which is exact
+    /// only for a small mark on a plane the camera is nearly square to. Every point of the glyph
+    /// is now a point of the plane, and it reaches the screen the way a curve's vertex does.
+    pub across: [f64; 2],
+    /// Its +y side, in plane units. The glyph's grid runs y DOWNWARD, so this normally points the
+    /// opposite way from the plane's own up.
+    pub down: [f64; 2],
+    /// The plane's projection, which is what turns the three fields above into pixels.
+    pub plane: crate::gizmos::dimension::PlaneFrame,
+    /// The glyph's intended size on screen in points, which is what the PEN scales by.
+    ///
+    /// The path became the plane's; the pen stays the screen's. Stroke width, dash period and how
+    /// many segments a curve is sampled into are all read off this, so a badge on a raked plane is
+    /// a squashed drawing at an unsquashed line weight.
+    pub span: f32,
     /// The constraint this badge stands for, so a click on it names an entity.
     pub constraint: document::sketch::EntityId,
     /// Whether that constraint is in the selection.
     pub picked: bool,
 }
 
+/// The plane's own right and up where it passes through `seat`, each as a signed plane AXIS,
+/// chosen so a glyph built on them reads left-to-right and is never drawn mirrored.
+///
+/// Reads the SIGNS of two imaged directions and nothing else. A sign is the one thing still worth
+/// reading on a plane seen edge-on: the magnitudes there are honestly near zero and the directions
+/// are noise, so this flips between frames at exactly the cameras where what it flips is a sliver
+/// a pixel wide. Self-limiting — and the alternative, pinning the basis to the plane's authored
+/// axes, draws every glyph mirrored whenever the author looks at the sketch from behind, which is
+/// a wrong drawing at an ordinary camera rather than a shimmer at an extreme one.
+///
+/// Public because the shell places badges by stepping out from an anchor along the plane's own
+/// diagonal, which is these two summed, and a second copy of the fold could disagree with the one
+/// the glyph is actually built on.
+#[must_use]
+pub fn a_planes_upright_axes(
+    plane: crate::gizmos::dimension::PlaneFrame,
+    seat: [f64; 2],
+) -> Option<([f64; 2], [f64; 2])> {
+    let here = plane.at(seat)?;
+    let image = |step: [f64; 2]| {
+        plane
+            .at([seat[0] + step[0], seat[1] + step[1]])
+            .map(|there| there - here)
+    };
+    let (rightward, upward) = (image([1.0, 0.0])?, image([0.0, 1.0])?);
+    let rights = if rightward.x >= 0.0 { 1.0 } else { -1.0 };
+    // A glyph's grid runs y DOWNWARD, so its second side is the plane's up REVERSED, and the pair
+    // reads unmirrored when that side turns clockwise from the first on a screen whose y runs down.
+    let across = rightward * (rights as f32);
+    let turn = across.x.mul_add(upward.y, -(across.y * upward.x));
+    let ups = if turn <= 0.0 { 1.0 } else { -1.0 };
+    Some(([rights, 0.0], [0.0, ups]))
+}
+
 impl ConstraintBadge {
-    /// The glyph's frame: `(top-left, the +x side, the +y side)`, in egui points.
+    /// A badge of the constant screen size, seated at a plane coordinate and lying in that plane.
     ///
-    /// **Inscribed in the badge's constant square, which is the whole reason this is a method and
-    /// not two multiplications at the paint site.** A sheared box reaches further from its center
-    /// than an upright one, so a glyph drawn at full size on a raked plane spills past the plate
-    /// behind it and past the hit rect that claims it, breaking the rule that what is clickable is
-    /// exactly what is drawn. Scaling both sides down by the worst corner's overhang fixes it with
-    /// no threshold and no second look: square-on the overhang is below 1 and nothing moves.
+    /// **The size is chosen in PLANE UNITS so that it images to [`SKETCH_CONSTRAINT_BADGE`]
+    /// points**, which is the whole trick that lets a mark be built entirely in the plane — where
+    /// it is coplanar by construction — and still not shrink as the author zooms out. The divisor
+    /// is the plane's largest projected reach, so the glyph's largest extent on screen is exactly
+    /// the badge size and no direction of it can overshoot.
     ///
-    /// **Measured on the INK and not on the box**, through [`crate::icons::INK_REACH`]. The box's
-    /// own corner stands 40% out at an ordinary three-quarter view, but no glyph on the shelf
-    /// fills its box — the worst mark there is 1.7 points INSIDE the square, not outside it — so
-    /// fitting the box would shrink every badge by 29% to clear room nothing occupies. Fitting
-    /// the ink costs 8% at that view and earns it at harder rakes, where the same mark stands 2.7
-    /// points out.
-    fn frame(self, size: f32) -> (Pos2, Vec2, Vec2) {
-        let across = self.reading * size;
-        // The glyph grid runs y DOWNWARD, and `square` is the lift side — the way a value is
-        // raised off its dimension line — so the two are opposite.
-        let down = -self.square * size;
-        let half = size / 2.0;
-        // Both diagonals, per screen axis: a parallelogram's four corners are two vectors and
-        // their negatives, so two of them decide the extent.
-        let overhang = [(across + down) / 2.0, (across - down) / 2.0]
+    /// `None` where the seat is behind the camera or the plane images to a point, which is the same
+    /// rule the drawing itself follows: geometry the camera cannot see carries no mark.
+    #[must_use]
+    pub fn seated(
+        plane: crate::gizmos::dimension::PlaneFrame,
+        seat: [f64; 2],
+        icon: crate::icons::Icon,
+        constraint: document::sketch::EntityId,
+        picked: bool,
+    ) -> Option<Self> {
+        let center = plane.at(seat)?;
+        let reach = plane.largest_reach_at(center);
+        if !(reach > 0.0) || !reach.is_finite() {
+            return None;
+        }
+        let size = f64::from(SKETCH_CONSTRAINT_BADGE / reach);
+        let (rights, ups) = a_planes_upright_axes(plane, seat)?;
+        Some(Self {
+            center,
+            icon,
+            seat,
+            across: [rights[0] * size, rights[1] * size],
+            // The glyph's grid runs y downward and the plane's second axis runs up.
+            down: [-ups[0] * size, -ups[1] * size],
+            plane,
+            span: SKETCH_CONSTRAINT_BADGE,
+            constraint,
+            picked,
+        })
+    }
+
+    /// Where a glyph grid coordinate lands on screen: into the plane first, then through the
+    /// plane's own projection.
+    ///
+    /// The grid's center is the badge's [`seat`](Self::seat), so the glyph is built outward from
+    /// the point the badge is about rather than from a corner — which is what makes
+    /// [`center`](Self::center) the seat's image and lets the hit square be struck around it.
+    ///
+    /// A grid point that lands BEHIND the camera collapses onto the badge's center. It takes a
+    /// plane whose image runs off the horizon within the width of one badge to reach that, and the
+    /// honest drawing there is a degenerate mark rather than a vertex flung across the viewport.
+    fn grid_to_screen(self, fit: f64) -> impl Fn(f32, f32) -> Pos2 {
+        let grid = f64::from(crate::icons::GRID);
+        move |x, y| {
+            let across = f64::from(x) / grid - 0.5;
+            let down = f64::from(y) / grid - 0.5;
+            self.plane
+                .at(self.in_plane(across * fit, down * fit))
+                .unwrap_or(self.center)
+        }
+    }
+
+    /// A point of the glyph in plane coordinates, given its offsets along the two sides as
+    /// fractions of the full glyph width — so the four corners are the four combinations of
+    /// plus and minus a half.
+    fn in_plane(self, across: f64, down: f64) -> [f64; 2] {
+        [
+            self.across[0].mul_add(across, self.down[0].mul_add(down, self.seat[0])),
+            self.across[1].mul_add(across, self.down[1].mul_add(down, self.seat[1])),
+        ]
+    }
+
+    /// How far the glyph must shrink to keep its ink inside the square that claims its click.
+    ///
+    /// **What is clickable is exactly what is drawn**, and the hit square is screen-axis-aligned
+    /// and constant, so a glyph on a raked plane can reach past it: a corner of the projected
+    /// parallelogram stands further out than a side does, and at a hard rake both sides can image
+    /// near their full length in nearly the same screen direction. Shrinking by the worst corner's
+    /// overhang fixes it with no threshold and no second look — square-on the overhang is below one
+    /// and nothing moves.
+    ///
+    /// **Measured on the INK and not on the box**, through [`crate::icons::INK_REACH`]: no glyph on
+    /// the constraint shelf fills its own box, so fitting the box would shrink every badge to clear
+    /// room nothing occupies.
+    ///
+    /// All FOUR corners, where the parallelogram this replaced needed only two. A projection that
+    /// divides does not carry a corner to the negative of its opposite, so the four are four
+    /// separate questions.
+    ///
+    /// One pass. The correction is a scalar on a mark 32 points wide, over which the projection is
+    /// near enough affine that a second pass would move the answer by less than the ink's own
+    /// stroke width.
+    fn inscribed(self) -> f64 {
+        let half = f64::from(SKETCH_CONSTRAINT_BADGE) / 2.0;
+        if half <= 0.0 {
+            return 1.0;
+        }
+        let reach = [(0.5, 0.5), (0.5, -0.5), (-0.5, 0.5), (-0.5, -0.5)]
             .into_iter()
-            .flat_map(|corner| [corner.x.abs(), corner.y.abs()])
-            .fold(0.0_f32, f32::max)
-            * crate::icons::INK_REACH
-            / half;
-        let fit = if overhang > 1.0 { 1.0 / overhang } else { 1.0 };
-        let (across, down) = (across * fit, down * fit);
-        (self.center - (across + down) / 2.0, across, down)
+            .filter_map(|(across, down)| self.plane.at(self.in_plane(across, down)))
+            .flat_map(|corner| {
+                let away = corner - self.center;
+                [f64::from(away.x.abs()), f64::from(away.y.abs())]
+            })
+            .fold(0.0_f64, f64::max);
+        let overhang = reach * f64::from(crate::icons::INK_REACH) / half;
+        if overhang > 1.0 {
+            1.0 / overhang
+        } else {
+            1.0
+        }
     }
 }
 
@@ -476,10 +600,13 @@ pub fn paint_constraint_badges(painter: &egui::Painter, badges: &[ConstraintBadg
                 StrokeKind::Inside,
             );
         }
-        let (origin, across, down) = badge.frame(SKETCH_CONSTRAINT_BADGE);
-        badge
-            .icon
-            .draw_on_frame(&painter, origin, across, down, ink);
+        let fit = badge.inscribed();
+        badge.icon.draw_on_plane(
+            painter,
+            &badge.grid_to_screen(fit),
+            badge.span * (fit as f32),
+            ink,
+        );
     }
 }
 
@@ -1009,20 +1136,33 @@ mod tests {
     }
 
     /// The same, for a test that cares WHICH glyph — the shelf's marks do not all reach as far.
+    ///
+    /// Posed by naming the SCREEN point the mark should sit on and asking the frame which plane
+    /// coordinate is under it, because a specimen wants its panel laid out on a grid while a badge
+    /// is made of plane coordinates.
     fn a_badge_of(
         icon: crate::icons::Icon,
         frame: crate::gizmos::dimension::PlaneFrame,
         center: Pos2,
     ) -> ConstraintBadge {
-        let reading = frame.reading_at(center);
-        ConstraintBadge {
-            center,
-            reading,
-            square: frame.square_to(reading, center),
-            icon,
-            constraint: 1,
-            picked: false,
-        }
+        let seat = frame
+            .plane_of(center)
+            .expect("a posed frame answers under its own center");
+        ConstraintBadge::seated(frame, seat, icon, 1, false).expect("a posed frame seats a badge")
+    }
+
+    /// The glyph's two sides AS DRAWN: the screen vectors between the corners the badge's own
+    /// projection puts them at.
+    ///
+    /// Measured through [`ConstraintBadge::grid_to_screen`] and not off any pair of vectors the
+    /// badge carries, because it carries none — the mark is a set of projected plane points and
+    /// its shape on screen is an OUTCOME rather than a field. A test that read a stored frame
+    /// would be asserting about a claim; this asserts about the drawing.
+    fn sides_of(badge: ConstraintBadge) -> (Vec2, Vec2) {
+        let grid = crate::icons::GRID;
+        let at = badge.grid_to_screen(1.0);
+        let origin = at(0.0, 0.0);
+        (at(grid, 0.0) - origin, at(0.0, grid) - origin)
     }
 
     /// Raked hard enough that the shelf's widest glyph genuinely spills: without the fit its ink
@@ -1067,9 +1207,10 @@ mod tests {
     fn a_badge_square_on_is_the_box_it_replaced() {
         let center = pos2(120.0, 80.0);
         let badge = a_badge_on(crate::gizmos::dimension::PlaneFrame::facing(), center);
-        let (origin, across, down) = badge.frame(SKETCH_CONSTRAINT_BADGE);
+        let at = badge.grid_to_screen(1.0);
         let was = Rect::from_center_size(center, Vec2::splat(SKETCH_CONSTRAINT_BADGE));
-        assert_eq!(origin, was.left_top());
+        let (across, down) = sides_of(badge);
+        assert_eq!(at(0.0, 0.0), was.left_top());
         assert_eq!(across, Vec2::new(was.width(), 0.0));
         assert_eq!(down, Vec2::new(0.0, was.height()));
     }
@@ -1085,8 +1226,7 @@ mod tests {
     fn a_badge_lies_in_the_plane_rather_than_turning_to_face_it() {
         let center = pos2(320.0, 240.0);
 
-        let (_, across, down) =
-            a_badge_on(a_pitched_plane(), center).frame(SKETCH_CONSTRAINT_BADGE);
+        let (across, down) = sides_of(a_badge_on(a_pitched_plane(), center));
         assert!(
             across.normalized().dot(down.normalized()).abs() < 1e-3,
             "a pure pitch has no shear in it, and this one grew {across:?} against {down:?}"
@@ -1098,8 +1238,7 @@ mod tests {
             across.length()
         );
 
-        let (_, across, down) =
-            a_badge_on(a_three_quarter_plane(), center).frame(SKETCH_CONSTRAINT_BADGE);
+        let (across, down) = sides_of(a_badge_on(a_three_quarter_plane(), center));
         let leaning = across
             .normalized()
             .dot(down.normalized())
@@ -1135,8 +1274,8 @@ mod tests {
             center,
         );
 
-        // The frame has to be genuinely off-square, or an upright glyph passes for free.
-        let (_, across, down) = badge.frame(SKETCH_CONSTRAINT_BADGE);
+        // The plane has to be genuinely off-square, or an upright glyph passes for free.
+        let (across, down) = sides_of(badge);
         assert!(
             across.normalized().dot(down.normalized()).abs() > 0.15,
             "the plane is not raked enough for this test to be able to fail"
@@ -1164,6 +1303,103 @@ mod tests {
                     claimed.contains(vertex.pos),
                     "a badge mark stands at {:?}, outside the {claimed:?} that claims the click",
                     vertex.pos
+                );
+                marks += 1;
+            }
+        }
+        assert!(
+            marks >= 8,
+            "the badge drew almost nothing: {marks} vertices"
+        );
+    }
+
+    /// The strike the owner's own F9 dump produced: a `PlaneAxis::Z` sketch with the eye exactly in
+    /// the plane's plane, where one axis reaches 0.611921 points per plane unit and the other
+    /// reaches 1.97e-7 — a collapse of three million to one.
+    ///
+    /// Copied from `tests/sketch_plane_frame.rs`, which measures it off the real camera. Posed here
+    /// as a matrix because this file is about what gets PAINTED and has no camera in it.
+    fn the_plane_the_report_was_filed_on() -> crate::gizmos::dimension::PlaneFrame {
+        crate::gizmos::dimension::PlaneFrame::from_plane_to_screen([
+            [0.611_921, 0.0, 320.0],
+            [0.0, 1.97e-7, 240.0],
+            [0.0, 0.0, 1.0],
+        ])
+        .expect("a frame that inverts")
+    }
+
+    /// **Every mark a badge PAINTS on an edge-on plane lands on the line that plane draws.**
+    ///
+    /// The ninth report at the level of the ink, where the integration probe checks it at the level
+    /// of the glyph's corners. The paint runs through the grid seam and the inscribe fit, and
+    /// neither of those is the geometry the probe reads — a badge whose corners lie in the plane
+    /// could still stroke its curves somewhere else, since ellipses and cubics are sampled into
+    /// grid points and only then mapped.
+    ///
+    /// **The tolerance is the PEN, and it is derived rather than tuned.** A tessellated stroke is
+    /// the OUTLINE of a thick path, so its vertices stand half a stroke width off the centerline,
+    /// and egui feathers each edge by a further pixel. Both are screen quantities by the standing
+    /// split — the path is the plane's, the pen is the screen's — so ink standing off the line by
+    /// the pen's own reach is the drawing working, not failing.
+    ///
+    /// Posed on a STROKED glyph for that reason. `ConstraintQuantize` is a lattice of DISCS, and a
+    /// disc's radius is pen too: its center lands on the line and its ink reaches 2.33 points off,
+    /// measured, which is a bound about that glyph rather than about coplanarity. A test whose
+    /// tolerance has to be widened per glyph is measuring the shelf, not the mark.
+    #[test]
+    fn an_edge_on_badge_paints_every_mark_onto_the_line_its_plane_draws() {
+        let plane = the_plane_the_report_was_filed_on();
+        let badge = a_badge_of(
+            crate::icons::Icon::ConstraintParallel,
+            plane,
+            pos2(320.0, 240.0),
+        );
+        // Half the stroke the kit scales to this badge's size, plus egui's one-pixel feather, plus
+        // a thousandth for the float. **The ink lands on that bound exactly** — measured 1.6666718
+        // against a derived 1.6666667 — so every mark this badge paints on a collapsed plane is a
+        // stroked line ON the line and there is no third thing in the drawing.
+        let pen = crate::icons::STROKE_WIDTH * (SKETCH_CONSTRAINT_BADGE / crate::icons::GRID) / 2.0
+            + 1.001;
+
+        // Discriminability: this plane really has collapsed, so a mark that left it has somewhere
+        // to go, and the badge really does still reach across the screen so there is ink to place.
+        assert!(
+            plane.opening_at(badge.center) < 1e-5,
+            "the plane is not edge-on, so nothing here can fail"
+        );
+        let (across, _) = sides_of(badge);
+        assert!(
+            across.length() > 10.0,
+            "the badge collapsed in BOTH directions and draws nothing: {across:?}"
+        );
+
+        // The line the plane draws, taken from the plane and not from the badge.
+        let (near, far) = (
+            plane.at([-500.0, 0.0]).expect("in front of the camera"),
+            plane.at([500.0, 0.0]).expect("in front of the camera"),
+        );
+        let along = (far - near).normalized();
+
+        let context = Context::default();
+        let output = context.run_ui(
+            RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(640.0, 480.0))),
+                ..Default::default()
+            },
+            |ui| super::sketch_constraint_badges(ui, whole_screen(), &[badge]),
+        );
+        let mut marks = 0_usize;
+        for primitive in context.tessellate(output.shapes, 1.0) {
+            let egui::epaint::Primitive::Mesh(mesh) = primitive.primitive else {
+                continue;
+            };
+            for vertex in &mesh.vertices {
+                let away = vertex.pos - near;
+                let off = (away - along * away.dot(along)).length();
+                assert!(
+                    off < pen,
+                    "a painted mark stands {off} points off the line its own plane draws, past \
+                     the {pen} its own pen can reach"
                 );
                 marks += 1;
             }

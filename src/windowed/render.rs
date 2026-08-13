@@ -4705,54 +4705,59 @@ impl WindowedState {
                 a_sketch_planes_frame(&clip_of, [vx, vy, vw, vh], pixels_per_point)
             })
             .unwrap_or_else(ui::gizmos::dimension::PlaneFrame::facing);
-        // The plane's own up-and-right at a point: the image of its 45 degree diagonal, which
-        // square-on is exactly the screen diagonal this replaced.
-        let out_of_the_corner = move |here: egui::Pos2| {
-            let reading = plane.reading_at(here);
-            let diagonal = reading + plane.square_to(reading, here);
-            if diagonal.length() > f32::EPSILON {
-                diagonal.normalized()
-            } else {
-                egui::vec2(0.707, -0.707)
-            }
+        // A badge with no geometry to take a direction from steps out along the plane's own 45
+        // degree diagonal, which is where a lock hangs in every CAD tool. Read in the glyph's own
+        // basis, so "up and to the right" is up and to the right OF THE MARK as it is drawn.
+        let out_of_the_corner = move |seat: [f64; 2]| -> Option<[f64; 2]> {
+            let ([rights, _], [_, ups]) = ui::chrome::a_planes_upright_axes(plane, seat)?;
+            let diagonal = std::f64::consts::FRAC_1_SQRT_2;
+            Some([rights * diagonal, ups * diagonal])
         };
+        // Which plane coordinate a projected vertex sits at. The round trip through the inverse
+        // costs under a hundredth of a point, measured, and it lets every anchor rule below stay
+        // written against the same entity arrays the handles and lines use.
+        let seat_of = |screen: egui::Pos2| plane.plane_of(screen);
+        let seat_at = |index: usize| seat_of(at(index)?);
         // How many badges already stand on this anchor, so the next one steps clear of them.
         let mut stacked: std::collections::HashMap<[u32; 2], f32> =
             std::collections::HashMap::new();
 
-        // A badge stands at a segment's midpoint, offset along that segment's normal.
+        // A badge stands at a segment's midpoint, offset along that segment's normal — and both
+        // of those are said in PLANE coordinates, where a midpoint is an average and a normal is a
+        // quarter turn. Neither asks the projection anything.
         let beside_segment = |segment: document::sketch::EntityId| {
             let held = self
                 .sketch_segments
                 .iter()
                 .find(|held| held.entity == segment)?;
-            let (a, b) = (at(held.from)?, at(held.to)?);
-            let along = b - a;
-            let length = along.length();
-            if length < f32::EPSILON {
+            let (from, to) = (at(held.from)?, at(held.to)?);
+            let (near, far) = (seat_of(from)?, seat_of(to)?);
+            let along = [far[0] - near[0], far[1] - near[1]];
+            let length = along[0].hypot(along[1]);
+            if length <= 0.0 {
                 return None;
             }
-            // The middle of the SEGMENT, not the middle of its image. Those are different
-            // points under a projection that divides, by 28 pixels at an ordinary three-quarter
-            // view against a badge 32 wide — see `PlaneFrame::along`.
-            let middle = plane.along(a, b, 0.5);
-            // Square to the segment IN THE PLANE. The sign holds the side the badge has always
-            // stood on: `square_to` agrees with the OTHER perpendicular, so it is turned back.
-            let square = -plane.square_to(along / length, middle);
-            Some((
-                middle,
-                if square.length() > f32::EPSILON {
-                    square.normalized()
-                } else {
-                    egui::vec2(-along.y, along.x) / length
-                },
-            ))
+            // The middle of the SEGMENT. In the plane that is the average of its ends; on screen it
+            // is not, because a homography carries the segment to the segment but not the FRACTION.
+            let middle = [(near[0] + far[0]) / 2.0, (near[1] + far[1]) / 2.0];
+            let square = [along[1] / length, -along[0] / length];
+            // Which of the two sides. The badge has always stood on the one that images clockwise
+            // from the run and this keeps it there — a SIGN off an imaged direction, which is all a
+            // tie-break needs and the only reading that survives the plane going edge-on.
+            let chord = to - from;
+            let sideways = egui::vec2(chord.y, -chord.x);
+            let stepped = plane
+                .at([middle[0] + square[0], middle[1] + square[1]])
+                .zip(plane.at(middle))
+                .map_or(0.0, |(there, here)| (there - here).dot(sideways));
+            let turn = if stepped <= 0.0 { 1.0 } else { -1.0 };
+            Some((middle, [square[0] * turn, square[1] * turn]))
         };
         // A badge on a point sits up and to the right of it — there is no geometry to take a
         // normal from, so the direction is a convention, read in the plane the point lies in.
         let beside_point = |id: document::sketch::EntityId| {
-            let here = at(point_index(id)?)?;
-            Some((here, out_of_the_corner(here)))
+            let seat = seat_at(point_index(id)?)?;
+            Some((seat, out_of_the_corner(seat)?))
         };
         let ends_of = |segment: document::sketch::EntityId| {
             self.sketch_segments
@@ -4768,25 +4773,33 @@ impl WindowedState {
             let corner = [first_from, first_to]
                 .into_iter()
                 .find(|end| *end == second_from || *end == second_to)?;
-            let here = at(corner)?;
+            let here = seat_at(corner)?;
             let arm = |(from, to): (usize, usize)| {
-                let away = at(if from == corner { to } else { from })? - here;
-                let length = away.length();
-                (length > f32::EPSILON).then_some(away / length)
+                let there = seat_at(if from == corner { to } else { from })?;
+                let away = [there[0] - here[0], there[1] - here[1]];
+                let length = away[0].hypot(away[1]);
+                (length > 0.0).then(|| [away[0] / length, away[1] / length])
             };
             let (first_arm, second_arm) =
                 (arm((first_from, first_to))?, arm((second_from, second_to))?);
-            // Bisected IN THE PLANE: the halfway direction between two projected plane lines is
-            // not the halfway direction on screen, because the angle between them is not the
-            // angle the plane holds them at.
-            // Doubling back means the two arms run along one line, which nothing perpendicular
-            // can look like — fall back to the point convention rather than to a zero vector.
-            Some((
-                here,
-                plane
-                    .bisector_of(first_arm, second_arm, here)
-                    .unwrap_or_else(|| out_of_the_corner(here)),
-            ))
+            // Bisected IN THE PLANE, where the bisector of two unit vectors is their sum. On screen
+            // it is not, because the angle the drawing shows is not the angle the plane holds them
+            // at. Doubling back means the two arms run along one line and their sum is nothing,
+            // which no direction can be — fall back to the point convention, not to a zero vector.
+            let sum = [first_arm[0] + second_arm[0], first_arm[1] + second_arm[1]];
+            let length = sum[0].hypot(sum[1]);
+            let into = if length > 0.0 {
+                [sum[0] / length, sum[1] / length]
+            } else {
+                out_of_the_corner(here)?
+            };
+            Some((here, into))
+        };
+        // Tangency, concentricity and symmetry each derive their locus as a scene point and hand it
+        // back already projected. Bring it into the plane and give it the point convention.
+        let derived_locus = |screen: egui::Pos2| {
+            let seat = seat_of(screen)?;
+            Some((seat, out_of_the_corner(seat)?))
         };
 
         for constraint in producer.sketch.constraints() {
@@ -4795,7 +4808,7 @@ impl WindowedState {
             // the mark is to say which geometry is bound to which — a single mark on one member
             // leaves the other looking free. They share the constraint id, so a click on either
             // picks the one relation.
-            let placements: Vec<(egui::Pos2, egui::Vec2)> = match constraint.kind {
+            let placements: Vec<([f64; 2], [f64; 2])> = match constraint.kind {
                 document::sketch::ConstraintKind::Horizontal { segment }
                 | document::sketch::ConstraintKind::Vertical { segment } => {
                     beside_segment(segment).into_iter().collect()
@@ -4860,7 +4873,7 @@ impl WindowedState {
                         .map(|handles| |coord| handles.profile_to_render(coord)),
                     (view_projection, viewport_px, pixels_per_point),
                 )
-                .map(|at| (at, out_of_the_corner(at)))
+                .and_then(&derived_locus)
                 .into_iter()
                 .collect(),
                 // Concentric has one semantic locus: the shared center. Radius and evaluation
@@ -4875,7 +4888,7 @@ impl WindowedState {
                             .map(|handles| |coord| handles.profile_to_render(coord)),
                         (view_projection, viewport_px, pixels_per_point),
                     )
-                    .map(|at| (at, out_of_the_corner(at)))
+                    .and_then(&derived_locus)
                     .into_iter()
                     .collect()
                 }
@@ -4896,35 +4909,50 @@ impl WindowedState {
                         .map(|handles| |coord| handles.profile_to_render(coord)),
                     (view_projection, viewport_px, pixels_per_point),
                 )
-                .map(|at| (at, out_of_the_corner(at)))
+                .and_then(&derived_locus)
                 .into_iter()
                 .collect(),
             };
             for (anchor, direction) in placements {
+                let Some(anchor_px) = plane.at(anchor) else {
+                    continue;
+                };
                 // Anchors are keyed by their rounded bits so two constraints on the same midpoint
                 // share a stack; f32 has no Hash, and exact equality is what "same anchor" means.
-                let key = [anchor.x.round().to_bits(), anchor.y.round().to_bits()];
+                let key = [anchor_px.x.round().to_bits(), anchor_px.y.round().to_bits()];
                 let step = stacked.entry(key).or_insert(1.0);
-                let center =
-                    anchor + direction * (ui::chrome::SKETCH_CONSTRAINT_BADGE_OFFSET * *step);
+                let stand = *step;
                 *step += 1.0;
-                // Read where the badge ENDS UP, not at its anchor: the standoff is far enough
-                // that a projection which divides answers the plane's level differently there.
-                let reading = plane.reading_at(center);
-                self.sketch_constraint_badges
-                    .push(ui::chrome::ConstraintBadge {
-                        center,
-                        reading,
-                        square: plane.square_to(reading, center),
-                        icon: ui::panel::constraint_icon(constraint.kind),
-                        constraint: constraint.id,
-                        picked: self.panel_state.selection.contains(
-                            ui::panel::SelectionTarget::SketchConstraint {
-                                sketch: target,
-                                entity: constraint.id,
-                            },
-                        ),
-                    });
+                // **The standoff is a screen length converted into a plane length**, by the same
+                // scalar the glyph itself is sized with. It has wanted a plane preimage since the
+                // sixth report and never had one: it was a pixel step off a projected anchor, and
+                // so the one part of a badge that could not lie in the plane however carefully the
+                // glyph was drawn. A badge's whole position is a plane coordinate now.
+                let Some(step_of) = a_points_worth_of_plane(plane, anchor_px) else {
+                    continue;
+                };
+                let out = f64::from(ui::chrome::SKETCH_CONSTRAINT_BADGE_OFFSET * stand) * step_of;
+                let seat = [
+                    direction[0].mul_add(out, anchor[0]),
+                    direction[1].mul_add(out, anchor[1]),
+                ];
+                let picked = self.panel_state.selection.contains(
+                    ui::panel::SelectionTarget::SketchConstraint {
+                        sketch: target,
+                        entity: constraint.id,
+                    },
+                );
+                // Sized where the badge ENDS UP and not at its anchor: the standoff is far enough
+                // that a projection which divides reaches differently there.
+                if let Some(badge) = ui::chrome::ConstraintBadge::seated(
+                    plane,
+                    seat,
+                    ui::panel::constraint_icon(constraint.kind),
+                    constraint.id,
+                    picked,
+                ) {
+                    self.sketch_constraint_badges.push(badge);
+                }
             }
         }
     }
@@ -8211,6 +8239,30 @@ where
     )
 }
 
+/// How much of the sketch plane one egui point covers at a screen position: plane units per
+/// point, or `None` where the frame cannot answer at all.
+///
+/// **The one conversion a mark needs in order to be built in the plane and still come out a
+/// constant size on screen.** Multiply a length the drawing wants in points by this and the answer
+/// is how long that is IN THE PLANE, so the mark can be laid out entirely in plane coordinates —
+/// where it is coplanar by construction — and still measure what it was asked to measure once the
+/// projection has had it.
+///
+/// The reciprocal of the plane's LARGEST projected reach, so the mark's largest extent on screen is
+/// exactly the size asked for and no direction of it can overshoot. Normalizing on one named axis
+/// instead divides by zero the moment that axis is the collapsed one; this cannot, because the
+/// largest reach is zero only where the plane images to a single point.
+///
+/// A magnitude, which is the class of frame reading that survives a plane going edge-on: it falls
+/// honestly toward zero, where a direction read off a vector with no length left is noise.
+fn a_points_worth_of_plane(
+    plane: ui::gizmos::dimension::PlaneFrame,
+    at: egui::Pos2,
+) -> Option<f64> {
+    let reach = plane.largest_reach_at(at);
+    (reach > 0.0 && reach.is_finite()).then(|| f64::from(1.0 / reach))
+}
+
 /// How far a dimension stands off the geometry it measures, in egui points.
 ///
 /// One number for all three members, so a span's dimension line, a radius leader's elbow and an
@@ -9439,16 +9491,18 @@ mod tests {
                 context(),
             )
             .expect("valid tangent");
-        let badges = [ui::chrome::ConstraintBadge {
-            // The hit rect is the constant screen square whatever the plane does, so
-            // these say the flat reading and the test stays about the pick.
-            reading: egui::Vec2::X,
-            square: egui::vec2(0.0, -1.0),
-            center: pos2(40.0, 20.0),
-            icon: ui::icons::Icon::ConstraintTangent,
+        // Seated on the flat-page frame, where a plane coordinate IS a screen point: the hit
+        // rect is the constant screen square whatever the plane does, so the test stays about
+        // the pick. Built through the real constructor so it cannot pose a badge the app could
+        // never lay out.
+        let badges = [ui::chrome::ConstraintBadge::seated(
+            ui::gizmos::dimension::PlaneFrame::facing(),
+            [40.0, 20.0],
+            ui::icons::Icon::ConstraintTangent,
             constraint,
-            picked: false,
-        }];
+            false,
+        )
+        .expect("the flat page seats a badge")];
         let hit = sketch_constraint_badge_at(&badges, pos2(80.0, 40.0), 2.0)
             .expect("the generic badge returns its constraint id");
         assert_eq!(hit, constraint);
@@ -9493,16 +9547,18 @@ mod tests {
                 context(),
             )
             .expect("concentric");
-        let badges = [ui::chrome::ConstraintBadge {
-            // The hit rect is the constant screen square whatever the plane does, so
-            // these say the flat reading and the test stays about the pick.
-            reading: egui::Vec2::X,
-            square: egui::vec2(0.0, -1.0),
-            center: anchor,
-            icon: ui::icons::Icon::ConstraintConcentric,
+        // Seated on the flat-page frame, where a plane coordinate IS a screen point: the hit
+        // rect is the constant screen square whatever the plane does, so the test stays about
+        // the pick. Built through the real constructor so it cannot pose a badge the app could
+        // never lay out.
+        let badges = [ui::chrome::ConstraintBadge::seated(
+            ui::gizmos::dimension::PlaneFrame::facing(),
+            [f64::from(anchor.x), f64::from(anchor.y)],
+            ui::icons::Icon::ConstraintConcentric,
             constraint,
-            picked: false,
-        }];
+            false,
+        )
+        .expect("the flat page seats a badge")];
         assert_eq!(
             sketch_constraint_badge_at(&badges, pos2(120.0, 35.0), 2.0),
             Some(constraint)
@@ -9564,16 +9620,18 @@ mod tests {
                 context(),
             )
             .expect("symmetry");
-        let badges = [ui::chrome::ConstraintBadge {
-            // The hit rect is the constant screen square whatever the plane does, so
-            // these say the flat reading and the test stays about the pick.
-            reading: egui::Vec2::X,
-            square: egui::vec2(0.0, -1.0),
-            center: anchor,
-            icon: ui::icons::Icon::ConstraintSymmetry,
+        // Seated on the flat-page frame, where a plane coordinate IS a screen point: the hit
+        // rect is the constant screen square whatever the plane does, so the test stays about
+        // the pick. Built through the real constructor so it cannot pose a badge the app could
+        // never lay out.
+        let badges = [ui::chrome::ConstraintBadge::seated(
+            ui::gizmos::dimension::PlaneFrame::facing(),
+            [f64::from(anchor.x), f64::from(anchor.y)],
+            ui::icons::Icon::ConstraintSymmetry,
             constraint,
-            picked: false,
-        }];
+            false,
+        )
+        .expect("the flat page seats a badge")];
         assert_eq!(
             sketch_constraint_badge_at(&badges, anchor * 2.0, 2.0),
             Some(constraint)
