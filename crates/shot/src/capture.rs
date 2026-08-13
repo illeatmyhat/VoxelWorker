@@ -21,11 +21,11 @@ use crate::demos::{
     build_demo_buried_cutter, build_demo_child_booleans, build_demo_cutter_def,
     build_demo_cylinder_subtract, build_demo_group_subtract, build_demo_groups,
     build_demo_intersect, build_demo_mixed_material, build_demo_overlap, build_demo_scene,
-    build_demo_sketch_box, build_demo_sketch_circle, build_demo_sketch_donut,
-    build_demo_sketch_extrude, build_demo_sketch_lens, build_demo_sketch_revolve,
-    build_demo_subtract, build_demo_two_material, build_demo_village, build_demo_village_far,
-    build_demo_window_fixture, build_far_offset_scene, file_stem_of, resolve_demo_stem, DemoScene,
-    FAR_OFFSET_BLOCKS, FAR_SCENE_BASE_BLOCKS,
+    build_demo_sketch_box, build_demo_sketch_circle, build_demo_sketch_constraints,
+    build_demo_sketch_donut, build_demo_sketch_extrude, build_demo_sketch_lens,
+    build_demo_sketch_revolve, build_demo_subtract, build_demo_two_material, build_demo_village,
+    build_demo_village_far, build_demo_window_fixture, build_far_offset_scene, file_stem_of,
+    resolve_demo_stem, DemoScene, FAR_OFFSET_BLOCKS, FAR_SCENE_BASE_BLOCKS,
 };
 use crate::options::ShotOptions;
 
@@ -44,6 +44,54 @@ use crate::options::ShotOptions;
 /// (lib-tested without a GPU). On a read error, or a JSON parse error on any line,
 /// returns `Err` with a clear message naming the offending line — `run_capture`
 /// prints it and exits non-zero (no panic).
+/// Every constraint badge the sketch open in `panel_state` carries, projected for this camera.
+///
+/// The headless twin of the shell's own badge refresh, and deliberately NOT a second copy of it:
+/// both strike the plane the same way and both hand the result to
+/// [`voxel_worker::windowed::a_sketchs_constraint_badges`], which owns every placement rule. What
+/// is duplicated here is the plumbing — which node, which density, which matrix — and that is the
+/// part a capture genuinely has to say differently, because it has no previous frame to read it
+/// from.
+fn a_sketchs_badges_at(
+    panel_state: &PanelState,
+    target: document::scene::NodeId,
+    view_projection: glam::Mat4,
+    viewport_px: [u32; 4],
+    pixels_per_point: f32,
+) -> Vec<ui::chrome::ConstraintBadge> {
+    let density = panel_state.geometry.voxels_per_block;
+    let Some(handles) = panel_state.scene.sketch_handles(target, density) else {
+        return Vec::new();
+    };
+    let Some(node) = panel_state.scene.node_by_id(target) else {
+        return Vec::new();
+    };
+    let document::scene::NodeContent::SketchTool { producer, .. } = &node.content else {
+        return Vec::new();
+    };
+    let [vx, vy, vw, vh] = viewport_px.map(|value| value as f32);
+    let clip_of = |coord: [f64; 2]| {
+        let vertex = handles.profile_to_render(coord);
+        view_projection * glam::Vec4::new(vertex[0], vertex[1], vertex[2], 1.0)
+    };
+    let plane =
+        voxel_worker::windowed::a_sketch_planes_map(&clip_of, [vx, vy, vw, vh], pixels_per_point);
+    voxel_worker::windowed::a_sketchs_constraint_badges(
+        &producer.sketch,
+        &handles,
+        plane,
+        document::sketch::evaluation_context_from_density(density),
+        &|entity| {
+            panel_state
+                .selection
+                .contains(ui::panel::SelectionTarget::SketchConstraint {
+                    sketch: target,
+                    entity,
+                })
+        },
+    )
+}
+
 fn build_scene_from_replay(replay_path: &std::path::Path) -> Result<Scene, String> {
     let script = std::fs::read_to_string(replay_path).map_err(|error| {
         format!(
@@ -182,6 +230,11 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         // Adopt the armed tool the dump carried (session state) — the authority
         // WITH its pending drop — so a mid-gesture F9 repro renders the pending drop.
         panel_state.armed_tool = restored.armed_tool;
+        // And whether a sketch was OPEN, for the same reason and the same category: a repro of a
+        // fault reported from inside sketch mode that renders the scene from outside it is a
+        // picture of a different thing. This is what puts the sketch marks in reach of a capture
+        // at all — see the badge pass below.
+        panel_state.sketch_mode = restored.sketch_mode;
     }
 
     // A demo carries its own arriving selection alongside the scene, since the
@@ -221,6 +274,8 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         build_demo_sketch_donut(options.geometry.voxels_per_block)
     } else if options.demo_sketch_lens {
         build_demo_sketch_lens(options.geometry.voxels_per_block)
+    } else if options.demo_sketch_constraints {
+        build_demo_sketch_constraints(options.geometry.voxels_per_block)
     } else if options.demo_village_far {
         build_demo_village_far(options.geometry.voxels_per_block)
     } else if options.demo_village {
@@ -299,6 +354,12 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         // the SAME node. An out-of-range index resolves to None → clears selection.
         let picked = panel_state.scene.id_at_path(&NodePath::root_index(index));
         panel_state.selection.set_primary_node(picked);
+    }
+    // `--enter-sketch N` opens the sketch on top-level node N, the same view state a dump restored
+    // with `--from-config` carries. It is what puts the sketch's own marks in reach of a capture —
+    // see the badge pass below.
+    if let Some(index) = options.enter_sketch {
+        panel_state.sketch_mode = panel_state.scene.id_at_path(&NodePath::root_index(index));
     }
     // `--select-root` selects the ROOT PART, so a headless capture
     // can prove a view mode applies scene-wide (Show-booleans x-rays every boolean).
@@ -1139,61 +1200,110 @@ pub(crate) async fn run_capture(options: ShotOptions) {
     // "once" and "this frame" coincide — the call is the same one the shell makes.
     let cube_texture =
         egui_bridge.view_cube_texture(&gpu.device, view_cube_renderer.standing_texture());
-    let prepared = run_egui_frame(
-        &mut egui_bridge,
-        &gpu.device,
-        &gpu.queue,
-        &mut panel_state,
-        // The layer scrubber's track spans the selected object's Z
-        // extent in Onion-fog mode (else the whole scene).
-        clip.track_len,
-        measured_diameter,
-        // The headless capture never runs an export; the section renders idle.
-        voxel_worker::ExportPanelState::default(),
-        &palette.ui,
-        raw_input,
-        [options.width, options.height],
-        pixels_per_point,
-        // #13 Step 3: the headless path never opens the ViewCube context menu.
-        &mut None,
-        // nor the general viewport context menu (windowed-only interaction).
-        &mut None,
-        // nor the icon rail's orbit-type menu.
-        &mut false,
-        // Signal (#86): no zone-name readout in the goldens — the highlight lives in
-        // the cube itself; the readout is a windowed-only overlay. Keeps every golden
-        // diff to the two cube corners.
-        None,
-        // The headless capture computes no live vertex handles (sketch
-        // authoring is a windowed-only interaction); the goldens stay handle-free.
-        &[],
-        // no sketch segment lines either — windowed-only overlay.
-        &[],
-        // nor arc curves, for the same reason.
-        &[],
-        // no constraint badges — they are projected by the windowed
-        // overlay refresh, which the headless path does not run.
-        &[],
-        // nor dimension gizmos, projected by the same refresh.
-        &[],
-        // #100: and no viewport menu is open, so no region is under one.
-        None,
-        // likewise no add-point insert preview in the headless goldens.
-        None,
-        // nor a snapping mark — it stands where a live pointer is, and there is none here.
-        None,
-        // #99: nor a drawing-tool preview — drawing is a windowed-only gesture.
-        &[],
-        // Slice 3: nor a marquee band — box-select is a windowed-only gesture.
-        None,
-        // no orbit-center marker — it shows only during a placement or a Shift+MMB
-        // orbit, both windowed-only gestures.
-        None,
-        // nor the orbit-mode reticle — the explicit orbit mode is entered by a click
-        // the headless path never makes.
-        false,
-        cube_texture,
-    );
+    // **One egui pass, expressed once and callable twice.** The badges are an INPUT to the pass,
+    // and the 3D viewport rect they have to be projected into is an OUTPUT of it — the windowed
+    // shell breaks that circle by laying out next frame's marks with this frame's projection,
+    // which a single-frame capture has no way to do. So when a sketch is open the pass runs twice:
+    // once to learn the viewport, once to draw. Every other capture calls it exactly once and the
+    // goldens are untouched.
+    //
+    // A closure rather than two call sites, because thirty arguments written twice is two things
+    // that can disagree, and the whole point of a golden is that it renders what the shell renders.
+    let mut one_egui_pass =
+        |panel_state: &mut PanelState, sketch_constraint_badges: &[ui::chrome::ConstraintBadge]| {
+            run_egui_frame(
+                &mut egui_bridge,
+                &gpu.device,
+                &gpu.queue,
+                panel_state,
+                // The layer scrubber's track spans the selected object's Z
+                // extent in Onion-fog mode (else the whole scene).
+                clip.track_len,
+                measured_diameter,
+                // The headless capture never runs an export; the section renders idle.
+                voxel_worker::ExportPanelState::default(),
+                &palette.ui,
+                // Cloned, so the second pass sees the same input as the first — including the same
+                // `time`, which leaves every egui animation with a zero delta and nothing to advance.
+                raw_input.clone(),
+                [options.width, options.height],
+                pixels_per_point,
+                // #13 Step 3: the headless path never opens the ViewCube context menu.
+                &mut None,
+                // nor the general viewport context menu (windowed-only interaction).
+                &mut None,
+                // nor the icon rail's orbit-type menu.
+                &mut false,
+                // Signal (#86): no zone-name readout in the goldens — the highlight lives in
+                // the cube itself; the readout is a windowed-only overlay. Keeps every golden
+                // diff to the two cube corners.
+                None,
+                // The headless capture computes no live vertex handles (sketch
+                // authoring is a windowed-only interaction); the goldens stay handle-free.
+                &[],
+                // no sketch segment lines either — windowed-only overlay.
+                &[],
+                // nor arc curves, for the same reason.
+                &[],
+                // The asserted relations' glyphs, laid out in the sketch's own plane. Empty
+                // unless the dump had a sketch open.
+                sketch_constraint_badges,
+                // nor dimension gizmos, projected by the same refresh.
+                &[],
+                // #100: and no viewport menu is open, so no region is under one.
+                None,
+                // likewise no add-point insert preview in the headless goldens.
+                None,
+                // nor a snapping mark — it stands where a live pointer is, and there is none here.
+                None,
+                // #99: nor a drawing-tool preview — drawing is a windowed-only gesture.
+                &[],
+                // Slice 3: nor a marquee band — box-select is a windowed-only gesture.
+                None,
+                // no orbit-center marker — it shows only during a placement or a Shift+MMB
+                // orbit, both windowed-only gestures.
+                None,
+                // nor the orbit-mode reticle — the explicit orbit mode is entered by a click
+                // the headless path never makes.
+                false,
+                cube_texture,
+            )
+        };
+
+    // The badges the open sketch carries, if any. The probe pass is discarded for everything
+    // except the one number it exists to produce: the central viewport rect, which is what turns
+    // the camera matrix into pixels.
+    let sketch_constraint_badges: Vec<ui::chrome::ConstraintBadge> =
+        panel_state.sketch_mode.map_or_else(Vec::new, |target| {
+            let probe = one_egui_pass(&mut panel_state, &[]);
+            let [_, _, probe_width, probe_height] = probe.viewport_px;
+            let probe_aspect = probe_width as f32 / probe_height.max(1) as f32;
+            let probe_projection = app_core
+                .scene_matrices(probe_aspect, grid_dimensions)
+                .view_projection;
+            a_sketchs_badges_at(
+                &panel_state,
+                target,
+                probe_projection,
+                probe.viewport_px,
+                pixels_per_point,
+            )
+        });
+    // Each badge's seat, in the same pixels the PNG is written in — so a test can scope its
+    // comparison to the marks rather than drown them in a whole-image tolerance, and so a reader
+    // chasing the next "not coplanar" report can see WHERE the layout put each one without
+    // opening the image.
+    if !sketch_constraint_badges.is_empty() {
+        println!(
+            "sketch constraint badges: {}",
+            sketch_constraint_badges.len()
+        );
+        for badge in &sketch_constraint_badges {
+            let seat = badge.center * pixels_per_point;
+            println!("badge at {:.1} {:.1}", seat.x, seat.y);
+        }
+    }
+    let prepared = one_egui_pass(&mut panel_state, &sketch_constraint_badges);
 
     // Issue #25: now that egui has laid out its panels, derive the camera aspect
     // from the CENTRAL 3D viewport rect (window minus side panel + bottom dock) so

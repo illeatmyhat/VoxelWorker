@@ -976,6 +976,78 @@ pub(crate) fn build_demo_sketch_lens(voxels_per_block: u32) -> DemoScene {
     DemoScene::first_node(scene)
 }
 
+/// Build the `--demo-sketch-constraints`: a rectangle carrying one badge of every ANCHORING
+/// species, for capture with `--enter-sketch`.
+///
+/// The species are what the drawing is for, because a badge's seat is chosen differently for each:
+/// `Horizontal` and `Vertical` stand beside a SEGMENT, `Perpendicular` and `Equal` stand in the
+/// corner between a PAIR, and `Fix` stands on a POINT. Ten successive reports said these marks were
+/// not coplanar with the sketch plane; every one was closed against a number, because no capture
+/// could draw them. This is the picture.
+pub(crate) fn build_demo_sketch_constraints(voxels_per_block: u32) -> DemoScene {
+    use document::sketch::ConstraintKind;
+
+    if voxels_per_block == 0 {
+        return invalid_density_demo(voxels_per_block);
+    }
+    let block = i64::from(voxels_per_block);
+    let (run, rise) = (8 * block, 5 * block);
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let corners = [
+        SketchPoint::new(0, 0),
+        SketchPoint::new(run, 0),
+        SketchPoint::new(run, rise),
+        SketchPoint::new(0, rise),
+    ]
+    .map(|at| sketch.add_free_point(at));
+    let edges: Vec<_> = (0..4)
+        .map(|index| {
+            sketch
+                .connect(corners[index], corners[(index + 1) % 4])
+                .expect("four distinct corners")
+        })
+        .collect();
+    let (bottom, right, top, left) = (edges[0], edges[1], edges[2], edges[3]);
+
+    let context = document::sketch::evaluation_context_from_density(voxels_per_block)
+        .expect("non-zero density returned above");
+    let mut producer = SketchSolid::extrude(sketch, block as u32);
+    // Already true of the rectangle as authored, every one of them — so the badges appear without
+    // the solve moving a single point, and the render pins the MARKS rather than a re-solve.
+    for kind in [
+        ConstraintKind::Horizontal { segment: bottom },
+        ConstraintKind::Vertical { segment: left },
+        ConstraintKind::Perpendicular {
+            first: bottom,
+            second: right,
+        },
+        ConstraintKind::Equal {
+            first: bottom,
+            second: top,
+        },
+        ConstraintKind::Fix {
+            point: corners[0],
+            at: SketchPoint::new(0, 0),
+        },
+    ] {
+        producer = producer
+            .with_constraint(kind, context)
+            .expect("a relation the rectangle already honours")
+            .0;
+    }
+
+    let node = Node::new(
+        "Sketch constraints",
+        NodeContent::SketchTool {
+            producer,
+            material: MaterialChoice::Wood,
+        },
+    );
+    let mut scene = with_node_ids(Scene::from_nodes(vec![node]));
+    scene.voxels_per_block = voxels_per_block;
+    DemoScene::first_node(scene)
+}
+
 /// Build the `--demo-groups`: a scene that
 /// exercises the indented TREE in the panel. A top-level `Group` ("Cluster") holds
 /// two child Tools (a Sphere + a Box at a small offset); a sibling top-level Box

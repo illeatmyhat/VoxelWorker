@@ -3041,6 +3041,7 @@ dependencies = [
  "pollster",
  "serde_json",
  "substrate",
+ "ui",
  "voxel_core",
  "voxel_worker",
  "wgpu",

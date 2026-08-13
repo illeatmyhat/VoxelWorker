@@ -61,6 +61,9 @@ work = { path = "../work" }
 assets = { path = "../assets" }
 # The orbit rig + projection `shot`'s auto-frame and `--from-config` replay use.
 camera = { path = "../camera" }
+# The chrome vocabulary a capture has to speak to draw the sketch marks: the
+# `ConstraintBadge` the overlay paints and the `SelectionTarget` that says which are picked.
+ui = { path = "../ui" }
 
 wgpu = "29.0.3"
 egui = "0.34.3"

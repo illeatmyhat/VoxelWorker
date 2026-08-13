@@ -790,6 +790,197 @@ fn golden_images_match() {
     );
 }
 
+/// The sketch-mark case, deliberately NOT a member of [`CASES`].
+///
+/// A whole-image tolerance is BLIND to it: 0.5% of 1280×720 is 4 608 pixels, and every constraint
+/// badge on the drawing together inks a few hundred. Ten successive reports that these marks stood
+/// out of their sketch plane went past the golden suite for exactly that reason — nothing in it
+/// could see a mark move. [`sketch_constraint_badges_stand_where_the_plane_puts_them`] gates the
+/// same picture per badge instead.
+const SKETCH_CONSTRAINT_CASE: GoldenCase = GoldenCase {
+    name: "sketch-constraints",
+    args: &["--demo-sketch-constraints", "--enter-sketch", "0"],
+};
+
+/// Half the side of the square each badge is compared over.
+///
+/// A badge is 32 points across, so a 48-point square around its reported seat holds the whole
+/// glyph plus a margin of the ground it must not have drifted onto.
+const BADGE_HALF_SPAN: i64 = 24;
+
+/// How many pixels of a badge's square may differ before it counts as moved. MEASURED: two
+/// consecutive renders of this case on this machine differ in ZERO pixels image-wide, so the
+/// budget is not jitter headroom for anything observed — it is a small allowance for MSAA on
+/// another driver, set far below the hundreds of pixels a moved or resheared glyph costs.
+const BADGE_DIFF_BUDGET: u64 = 8;
+
+/// How much ink a badge's square must hold before the square is worth comparing.
+///
+/// A badge the floating chrome sits on top of is drawn and then covered, so its square holds no
+/// glyph and comparing it proves nothing. MEASURED at this camera: four of the six squares hold
+/// 54–101 pixels of ink, and two hold 0 and 6 — the two the Display panel and the tool rail cover.
+const BADGE_INK_FLOOR: u64 = 24;
+
+/// How many badges must survive the ink floor. The gate is worth nothing if the chrome ever grows
+/// over all of them, and it must SAY so rather than quietly pass on an empty set.
+const BADGES_GATED_AT_LEAST: usize = 3;
+
+/// **The constraint badges land where the sketch plane puts them, in a picture.**
+///
+/// Ten reports said they did not, and every one was closed against a number, because the headless
+/// path drew no marks at all — it passed the badge list as `&[]`. This is the picture those reports
+/// were missing, and it is gated per BADGE: the whole image still has to hold to the usual
+/// tolerance, and then each seat `shot` reports has to match the reference over the square around
+/// it, where the glyph's own ink is the majority of what is being compared.
+///
+/// **Cannot pass vacuously**, in either of the two ways available to it. A run that lays out no
+/// badges reports no seats and fails before an image is opened. And a square the floating chrome
+/// covers holds no glyph, so the test MEASURES each square's ink against a second render with the
+/// sketch closed, gates only the squares that hold some, and fails if too few do.
+///
+/// **Seen red** by widening the badge standoff from 30 to 33 points: four of the six squares moved
+/// by 81–148 pixels.
+#[test]
+fn sketch_constraint_badges_stand_where_the_plane_puts_them() {
+    if skip_without_gpu("sketch_constraint_badges_stand_where_the_plane_puts_them") {
+        return;
+    }
+    let update = std::env::var("UPDATE_GOLDENS").is_ok_and(|v| v == "1");
+    let golden_dir = golden_dir();
+    let reference_path = golden_dir.join(format!("{}.png", SKETCH_CONSTRAINT_CASE.name));
+    if update {
+        std::fs::create_dir_all(&golden_dir).expect("failed to create tests/golden");
+        render_case_capturing(&SKETCH_CONSTRAINT_CASE, &reference_path, &[]);
+        println!("UPDATED golden: {}", reference_path.display());
+        return;
+    }
+
+    let out_dir = output_dir();
+    let actual_path = out_dir.join(format!("{}-actual.png", SKETCH_CONSTRAINT_CASE.name));
+    let stdout = render_case_capturing(&SKETCH_CONSTRAINT_CASE, &actual_path, &[]);
+    let seats = badge_seats_in(&stdout);
+    assert!(
+        !seats.is_empty(),
+        "the capture laid out no constraint badges, so the picture below pins nothing:\n{stdout}"
+    );
+    assert!(
+        reference_path.exists(),
+        "no reference at {} — run with UPDATE_GOLDENS=1 to create it",
+        reference_path.display()
+    );
+
+    // The same capture with the sketch CLOSED. Identical in every respect except the marks, so the
+    // difference inside a badge's square is that badge's own ink and nothing else.
+    let unmarked_path = out_dir.join(format!("{}-unmarked.png", SKETCH_CONSTRAINT_CASE.name));
+    let unmarked_case = GoldenCase {
+        name: SKETCH_CONSTRAINT_CASE.name,
+        args: &["--demo-sketch-constraints"],
+    };
+    render_case_capturing(&unmarked_case, &unmarked_path, &[]);
+
+    let actual = load_rgba(&actual_path);
+    let reference = load_rgba(&reference_path);
+    let unmarked = load_rgba(&unmarked_path);
+    let diff_path = out_dir.join(format!("{}-diff.png", SKETCH_CONSTRAINT_CASE.name));
+    let mismatch = compare_images(&actual, &reference, &diff_path);
+    assert!(
+        mismatch <= MAX_MISMATCH_FRACTION,
+        "the whole picture moved: mismatch {:.5}% exceeds {:.3}% — actual: {}  diff: {}",
+        mismatch * 100.0,
+        MAX_MISMATCH_FRACTION * 100.0,
+        actual_path.display(),
+        diff_path.display()
+    );
+
+    let mut moved: Vec<String> = Vec::new();
+    let mut gated = 0usize;
+    for (index, seat) in seats.iter().enumerate() {
+        let square = square_around(*seat, actual.dimensions());
+        let ink = differing_pixels_in(&actual, &unmarked, square);
+        if ink < BADGE_INK_FLOOR {
+            println!(
+                "badge {index} at {:.1} {:.1}: {ink} pixels of ink — under the chrome, not gated",
+                seat.0, seat.1
+            );
+            continue;
+        }
+        gated += 1;
+        let differing = differing_pixels_in(&actual, &reference, square);
+        println!(
+            "badge {index} at {:.1} {:.1}: {ink} pixels of ink, {differing} differ from the reference",
+            seat.0, seat.1
+        );
+        if differing > BADGE_DIFF_BUDGET {
+            moved.push(format!(
+                "badge {index}, seated at {:.1} {:.1}, differs in {differing} pixels",
+                seat.0, seat.1
+            ));
+        }
+    }
+    assert!(
+        gated >= BADGES_GATED_AT_LEAST,
+        "only {gated} of {} badges hold enough ink to compare — the floating chrome now covers \
+         nearly all of them, so this test no longer sees what it claims to. actual: {}",
+        seats.len(),
+        actual_path.display()
+    );
+    assert!(
+        moved.is_empty(),
+        "constraint badge(s) no longer stand where the reference has them:\n{}\nactual: {}  diff: {}",
+        moved.join("\n"),
+        actual_path.display(),
+        diff_path.display()
+    );
+}
+
+/// The pixel square a badge seated at `seat` is compared over, clipped to the image.
+// A seat is a pixel position in a 1280x720 image, and every value is clamped into the image
+// before it is narrowed, so neither the truncation nor the sign can bite.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn square_around(seat: (f32, f32), dimensions: (u32, u32)) -> [u32; 4] {
+    let (width, height) = dimensions;
+    let (across, down) = (seat.0.round() as i64, seat.1.round() as i64);
+    [
+        (across - BADGE_HALF_SPAN).clamp(0, i64::from(width) - 1) as u32,
+        (down - BADGE_HALF_SPAN).clamp(0, i64::from(height) - 1) as u32,
+        (across + BADGE_HALF_SPAN).clamp(0, i64::from(width) - 1) as u32,
+        (down + BADGE_HALF_SPAN).clamp(0, i64::from(height) - 1) as u32,
+    ]
+}
+
+/// Pixels of `square` where the two images differ by more than [`CHANNEL_DIFF_THRESHOLD`].
+fn differing_pixels_in(one: &RgbaImage, other: &RgbaImage, square: [u32; 4]) -> u64 {
+    let [left, top, right, bottom] = square;
+    let mut differing = 0u64;
+    for down in top..=bottom {
+        for across in left..=right {
+            let (a, b) = (one.get_pixel(across, down), other.get_pixel(across, down));
+            let largest =
+                a.0.iter()
+                    .zip(b.0.iter())
+                    .map(|(one, other)| one.abs_diff(*other))
+                    .max()
+                    .unwrap_or(0);
+            if largest > CHANNEL_DIFF_THRESHOLD {
+                differing += 1;
+            }
+        }
+    }
+    differing
+}
+
+/// The seats `shot` printed, one per `badge at <x> <y>` line, in output pixels.
+fn badge_seats_in(stdout: &str) -> Vec<(f32, f32)> {
+    stdout
+        .lines()
+        .filter_map(|line| line.strip_prefix("badge at "))
+        .filter_map(|seat| {
+            let (across, down) = seat.split_once(' ')?;
+            Some((across.parse().ok()?, down.parse().ok()?))
+        })
+        .collect()
+}
+
 /// Render the chunkable golden cases THROUGH the two-layer mesh path
 /// (`shot --two-layer`: coarse one-box + microblock cuboids + seam-flag culling) and assert
 /// each is PIXEL-IDENTICAL to the SAME committed dense reference PNG. This is the display

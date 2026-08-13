@@ -29,6 +29,13 @@ pub(crate) struct ShotOptions {
     /// gizmo FOLLOWS a chosen (non-origin) node. `None` keeps the scene's default
     /// selection. Out-of-range clears the selection (gizmo hidden).
     pub(crate) select_node: Option<usize>,
+    /// `--enter-sketch N`: OPEN the sketch on the top-level node at index N, as if the author had
+    /// double-clicked into it, so the capture draws that sketch's own marks.
+    ///
+    /// A view state and not a scene, which is why it is a flag beside `--select-node` rather than
+    /// part of any demo: it puts EVERY sketch demo in reach of a marks capture. A dump restored
+    /// with `--from-config` carries its own sketch mode and needs no flag.
+    pub(crate) enter_sketch: Option<usize>,
     /// `--select-root`: override the scene's active selection to the
     /// ROOT PART ([`voxel_worker::ROOT_NODE_ID`]), so a headless capture can prove a
     /// view mode applies scene-wide (Show-booleans x-rays every boolean). Takes precedence
@@ -195,6 +202,10 @@ pub(crate) struct ShotOptions {
     /// `--demo-sketch-lens`: two overlapping circles sharing no point,
     /// with the LENS of overlap unpicked — three regions where the drawing has two curves.
     pub(crate) demo_sketch_lens: bool,
+    /// `--demo-sketch-constraints`: a rectangle carrying one relation of every badge-anchoring
+    /// species — beside a segment, in the corner of a pair, and on a point. Pair it with
+    /// [`enter_sketch`](Self::enter_sketch); on its own it renders as a plain slab.
+    pub(crate) demo_sketch_constraints: bool,
     /// `--demo-sketch-box <edge_voxels>`: a solid cube of the given voxel edge, built
     /// via the SKETCH EXTRUDE path (a square profile extruded its own edge) — the
     /// large-scene fixture for the two-layer / brick display + fog at scale. `Some(N)`
@@ -344,6 +355,7 @@ impl Default for ShotOptions {
             show_grid_overlay: false,
             show_origin_gizmo: false,
             select_node: None,
+            enter_sketch: None,
             select_root: false,
             selection_cel: false,
             view_mode: ViewMode::Normal,
@@ -381,6 +393,7 @@ impl Default for ShotOptions {
             demo_sketch_circle: false,
             demo_sketch_donut: false,
             demo_sketch_lens: false,
+            demo_sketch_constraints: false,
             demo_sketch_box: None,
             demo_groups: false,
             far_offset: false,
@@ -640,6 +653,14 @@ pub(crate) fn parse_options() -> ShotOptions {
                         .expect("--select-node index must be a non-negative integer"),
                 );
             }
+            "--enter-sketch" => {
+                options.enter_sketch = Some(
+                    args.next()
+                        .expect("--enter-sketch requires an index")
+                        .parse()
+                        .expect("--enter-sketch index must be a non-negative integer"),
+                );
+            }
             "--select-root" => {
                 options.select_root = true;
             }
@@ -715,6 +736,9 @@ pub(crate) fn parse_options() -> ShotOptions {
             }
             "--demo-sketch-donut" => {
                 options.demo_sketch_donut = true;
+            }
+            "--demo-sketch-constraints" => {
+                options.demo_sketch_constraints = true;
             }
             "--demo-sketch-box" => {
                 options.demo_sketch_box = Some(
@@ -932,6 +956,7 @@ pub(crate) fn parse_options() -> ShotOptions {
                      \x20            [--demo-scene] [--demo-overlap] [--demo-subtract] [--demo-group-subtract] [--demo-intersect] [--demo-cutter-def] [--demo-window-fixture] [--demo-buried-cutter] [--demo-child-booleans] [--demo-two-material] [--demo-village] [--demo-village-far] [--demo-groups]\n\
                      \x20            [--demo-sketch-extrude] [--demo-sketch-revolve]\n\
                      \x20            [--demo-sketch-circle] [--demo-sketch-donut] [--demo-sketch-lens]\n\
+                     \x20            [--demo-sketch-constraints] [--enter-sketch <usize>]\n\
                      \x20            [--demo-far-offset] [--demo-far-offset-near]\n\
                      \x20            [--layer-lower <u32>] [--layer-upper <u32>] [--onion <u32>]\n\
                      \x20            [--export-vox <path.vox>]\n\
@@ -981,6 +1006,13 @@ pub(crate) fn parse_options() -> ShotOptions {
                      \x20  --demo-sketch-donut   the same circle inside a square, UNPICKED, so\n\
                      \x20                the closed curve carves a hole. Overrides\n\
                      \x20                --shape/--size/--density.\n\
+                     \x20  --demo-sketch-constraints a rectangle carrying one relation of every\n\
+                     \x20                badge-anchoring species (beside a segment, in a pair's\n\
+                     \x20                corner, on a point). Pair with --enter-sketch to draw\n\
+                     \x20                the marks. Overrides --shape/--size/--density.\n\
+                     \x20  --enter-sketch <N> OPEN the sketch on top-level node N, as if the\n\
+                     \x20                author had double-clicked into it, so the capture\n\
+                     \x20                draws that sketch's own constraint badges.\n\
                      \x20  --demo-far-offset      build a small 4³ box at offset [100_000,0,0]\n\
                      \x20                blocks. Precision baseline: the recenter maps it\n\
                      \x20                to the origin, so far jitter stays hidden.\n\
