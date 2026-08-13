@@ -1289,10 +1289,15 @@ pub(crate) async fn run_capture(options: ShotOptions) {
                 pixels_per_point,
             )
         });
-    // Each badge's seat, in the same pixels the PNG is written in — so a test can scope its
-    // comparison to the marks rather than drown them in a whole-image tolerance, and so a reader
-    // chasing the next "not coplanar" report can see WHERE the layout put each one without
+    // Each badge's GLYPH and seat, in the same pixels the PNG is written in — so a test can scope
+    // its comparison to the marks rather than drown them in a whole-image tolerance, and so a
+    // reader chasing the next "not coplanar" report can see WHERE the layout put each one without
     // opening the image.
+    //
+    // Named by GLYPH and PLANE SEAT, never by index in this list. Two badges can share a glyph —
+    // one relation between two segments stands beside both — so the glyph alone does not name a
+    // mark, and the index changes the day the layout order does. The plane seat is the mark's own
+    // camera-independent identity: where it stands in the DRAWING.
     if !sketch_constraint_badges.is_empty() {
         println!(
             "sketch constraint badges: {}",
@@ -1300,9 +1305,19 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         );
         for badge in &sketch_constraint_badges {
             let seat = badge.center * pixels_per_point;
-            println!("badge at {:.1} {:.1}", seat.x, seat.y);
+            println!(
+                "badge {:?} in plane {:.1} {:.1} at {:.1} {:.1}",
+                badge.icon, badge.seat[0], badge.seat[1], seat.x, seat.y
+            );
         }
     }
+    // `--no-sketch-marks`: laid out, printed, and dropped. The pass below draws the same capture
+    // WITHOUT them, which is the control the badge golden subtracts.
+    let sketch_constraint_badges = if options.no_sketch_marks {
+        Vec::new()
+    } else {
+        sketch_constraint_badges
+    };
     let prepared = one_egui_pass(&mut panel_state, &sketch_constraint_badges);
 
     // Issue #25: now that egui has laid out its panels, derive the camera aspect

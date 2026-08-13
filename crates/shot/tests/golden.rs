@@ -817,28 +817,81 @@ const BADGE_DIFF_BUDGET: u64 = 8;
 /// How much ink a badge's square must hold before the square is worth comparing.
 ///
 /// A badge the floating chrome sits on top of is drawn and then covered, so its square holds no
-/// glyph and comparing it proves nothing. MEASURED at this camera: four of the six squares hold
-/// 54–101 pixels of ink, and two hold 0 and 6 — the two the Display panel and the tool rail cover.
+/// glyph and comparing it proves nothing. MEASURED at this camera: the four gated squares hold
+/// 54–101 pixels of ink, and the two the Display panel and the tool rail cover hold 0 and 6.
 const BADGE_INK_FLOOR: u64 = 24;
 
-/// How many badges must survive the ink floor. The gate is worth nothing if the chrome ever grows
-/// over all of them, and it must SAY so rather than quietly pass on an empty set.
-const BADGES_GATED_AT_LEAST: usize = 3;
+/// **Which** badges the picture is expected to gate, named the way the drawing names them: by
+/// glyph and by where the mark stands in the SKETCH PLANE, so neither the layout's order nor the
+/// camera can rename one.
+///
+/// Declared rather than counted. A floor ("at least three") is a ratchet with no pawl: coverage
+/// decays one green step at a time, and the day it finally goes red the failure points at whoever
+/// last touched the chrome instead of at the marks that were quietly lost rounds earlier. That is
+/// the same absence-reads-healthy mechanism that let ten reports past the whole-image tolerance,
+/// rebuilt one level down. So the runtime ink measurement does not DECIDE coverage — it CHECKS
+/// this declaration, and disagreement in either direction is the failure.
+///
+/// When the chrome or the layout legitimately changes, this list changes with it, under a red that
+/// states its own cause. That is the good kind of stale.
+const BADGES_EXPECTED_GATED: &[&str] = &[
+    "ConstraintHorizontal near 60 -10",
+    "ConstraintPerpendicular near 120 10",
+    "ConstraintEqual near 60 -30",
+    "ConstraintEqual near 60 90",
+];
+
+/// How coarsely a mark's plane seat is rounded to name it — see [`ReportedBadge::key`].
+///
+/// COARSE on purpose. A seat is where the glyph stands, standoff included, so naming a mark by its
+/// exact seat would rename every mark the moment the standoff changed by a point, and the set
+/// check would then fire on a move it is not the one to report. Rounded to the nearest 10 plane
+/// units the six marks stay distinct (the test asserts it) while a few units of drift keeps a
+/// mark's name.
+const BADGE_KEY_ROUNDING: f32 = 10.0;
+
+/// A badge as the capture reported it.
+struct ReportedBadge {
+    /// The glyph, which is the relation's own mark.
+    species: String,
+    /// Where the glyph stands in the SKETCH PLANE — its camera-independent place in the drawing.
+    plane: (f32, f32),
+    /// Where it landed on the glass, in output pixels.
+    seat: (f32, f32),
+}
+
+impl ReportedBadge {
+    /// What this mark is called in [`BADGES_EXPECTED_GATED`]: its glyph and roughly where in the
+    /// drawing it stands. Two badges can share a glyph — one relation between two segments stands
+    /// beside both — so the glyph alone does not name a mark.
+    fn key(&self) -> String {
+        let round = |value: f32| (value / BADGE_KEY_ROUNDING).round() * BADGE_KEY_ROUNDING;
+        format!(
+            "{} near {:.0} {:.0}",
+            self.species,
+            round(self.plane.0),
+            round(self.plane.1)
+        )
+    }
+}
 
 /// **The constraint badges land where the sketch plane puts them, in a picture.**
 ///
 /// Ten reports said they did not, and every one was closed against a number, because the headless
 /// path drew no marks at all — it passed the badge list as `&[]`. This is the picture those reports
 /// were missing, and it is gated per BADGE: the whole image still has to hold to the usual
-/// tolerance, and then each seat `shot` reports has to match the reference over the square around
-/// it, where the glyph's own ink is the majority of what is being compared.
+/// tolerance, and then each seat the capture reports has to match the reference over the square
+/// around it, where the glyph's own ink is the majority of what is being compared.
 ///
-/// **Cannot pass vacuously**, in either of the two ways available to it. A run that lays out no
-/// badges reports no seats and fails before an image is opened. And a square the floating chrome
-/// covers holds no glyph, so the test MEASURES each square's ink against a second render with the
-/// sketch closed, gates only the squares that hold some, and fails if too few do.
+/// **Cannot pass vacuously**, in any of the three ways available to it. A run that lays out no
+/// badges reports no seats and fails before an image is opened. A square the floating chrome
+/// covers holds no glyph, so each square's ink is MEASURED against a control render — the same
+/// capture with the sketch still open and the marks dropped, which differs from it in the marks
+/// and in nothing else. And which badges clear the chrome is DECLARED in
+/// [`BADGES_EXPECTED_GATED`] and checked against that measurement, so coverage cannot quietly
+/// shrink.
 ///
-/// **Seen red** by widening the badge standoff from 30 to 33 points: four of the six squares moved
+/// **Seen red** by widening the badge standoff from 30 to 33 points: all four gated squares moved,
 /// by 81–148 pixels.
 #[test]
 fn sketch_constraint_badges_stand_where_the_plane_puts_them() {
@@ -858,9 +911,9 @@ fn sketch_constraint_badges_stand_where_the_plane_puts_them() {
     let out_dir = output_dir();
     let actual_path = out_dir.join(format!("{}-actual.png", SKETCH_CONSTRAINT_CASE.name));
     let stdout = render_case_capturing(&SKETCH_CONSTRAINT_CASE, &actual_path, &[]);
-    let seats = badge_seats_in(&stdout);
+    let badges = badges_reported_in(&stdout);
     assert!(
-        !seats.is_empty(),
+        !badges.is_empty(),
         "the capture laid out no constraint badges, so the picture below pins nothing:\n{stdout}"
     );
     assert!(
@@ -869,14 +922,15 @@ fn sketch_constraint_badges_stand_where_the_plane_puts_them() {
         reference_path.display()
     );
 
-    // The same capture with the sketch CLOSED. Identical in every respect except the marks, so the
-    // difference inside a badge's square is that badge's own ink and nothing else.
+    // The control: the same capture with the sketch still OPEN and the marks laid out and then
+    // dropped. Differs from the picture in the marks and in nothing else, which is what makes the
+    // subtraction below a measurement of badge ink rather than of sketch mode.
     let unmarked_path = out_dir.join(format!("{}-unmarked.png", SKETCH_CONSTRAINT_CASE.name));
-    let unmarked_case = GoldenCase {
-        name: SKETCH_CONSTRAINT_CASE.name,
-        args: &["--demo-sketch-constraints"],
-    };
-    render_case_capturing(&unmarked_case, &unmarked_path, &[]);
+    render_case_capturing(
+        &SKETCH_CONSTRAINT_CASE,
+        &unmarked_path,
+        &["--no-sketch-marks"],
+    );
 
     let actual = load_rgba(&actual_path);
     let reference = load_rgba(&reference_path);
@@ -892,36 +946,39 @@ fn sketch_constraint_badges_stand_where_the_plane_puts_them() {
         diff_path.display()
     );
 
-    let mut moved: Vec<String> = Vec::new();
-    let mut gated = 0usize;
-    for (index, seat) in seats.iter().enumerate() {
-        let square = square_around(*seat, actual.dimensions());
-        let ink = differing_pixels_in(&actual, &unmarked, square);
-        if ink < BADGE_INK_FLOOR {
-            println!(
-                "badge {index} at {:.1} {:.1}: {ink} pixels of ink — under the chrome, not gated",
-                seat.0, seat.1
-            );
-            continue;
-        }
-        gated += 1;
-        let differing = differing_pixels_in(&actual, &reference, square);
-        println!(
-            "badge {index} at {:.1} {:.1}: {ink} pixels of ink, {differing} differ from the reference",
-            seat.0, seat.1
-        );
-        if differing > BADGE_DIFF_BUDGET {
-            moved.push(format!(
-                "badge {index}, seated at {:.1} {:.1}, differs in {differing} pixels",
-                seat.0, seat.1
-            ));
-        }
-    }
-    assert!(
-        gated >= BADGES_GATED_AT_LEAST,
-        "only {gated} of {} badges hold enough ink to compare — the floating chrome now covers \
-         nearly all of them, so this test no longer sees what it claims to. actual: {}",
-        seats.len(),
+    // The names have to name ONE mark each, or the set check below compares the wrong things.
+    let mut named: Vec<String> = badges.iter().map(ReportedBadge::key).collect();
+    named.sort_unstable();
+    let mut distinct = named.clone();
+    distinct.dedup();
+    assert_eq!(
+        named, distinct,
+        "two marks answer to the same name — BADGE_KEY_ROUNDING is too coarse for this drawing"
+    );
+
+    let (gated, moved) = compare_badge_squares(&badges, &actual, &reference, &unmarked);
+
+    let mut expected: Vec<&str> = BADGES_EXPECTED_GATED.to_vec();
+    expected.sort_unstable();
+    let mut measured: Vec<&str> = gated.iter().map(String::as_str).collect();
+    measured.sort_unstable();
+    assert_eq!(
+        measured,
+        expected,
+        "the set of badges this picture can see has changed. Every mark the capture reported:\n{}\n\
+         If the chrome or the layout moved on purpose, update BADGES_EXPECTED_GATED to match — and \
+         if a mark VANISHED from the list, it is now behind chrome and nothing is checking it. \
+         actual: {}",
+        badges
+            .iter()
+            .map(|badge| format!(
+                "  {} at {:.1} {:.1}",
+                badge.key(),
+                badge.seat.0,
+                badge.seat.1
+            ))
+            .collect::<Vec<_>>()
+            .join("\n"),
         actual_path.display()
     );
     assert!(
@@ -931,6 +988,63 @@ fn sketch_constraint_badges_stand_where_the_plane_puts_them() {
         actual_path.display(),
         diff_path.display()
     );
+}
+
+/// Compare each reported badge's square against the reference, over the squares that hold ink.
+///
+/// Returns the names of the badges that were GATED — the ones whose square holds at least
+/// [`BADGE_INK_FLOOR`] pixels of the mark's own ink, measured against the control render — and a
+/// line for each of those that no longer matches the reference.
+fn compare_badge_squares(
+    badges: &[ReportedBadge],
+    actual: &RgbaImage,
+    reference: &RgbaImage,
+    unmarked: &RgbaImage,
+) -> (Vec<String>, Vec<String>) {
+    let mut gated: Vec<String> = Vec::new();
+    let mut moved: Vec<String> = Vec::new();
+    for badge in badges {
+        let square = square_around(badge.seat, actual.dimensions());
+        let ink = differing_pixels_in(actual, unmarked, square);
+        let (name, (across, down)) = (badge.key(), badge.seat);
+        if ink < BADGE_INK_FLOOR {
+            println!("{name} at {across:.1} {down:.1}: {ink} pixels of ink — under the chrome");
+            continue;
+        }
+        gated.push(name.clone());
+        let differing = differing_pixels_in(actual, reference, square);
+        println!(
+            "{name} at {across:.1} {down:.1}: {ink} pixels of ink, \
+             {differing} differ from the reference"
+        );
+        if differing > BADGE_DIFF_BUDGET {
+            moved.push(format!(
+                "{name}, seated at {across:.1} {down:.1}, differs in {differing} pixels"
+            ));
+        }
+    }
+    (gated, moved)
+}
+
+/// The badges the capture printed, one per `badge <glyph> in plane <x> <y> at <x> <y>` line.
+fn badges_reported_in(stdout: &str) -> Vec<ReportedBadge> {
+    let pair = |both: &str| -> Option<(f32, f32)> {
+        let (across, down) = both.split_once(' ')?;
+        Some((across.parse().ok()?, down.parse().ok()?))
+    };
+    stdout
+        .lines()
+        .filter_map(|line| line.strip_prefix("badge "))
+        .filter_map(|reported| {
+            let (species, rest) = reported.split_once(" in plane ")?;
+            let (plane, seat) = rest.split_once(" at ")?;
+            Some(ReportedBadge {
+                species: species.to_string(),
+                plane: pair(plane)?,
+                seat: pair(seat)?,
+            })
+        })
+        .collect()
 }
 
 /// The pixel square a badge seated at `seat` is compared over, clipped to the image.
@@ -967,18 +1081,6 @@ fn differing_pixels_in(one: &RgbaImage, other: &RgbaImage, square: [u32; 4]) -> 
         }
     }
     differing
-}
-
-/// The seats `shot` printed, one per `badge at <x> <y>` line, in output pixels.
-fn badge_seats_in(stdout: &str) -> Vec<(f32, f32)> {
-    stdout
-        .lines()
-        .filter_map(|line| line.strip_prefix("badge at "))
-        .filter_map(|seat| {
-            let (across, down) = seat.split_once(' ')?;
-            Some((across.parse().ok()?, down.parse().ok()?))
-        })
-        .collect()
 }
 
 /// Render the chunkable golden cases THROUGH the two-layer mesh path
