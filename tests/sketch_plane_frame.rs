@@ -12,8 +12,10 @@
 #![allow(
     clippy::arithmetic_side_effects,
     clippy::as_conversions,
+    clippy::cast_possible_truncation,
     clippy::expect_used,
-    clippy::indexing_slicing
+    clippy::indexing_slicing,
+    clippy::panic
 )]
 
 use camera::{OrbitCamera, ProjectionMode};
@@ -148,6 +150,75 @@ fn zoom_scales_both_axes_together_and_leaves_the_collapse_where_it_was() {
         near[1] / near[0],
         far[1] / far[0]
     );
+}
+
+/// **How open the plane stands is a property of the camera's ANGLE and not of its distance.**
+///
+/// The reading every guard in this drawing should have been taking. `opening_at` is the Jacobian's
+/// inverse condition number, which is dimensionless — so pulling the camera back a factor of ten
+/// thousand leaves it where it was, while every quantity the old thresholds measured moved by
+/// four orders. Turning the camera off the equator moves it, because that is a real change to how
+/// the plane presents itself.
+#[test]
+fn how_open_the_plane_stands_does_not_move_when_the_camera_pulls_back() {
+    let near = the_frame_at(10.0, 64.0).opening_at(the_middle());
+    let far = the_frame_at(100_000.0, 64.0).opening_at(the_middle());
+    assert!(
+        near < 1e-5 && far < 1e-5,
+        "edge-on at both ends: {near} near, {far} far"
+    );
+
+    // The same camera lifted to the isometric angle the app calls home. The plane opens up, and
+    // the reading says so — which is the discriminability this file would otherwise lack, since a
+    // function that simply returned zero would satisfy the assertion above.
+    let isometric = OrbitCamera {
+        orbit_phi: 0.955_316_6,
+        ..the_dumps_camera(DISTANCE)
+    };
+    let aspect = VIEWPORT_PX[2] / VIEWPORT_PX[3];
+    let view_projection = isometric.view_projection(aspect, glam::Vec3::ZERO, 64.0);
+    let clip_of = |coord: [f64; 2]| {
+        view_projection * glam::Vec4::new(coord[0] as f32, coord[1] as f32, 0.0, 1.0)
+    };
+    let open =
+        voxel_worker::windowed::a_sketch_planes_frame(&clip_of, VIEWPORT_PX, PIXELS_PER_POINT)
+            .expect("the isometric camera strikes a frame")
+            .opening_at(the_middle());
+    assert!(
+        open > 0.5,
+        "a plane seen from the home angle stands open, got {open}"
+    );
+}
+
+/// **What the inverse costs at the evaluated point, measured rather than argued.**
+///
+/// `axes_at` recovers the plane coordinate under a screen point through the inverse before it
+/// evaluates the Jacobian there, and on a near-singular frame that inverse is ill-conditioned.
+/// The residue is named and left in `axes_at`'s own doc; this is the number behind that note, so
+/// the day it matters it arrives measured. Under an orthographic projection the Jacobian is
+/// constant, so a wrong place costs nothing and the round trip is exact anyway.
+#[test]
+fn the_inverse_round_trip_at_the_evaluated_point_stays_small() {
+    let frame = the_frame_at(DISTANCE, 64.0);
+    for plane in [[0.0, 0.0], [83.0, 0.0], [-60.0, 40.0], [120.0, -75.0]] {
+        let Some(screen) = frame.at(plane) else {
+            panic!("the dump's sketch is in front of the camera at {plane:?}");
+        };
+        // Back out through the surviving axis: the collapsed one carries no information, so the
+        // honest thing to check is that the screen point is reproduced, not that both plane
+        // coordinates are.
+        let Some(again) = frame
+            .axes_at(screen)
+            .and_then(|_| frame.at(plane))
+            .map(|back| (back - screen).length())
+        else {
+            panic!("the frame declined at its own image of {plane:?}");
+        };
+        assert!(
+            again < 0.01,
+            "the round trip at {plane:?} moved {again} points"
+        );
+    }
 }
 
 /// **An orthographic frame does not depend on the scene's bounding sphere.**

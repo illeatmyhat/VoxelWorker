@@ -245,7 +245,13 @@ impl PlaneFrame {
         let determinant = (0..3).fold(0.0, |sum, column| {
             to_screen[0][column].mul_add(cofactor(0, column), sum)
         });
-        if !determinant.is_finite() || determinant.abs() <= f64::EPSILON {
+        // Only a determinant that cannot be divided by declines. The test used to be
+        // `abs() <= f64::EPSILON`, which is an absolute threshold on a quantity carrying units of
+        // pixels squared per plane unit squared: it scales as one over the distance squared, so
+        // the frame's own idea of whether it existed was a function of how far the author had
+        // zoomed out. The honest test is whether the inverse comes out finite, which is the thing
+        // the caller actually needs and is free of any scale.
+        if !determinant.is_finite() || determinant == 0.0 {
             return None;
         }
         // The adjugate is the cofactor matrix TRANSPOSED, which is where the index swap comes from.
@@ -254,6 +260,12 @@ impl PlaneFrame {
             for column in 0..3 {
                 to_plane[row][column] = cofactor(column, row) / determinant;
             }
+        }
+        if to_plane
+            .iter()
+            .any(|row| row.iter().any(|entry| !entry.is_finite()))
+        {
+            return None;
         }
         Some(Self {
             to_screen,
@@ -309,6 +321,44 @@ impl PlaneFrame {
         // per plane unit, so the frame stopped answering once the author zoomed out far enough,
         // and every caller's decline is the SCREEN's reading at full length.
         axes.iter().all(|axis| axis.is_finite()).then_some(axes)
+    }
+
+    /// How far OPEN the plane stands to the camera where it passes through `at`: one when its two
+    /// unit steps image equally long and square to each other, zero when the plane has collapsed
+    /// to a line and there is no second direction left.
+    ///
+    /// The inverse condition number of the Jacobian — its smaller singular value over its larger —
+    /// which is the one reading of a projected plane's health that is DIMENSIONLESS. Every guard
+    /// in this drawing that has ever been wrong about a degenerate plane was wrong because it
+    /// measured something with units: a length in pixels per plane unit, or a determinant in the
+    /// square of that, both of which shrink as the author zooms out and neither of which says
+    /// anything about the plane. This does not move when the camera pulls back.
+    ///
+    /// Not the same as the sine between the two projected DIRECTIONS, and the difference is the
+    /// eighth report: an axis can collapse in LENGTH while its direction still reads square, and
+    /// at that point the direction being read is the direction of a vector too short to have one.
+    ///
+    /// Zero where the frame cannot answer at all.
+    #[must_use]
+    pub fn opening_at(&self, at: Pos2) -> f32 {
+        let Some([across, down]) = self.axes_at(at) else {
+            return 0.0;
+        };
+        // sigma_1 * sigma_2 is |det|, and sigma_1^2 + sigma_2^2 is the squared Frobenius norm, so
+        // the larger falls out of one quadratic and the ratio needs no eigen decomposition.
+        let determinant = across.x.mul_add(down.y, -(across.y * down.x)).abs();
+        let frobenius = across.length_sq() + down.length_sq();
+        let gap = frobenius.mul_add(frobenius, -(4.0 * determinant * determinant));
+        let larger_squared = (frobenius + gap.max(0.0).sqrt()) / 2.0;
+        if !larger_squared.is_finite() || larger_squared <= 0.0 {
+            return 0.0;
+        }
+        let opening = determinant / larger_squared;
+        if opening.is_finite() {
+            opening.clamp(0.0, 1.0)
+        } else {
+            0.0
+        }
     }
 
     /// The plane's own +X where it passes through `at`, as a unit screen direction, folded upright.
