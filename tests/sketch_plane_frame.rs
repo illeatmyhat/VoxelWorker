@@ -662,3 +662,80 @@ fn every_badge_the_shell_lays_out_lies_on_the_line_at_the_reporters_camera() {
         "the fallback this test exists to condemn is not measurably wrong here: {substituted}"
     );
 }
+
+/// The same plane drawn as a line, but seen from BEHIND: its +x images leftward.
+const fn a_plane_imaged_to_a_line_from_behind() -> PlaneMap {
+    PlaneMap::new([[-0.6, 0.0, 320.0], [0.0, 0.0, 240.0], [0.0, 0.0, 1.0]])
+}
+
+/// **A sliver badge still reads left to right, and the coin it tosses when there is no second
+/// direction left falls the way the code says it does.**
+///
+/// Collinearity cannot see orientation: a sliver turned 180 degrees is still on the line, so
+/// `a_badge_on_a_plane_imaged_to_a_line` passes whichever way the glyph faces. That leaves the one
+/// DECISION this cut names — "a plane whose axis images to nothing keeps its authored axis" — with
+/// no falsifier at all, and a later tidy of `>=` to `>` would flip it at exactly zero with every
+/// other test still green. The flicker would then arrive as an unattributable golden diff.
+///
+/// Two claims, and only the first is visible on screen:
+///
+/// * The **reading** direction is observable and is asserted on both a plane imaged forward and one
+///   imaged from behind. The glyph's own +x side runs left to right either way, which is the point
+///   of folding the basis upright rather than pinning it to the plane's authored axes.
+/// * The **coin** is not observable, by definition — it orients the side that images to nothing.
+///   It is asserted in PLANE coordinates because that is the only place it exists, and because an
+///   unobservable decision left unasserted is one nobody can change on purpose.
+#[test]
+fn a_sliver_badge_reads_left_to_right_and_lands_its_named_coin() {
+    for (facing_the_camera, plane) in [
+        (true, a_plane_imaged_to_a_line()),
+        (false, a_plane_imaged_to_a_line_from_behind()),
+    ] {
+        let seat = [10.0, -4.0];
+        let badge =
+            ConstraintBadge::seated(plane, seat, ui::icons::Icon::ConstraintParallel, 1, false)
+                .expect("a plane drawn as a line still seats a badge");
+
+        // Where the glyph's own +x side points ON SCREEN — the same arithmetic the painter walks
+        // its grid over, so this is the drawing and not a stored claim.
+        let origin = plane.at(seat).expect("in front of the camera");
+        let reading = plane
+            .at([
+                badge.across[0].mul_add(0.5, seat[0]),
+                badge.across[1].mul_add(0.5, seat[1]),
+            ])
+            .expect("in front of the camera")
+            - origin;
+        assert!(
+            reading.x > 0.0,
+            "the glyph reads right to left on a plane {}: {reading:?}",
+            if facing_the_camera {
+                "imaged forward"
+            } else {
+                "imaged from behind"
+            }
+        );
+        // And the plane's authored +x is the one that got flipped to achieve it, which is what
+        // makes the mark unmirrored rather than merely pointed the right way.
+        assert_eq!(
+            badge.across[0] > 0.0,
+            facing_the_camera,
+            "the basis folded the wrong axis"
+        );
+
+        // The coin. The plane's second axis images to nothing here, so there is no side for the
+        // handedness comparison to land on and it falls to the plane's authored up — which the
+        // glyph's grid, running y downward, reverses. Nothing on screen can tell; that is why it
+        // is pinned here.
+        assert!(
+            badge.down[1] < 0.0,
+            "the unobservable side flipped: down {:?}",
+            badge.down
+        );
+        assert!(
+            badge.down[0].abs() < 1e-12,
+            "the second side left the plane's own axis: down {:?}",
+            badge.down
+        );
+    }
+}
