@@ -23,17 +23,25 @@
 //! 0.01 ms when the region memo answers, and whole milliseconds when it does not — and it does not
 //! on any frame that moved the drawing, which is every frame of a drag.
 //!
-//! That cost grows about quadratically, because the arrangement cuts every curve against every
-//! other: 0.03 ms at 28 points, 0.35 at 112, and 4 to 11 at 448. The last figure is deliberately a
-//! RANGE. Repeated isolated runs on this machine gave 4.4, 4.6, 7.5, 10.8 and 10.9 ms for the same
-//! work, so the reading is not stable to better than a factor of two and quoting one number would
-//! claim a precision the measurement does not have. The SHAPE is the robust part, and the shape is
-//! quadratic.
+//! That cost grew about quadratically, because the arrangement cuts every curve against every
+//! other: 0.03 ms at 28 points, 0.35 at 112, and 4 to 11 at 448 — a range rather than a number,
+//! because five isolated runs of identical work gave 4.4, 4.6, 7.5, 10.8 and 10.9.
 //!
-//! An axis-aligned bounding-box broadphase was spiked over `cut_at_crossings` — the slots are
-//! disjoint, so every cross-slot pair test is wasted — and measured NO win at all, with the face
-//! counts unchanged. So the quadratic term is not the crossing solves, and the cost lives somewhere
-//! else inside the arrangement. Where, exactly, is not yet measured.
+//! # Where the quadratic term actually was, and how nearly it was missed
+//!
+//! The first guess was the crossing solves, so a bounding-box reject was spiked over the pair loop
+//! in `cut_at_crossings` — on DISJOINT slots, where every cross-slot test is wasted by
+//! construction. It measured no win at all, which looked like an answer and was not one: the same
+//! function runs a SECOND all-pairs pass, `cut_under_foreign_endpoints`, which asks
+//! `nearest_parameter` of every curve about every other curve's two ends and runs even when there
+//! are no crossings anywhere. Timed phase by phase at 256 curves, that pass was 8.3 ms of the 9.0.
+//! The crossing loop was 0.5 — the reject had worked and was hidden behind a term sixteen times
+//! larger.
+//!
+//! Rejecting on boxes in BOTH passes takes the arrangement to about 1.3 ms, and the run-to-run
+//! spread collapses with it (1.3 to 1.8 against 4.4 to 10.9), which is what a cost dominated by
+//! avoidable per-pair work looks like when the work goes away. The lesson is the house's own:
+//! bisect by phase before spiking a candidate. One dud spike cost more than the table would have.
 //!
 //! Run: `cargo test --release --test sketch_overlay_cost_probe -- --ignored --nocapture`
 

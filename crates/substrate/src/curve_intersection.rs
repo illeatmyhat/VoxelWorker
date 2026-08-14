@@ -682,23 +682,46 @@ fn bounds_size(bounds: ([f64; 2], [f64; 2])) -> f64 {
 /// separately, in DISTANCE, which is the quantity that actually decides whether two things are in
 /// the same place; see [`VERTEX_WELD_EPSILON`].
 ///
-/// Quadratic in the number of curves. A sketch is drawn by hand, so the count is small and the
-/// constant matters more than the exponent; a sweep-line would be the answer if that ever stopped
-/// being true.
+/// # Both passes reject on bounding boxes first
+///
+/// Quadratic in the number of curves, and the count is NOT always small — a drawing of 64 arc slots
+/// carries 256 curves, and every frame of a drag re-derives the whole arrangement because the
+/// region memo is keyed on the store. Measured there, the pair work was 9.0 ms, of which the
+/// endpoint pass alone was 8.3: it asked `nearest_parameter` of every curve about every other
+/// curve's two ends, including the overwhelming majority that are nowhere near each other.
+///
+/// So each pass drops a pair its boxes say cannot meet, which is sound for a different reason in
+/// each. A CROSSING lies on both curves, so it lies in both boxes. A cut under a foreign endpoint
+/// is looser — the endpoint only has to come within [`VERTEX_WELD_EPSILON`] of the other curve —
+/// so that reject pads by exactly that, and the pad is load-bearing rather than decorative: an
+/// axis-aligned curve's box has ZERO extent across, and a stem landing a hair off it would be
+/// dropped by an unpadded test. The boxes are computed ONCE, not per pair; per pair they would cost
+/// about what they save. Together the two rejects took the same arrangement from 9.0 ms to 1.0.
+///
+/// A sweep-line is still the answer if the count grows another order of magnitude.
 #[must_use]
 pub fn cut_at_crossings(curves: &[PlanarCurve]) -> Vec<Vec<PlanarCurve>> {
     let mut cuts: Vec<Vec<f64>> = vec![Vec::new(); curves.len()];
+    let boxes: Vec<([f64; 2], [f64; 2])> =
+        curves.iter().copied().map(planar_curve_bounds).collect();
     for (first_index, first_curve) in curves.iter().enumerate() {
         let following_start = first_index.saturating_add(1);
         let (first_cuts, following_cuts) = cuts.split_at_mut(following_start);
         let Some(first_cuts) = first_cuts.last_mut() else {
             continue;
         };
-        for (second_curve, second_cuts) in curves
+        let Some(first_box) = boxes.get(first_index).copied() else {
+            continue;
+        };
+        for ((second_curve, second_cuts), second_box) in curves
             .iter()
             .skip(following_start)
             .zip(following_cuts.iter_mut())
+            .zip(boxes.iter().skip(following_start).copied())
         {
+            if !bounds_overlap(first_box, second_box) {
+                continue;
+            }
             for crossing in first_curve.crossings(second_curve) {
                 first_cuts.push(crossing.parameter_on_first);
                 second_cuts.push(crossing.parameter_on_second);
@@ -731,13 +754,27 @@ pub fn cut_at_crossings(curves: &[PlanarCurve]) -> Vec<Vec<PlanarCurve>> {
 /// face walk then welds into one, leaving a self-loop where there should be nothing at all. An
 /// existing cut within welding distance ALONG the curve already says what this one would say.
 fn cut_under_foreign_endpoints(curves: &[PlanarCurve], cuts: &mut [Vec<f64>]) {
+    let boxes: Vec<([f64; 2], [f64; 2])> =
+        curves.iter().copied().map(planar_curve_bounds).collect();
     for (index, curve) in curves.iter().enumerate() {
         if curve.is_closed() {
             continue;
         }
         for endpoint in [curve.start(), curve.end()] {
-            for (landed_on, (other, found)) in curves.iter().zip(cuts.iter_mut()).enumerate() {
+            for (landed_on, ((other, found), reach)) in curves
+                .iter()
+                .zip(cuts.iter_mut())
+                .zip(boxes.iter().copied())
+                .enumerate()
+            {
                 if landed_on == index {
+                    continue;
+                }
+                if endpoint[0] < reach.0[0] - VERTEX_WELD_EPSILON
+                    || endpoint[0] > reach.1[0] + VERTEX_WELD_EPSILON
+                    || endpoint[1] < reach.0[1] - VERTEX_WELD_EPSILON
+                    || endpoint[1] > reach.1[1] + VERTEX_WELD_EPSILON
+                {
                     continue;
                 }
                 let parameter = other.nearest_parameter(endpoint);
@@ -1301,6 +1338,74 @@ fn parameter_on_arc(
     clippy::unwrap_used
 )]
 mod tests {
+    /// **A T-junction still cuts its crossbar when the stem lands a hair OFF it.**
+    ///
+    /// The two passes in [`cut_at_crossings`] skip a pair whose bounding boxes cannot reach each
+    /// other, which is what keeps the arrangement from asking every curve about every other. An
+    /// axis-aligned crossbar is the case that makes the pad load-bearing rather than decorative:
+    /// its box has ZERO height, so a stem whose endpoint is a hair below the line — which is what
+    /// arithmetic hands you, not a contrived input — sits outside the raw box and gets skipped, and
+    /// the crossbar comes back uncut with the vertex left sitting in the middle of a piece.
+    ///
+    /// **Seen red**: with the `VERTEX_WELD_EPSILON` terms dropped from the endpoint pass's reject,
+    /// this returns one piece instead of two.
+    #[test]
+    fn a_stem_landing_a_hair_off_an_axis_aligned_crossbar_still_cuts_it() {
+        // Inside the weld tolerance, outside the crossbar's own zero-height box.
+        let a_hair = VERTEX_WELD_EPSILON / 4.0;
+        let crossbar = PlanarCurve::Segment {
+            start: [0.0, 0.0],
+            end: [10.0, 0.0],
+        };
+        // STOPPING SHORT of the crossbar, never reaching it. A stem that crossed would be cut by
+        // the crossings pass and this would say nothing about the endpoint pass at all — which is
+        // what the first draft of this test did, and it stayed green with the pad removed.
+        let stem = PlanarCurve::Segment {
+            start: [5.0, 4.0],
+            end: [5.0, a_hair],
+        };
+        let cut = cut_at_crossings(&[crossbar, stem]);
+        assert_eq!(
+            cut[0].len(),
+            2,
+            "the crossbar should be cut under the stem's end, not left whole"
+        );
+    }
+
+    /// **Two curves far apart are not asked about each other, and two that touch still are.**
+    ///
+    /// The reject is only allowed to drop pairs that CANNOT meet. This states both halves at once,
+    /// because a filter that drops everything passes the first half on its own.
+    #[test]
+    fn the_reject_drops_only_pairs_that_cannot_reach_each_other() {
+        let here = PlanarCurve::Segment {
+            start: [0.0, 0.0],
+            end: [1.0, 1.0],
+        };
+        let far = PlanarCurve::Segment {
+            start: [500.0, 500.0],
+            end: [501.0, 501.0],
+        };
+        let crossing = PlanarCurve::Segment {
+            start: [0.0, 1.0],
+            end: [1.0, 0.0],
+        };
+        assert_eq!(
+            cut_at_crossings(&[here, far])[0].len(),
+            1,
+            "nothing reaches this curve, so it keeps its whole span"
+        );
+        assert_eq!(
+            cut_at_crossings(&[here, crossing])[0].len(),
+            2,
+            "a curve crossing it mid-span must still cut it"
+        );
+        // Externally TANGENT circles are deliberately not asserted here. They come back uncut,
+        // and they do so with the reject removed as well — it is how the arrangement has always
+        // behaved, not something a bounding box introduced. Whether a tangency should seat a vertex
+        // is a question about the arrangement and not about this filter.
+    }
+
     use super::*;
 
     fn segment(a: [f64; 2], b: [f64; 2]) -> PlanarCurve {
