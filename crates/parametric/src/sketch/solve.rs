@@ -3172,6 +3172,64 @@ struct Frame {
     kept: Option<KeptQuantity>,
 }
 
+/// Everything one walk of a drag came back with, which is what a walk of a different length has
+/// to be compared against — see [`Problem::drag_together`], where two of them agreeing is how the
+/// walk decides it is fine enough.
+struct Reached {
+    positions: Vec<[f64; 2]>,
+    scalars: Vec<f64>,
+    answered: Frame,
+}
+
+impl Reached {
+    /// Whether a finer walk had anything to say that this one did not.
+    ///
+    /// Two walks agree when the whole ANSWER agrees, not when the points landed near each other.
+    /// A walk comes back with three things and a coarse step can get the points right while
+    /// getting one of the other two wrong: a radius is its own freedom, and whether a snap engaged
+    /// — and onto which quantity — is a choice rather than a position. Comparing points alone
+    /// would let two coarse walks that both stepped straight over the same event agree with each
+    /// other about a drawing neither of them visited.
+    ///
+    /// What it does NOT close: an event that leaves no trace in any of the three by the time the
+    /// walk ends. Every species this drawing has actually met — a wind flipping, a parity
+    /// swapping, a slot inverting — moves the points or moves the kept quantity, so this covers
+    /// the known ones, and an unknown one would need a fixture that brackets it to be found at
+    /// all.
+    ///
+    /// The threshold throughout is the tolerance the drawing already judges an arrived drag by, so
+    /// a refinement that moves the answer by less than it moves it by less than the difference
+    /// between landing on the cursor and not. A station is held to the same figure without being a
+    /// plane distance, which reads as stricter than it needs to be — that spends a refinement
+    /// rather than skipping one.
+    fn agrees_with(&self, other: &Self) -> bool {
+        let apart = |before: f64, after: f64| (before - after).abs() > SATISFIED_RESIDUAL;
+        let kept = match (&self.answered.kept, &other.answered.kept) {
+            (None, None) => true,
+            // `across_the_cone` is left out on purpose: it is how strongly the overlay inks the
+            // ring, so it slides with the cursor even for a drag holding the very same quantity.
+            (Some(was), Some(is)) => {
+                !apart(was.about[0], is.about[0])
+                    && !apart(was.about[1], is.about[1])
+                    && !apart(was.radius, is.radius)
+            }
+            _ => false,
+        };
+        kept && self.positions.len() == other.positions.len()
+            && self.scalars.len() == other.scalars.len()
+            && self
+                .positions
+                .iter()
+                .zip(&other.positions)
+                .all(|(was, is)| (was[0] - is[0]).hypot(was[1] - is[1]) <= SATISFIED_RESIDUAL)
+            && !self
+                .scalars
+                .iter()
+                .zip(&other.scalars)
+                .any(|(was, is)| apart(*was, *is))
+    }
+}
+
 /// A hand pulled onto a quantity its own curve already had — see [`Problem::snapped`].
 #[derive(Debug, Clone)]
 struct Snap {
@@ -4990,17 +5048,6 @@ impl Problem {
         }
         let scalar_coordinates = self.scalar_coordinates();
         let (origin, most) = self.walk_of(hands, was, &positions);
-        // How far apart two walks have to land before the finer one is believed to be saying
-        // something. It is the tolerance the drawing already judges an arrived drag by, so a
-        // refinement that moves the answer by less than this moves it by less than the difference
-        // between landing on the cursor and not.
-        let agreed = |before: &[[f64; 2]], after: &[[f64; 2]]| {
-            before.len() == after.len()
-                && before
-                    .iter()
-                    .zip(after)
-                    .all(|(was, is)| (was[0] - is[0]).hypot(was[1] - is[1]) <= SATISFIED_RESIDUAL)
-        };
         // Walk as coarsely as the drawing will allow, not as finely as the turn suggests.
         // [`Self::walk_of`] counts steps off the angle alone, which bounds how wrong one step
         // COULD be rather than reading how wrong it is: an arc slot's end sweep asks for sixteen
@@ -5013,11 +5060,11 @@ impl Problem {
         // different width-preservation test — while the same runs disagree about quality with no
         // trend in the count at all. The length was never load-bearing; growing when a gesture
         // needs it is.
-        let mut coarser: Option<Vec<[f64; 2]>> = None;
+        let mut coarser: Option<Reached> = None;
         let mut frames = 1;
-        let (positions, scalar_coordinates, answered) = loop {
-            let mut reached = positions.clone();
-            let mut reached_scalars = scalar_coordinates.clone();
+        let finest = loop {
+            let mut landed = positions.clone();
+            let mut landed_scalars = scalar_coordinates.clone();
             let mut answered = Frame::default();
             for frame in 1..=frames {
                 let share = f64::from(frame) / f64::from(frames);
@@ -5037,7 +5084,7 @@ impl Problem {
                 // walked frame has to be handed the drawing it walked to rather than the one the
                 // gesture started from — otherwise every frame re-asks for the original shape and
                 // the walk says nothing the first frame did not.
-                let standing = self.standing_at(&reached, &reached_scalars);
+                let standing = self.standing_at(&landed, &landed_scalars);
                 // Every step measures from where the GESTURE started, not from where the last step
                 // landed. The walk hands out a straight chord while a snapped drag sweeps an arc,
                 // so the two part company by the sagitta — a fixed amount of geometry — while a
@@ -5057,19 +5104,29 @@ impl Problem {
                     &origin,
                     &opening,
                     loosened,
-                    &mut reached,
-                    &mut reached_scalars,
+                    &mut landed,
+                    &mut landed_scalars,
                 )?;
             }
+            let reached = Reached {
+                positions: landed,
+                scalars: landed_scalars,
+                answered,
+            };
             let settled = coarser
                 .as_ref()
-                .is_some_and(|before| agreed(before, &reached));
+                .is_some_and(|before| before.agrees_with(&reached));
             if settled || frames >= most {
-                break (reached, reached_scalars, answered);
+                break reached;
             }
             coarser = Some(reached);
             frames *= 2;
         };
+        let Reached {
+            positions,
+            scalars: scalar_coordinates,
+            answered,
+        } = finest;
         let solution = self.solution(positions, &scalar_coordinates);
         let diagnostics = diagnostics(self, &solution, answered.report);
         let settled = Settled {
