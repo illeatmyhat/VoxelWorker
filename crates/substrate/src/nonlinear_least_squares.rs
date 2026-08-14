@@ -1099,6 +1099,16 @@ fn jacobian_column_by_column(system: &dyn ResidualSystem, parameters: &[f64]) ->
 /// The finite-difference step, relative to the parameter's own magnitude. The cube root of the
 /// machine epsilon is where a central difference's truncation error and its cancellation error
 /// meet — smaller is not more accurate, it is less.
+///
+/// **The scaling is `DIFFERENCE_STEP * parameter.abs().max(1.0)`, and the floor at one is a ROUTE
+/// KNOB nobody named.** It is standard practice and it is there for a reason — a parameter that
+/// arrives as exactly zero has no magnitude to scale by — but it means the step a coordinate is
+/// differenced with depends on the coordinate's own absolute value, so translating a drawing a
+/// thousand units changes every step under one, changes every Jacobian entry in its last digits,
+/// and changes which member of an under-determined family the search lands on. A drawing near the
+/// origin and the same drawing far from it are differenced differently on purpose, and neither is
+/// wrong; what is worth knowing is that the answers are allowed to differ, and by more than the
+/// residual tolerance would suggest.
 const DIFFERENCE_STEP: f64 = 6.0e-6;
 
 /// The rank of a `rows × columns` row-major matrix: how many of its rows are linearly independent,
@@ -1312,7 +1322,104 @@ fn gauss_newton_step(
 /// identically at `1e-12`. Weighting the norm by column size — the textbook equilibration — is
 /// strictly worse the more of it is applied, because scaling the columns to equal size destroys the
 /// very ordering the rank-revealing pivot uses to sort the noise directions last.
+///
+/// **It is calibrated to a DIFFERENCED Jacobian and will be wrong for an analytic one.** The floor
+/// it clears is `ε/h`, and `h` is [`DIFFERENCE_STEP`]; a row written by
+/// [`analytic_jacobian`](ResidualSystem::analytic_jacobian) has no `h` and its floor is the machine
+/// epsilon, five orders of magnitude further down. [`rank_tolerance_band`] measures where the floor
+/// actually is on a given matrix, so the constant can be re-derived when that day comes rather than
+/// re-guessed.
 const JACOBIAN_RANK_TOLERANCE: f64 = 1.0e-7;
+
+/// Where a matrix's rank can be read from, measured rather than assumed — the two edges
+/// `JACOBIAN_RANK_TOLERANCE` has to sit between, and the rank they agree on.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RankToleranceBand {
+    /// The rank every tolerance in the band agrees the matrix has.
+    pub rank: usize,
+    /// The largest tolerance swept that found MORE directions than that — the noise floor showing
+    /// itself. A tolerance at or below this believes noise. Zero where the sweep never found more,
+    /// which is a matrix whose deficiency is exact to the last bit.
+    pub noise_believed_up_to: f64,
+    /// The smallest tolerance swept that found FEWER — a real direction truncated away. A tolerance
+    /// at or above this throws information out. Infinite where the sweep never found fewer.
+    pub truth_truncated_from: f64,
+}
+
+impl RankToleranceBand {
+    /// How many orders of magnitude of clear air sit between the two edges.
+    #[must_use]
+    pub fn decades_of_room(&self) -> f64 {
+        (self.truth_truncated_from / self.noise_believed_up_to).log10()
+    }
+
+    /// Whether one tolerance falls strictly inside.
+    #[must_use]
+    pub fn holds(&self, tolerance: f64) -> bool {
+        tolerance > self.noise_believed_up_to && tolerance < self.truth_truncated_from
+    }
+}
+
+/// Sweep the rank tolerance over every power of ten from `1` down to `1e-17` and report the WIDEST
+/// run of tolerances a `rows × columns` row-major matrix reads the same rank over.
+///
+/// This is how a rank tolerance is chosen honestly, and it takes no claim from the caller: a
+/// rank-revealing decomposition answers a rank that only ever falls as the tolerance rises, so the
+/// sweep is a staircase, and the widest tread is the gap in the matrix's spectrum that a real
+/// deficiency leaves. Its two edges are where noise starts being believed and where information
+/// starts being thrown away, so a constant belongs in the middle of them.
+///
+/// A DIFFERENCED Jacobian puts the lower edge at the cancellation floor of its own step; the same
+/// Jacobian written analytically puts it at the machine epsilon or below, and a constant that was in
+/// the middle of the first band sits near the top of the second. Which is the reason this exists:
+/// when the sketch layer supplies its own derivatives, `JACOBIAN_RANK_TOLERANCE` is to be
+/// re-derived from a run of this over real drawings, not re-guessed.
+///
+/// Ties in tread width go to the LOOSER tolerance, which is the reading that believes less.
+#[must_use]
+pub fn rank_tolerance_band(matrix: &[f64], rows: usize, columns: usize) -> RankToleranceBand {
+    const TIGHTEST_EXPONENT: i32 = 17;
+    let nothing = vec![0.0; rows];
+    let found: Vec<usize> = (0..=TIGHTEST_EXPONENT)
+        .map(|exponent| {
+            minimum_norm_least_squares(
+                matrix,
+                &nothing,
+                rows,
+                columns,
+                10.0f64.powi(exponent.saturating_neg()),
+            )
+            .map_or(0, |answer| answer.rank)
+        })
+        .collect();
+    let (mut best_start, mut best_end) = (0usize, 0usize);
+    let mut start = 0usize;
+    for exponent in 1..found.len() {
+        if found.get(exponent) != found.get(start) {
+            start = exponent;
+        }
+        if exponent.saturating_sub(start) > best_end.saturating_sub(best_start) {
+            (best_start, best_end) = (start, exponent);
+        }
+    }
+    let looser = i32::try_from(best_start).unwrap_or(0).saturating_sub(1);
+    let tighter = i32::try_from(best_end)
+        .unwrap_or(TIGHTEST_EXPONENT)
+        .saturating_add(1);
+    RankToleranceBand {
+        rank: found.get(best_start).copied().unwrap_or_default(),
+        noise_believed_up_to: if tighter > TIGHTEST_EXPONENT {
+            0.0
+        } else {
+            10.0f64.powi(tighter.saturating_neg())
+        },
+        truth_truncated_from: if looser < 0 {
+            f64::INFINITY
+        } else {
+            10.0f64.powi(looser.saturating_neg())
+        },
+    }
+}
 
 /// The reduction in the sum of squares the LINEAR model predicts for `step`:
 /// `‖r‖² − ‖r + J·step‖²`.
@@ -2442,6 +2549,91 @@ mod tests {
         assert!(parameters[1].abs() < 1.0e-9, "{parameters:?}");
         let span = (parameters[2] - parameters[0]).hypot(parameters[3] - parameters[1]);
         assert!((span - 10.0).abs() < 1.0e-6, "{span}");
+    }
+
+    /// Two points, told to stand ten apart in two different ways — once as a length and once as a
+    /// length SQUARED — and told to stand level. The two span rows are different functions with
+    /// parallel gradients, so the Jacobian's exact rank is two while nothing about the residuals
+    /// says so; that is the shape a redundant sketch actually has, and the one a rank tolerance has
+    /// to read a deficiency out of rather than be handed.
+    struct RedundantSpan;
+
+    impl RedundantSpan {
+        /// The Jacobian in closed form, to the last bit the arithmetic allows.
+        fn exact_jacobian(at: &[f64; 4]) -> Vec<f64> {
+            let (across, up) = (at[2] - at[0], at[3] - at[1]);
+            let span = across.hypot(up);
+            let (unit_across, unit_up) = (across / span, up / span);
+            vec![
+                -unit_across,
+                -unit_up,
+                unit_across,
+                unit_up,
+                -2.0 * across,
+                -2.0 * up,
+                2.0 * across,
+                2.0 * up,
+                0.0,
+                -1.0,
+                0.0,
+                1.0,
+            ]
+        }
+    }
+
+    impl ResidualSystem for RedundantSpan {
+        fn parameter_count(&self) -> usize {
+            4
+        }
+        fn residual_count(&self) -> usize {
+            3
+        }
+        fn residuals(&self, parameters: &[f64], into: &mut [f64]) {
+            let (across, up) = (parameters[2] - parameters[0], parameters[3] - parameters[1]);
+            into[0] = across.hypot(up) - 10.0;
+            into[1] = across.mul_add(across, up * up) - 100.0;
+            into[2] = parameters[3] - parameters[1];
+        }
+    }
+
+    /// **The rank tolerance, measured rather than asserted.** The band a differenced Jacobian leaves
+    /// is what `JACOBIAN_RANK_TOLERANCE` was calibrated against; the band the SAME Jacobian leaves
+    /// when it is written analytically is five orders of magnitude deeper at the bottom, which is
+    /// the whole warning about the constant. Run with `--nocapture` to read the numbers off.
+    #[test]
+    fn the_rank_tolerance_band_is_measured_and_the_constant_sits_inside_it() {
+        let at = [0.3, -0.2, 8.0, 1.0];
+        let differenced = jacobian(&RedundantSpan, &at);
+        let exact = RedundantSpan::exact_jacobian(&at);
+
+        let by_difference = rank_tolerance_band(&differenced, 3, 4);
+        let by_formula = rank_tolerance_band(&exact, 3, 4);
+        println!(
+            "differenced: {by_difference:?} ({:.1} decades)",
+            by_difference.decades_of_room()
+        );
+        println!(
+            "analytic:    {by_formula:?} ({:.1} decades)",
+            by_formula.decades_of_room()
+        );
+
+        assert_eq!(by_difference.rank, 2, "the deficiency is there to be read");
+        assert_eq!(by_formula.rank, 2, "and the formula reads the same one");
+        assert!(
+            by_difference.holds(JACOBIAN_RANK_TOLERANCE),
+            "the shipped tolerance has left the band it was calibrated in: {by_difference:?}"
+        );
+        // The floor a difference leaves is the cancellation error of its own step; the floor a
+        // formula leaves is the machine epsilon. If this stops holding, the difference has stopped
+        // being the thing that sets the floor and the constant needs re-deriving, not re-guessing.
+        assert!(
+            by_formula.noise_believed_up_to < by_difference.noise_believed_up_to,
+            "an analytic Jacobian did not lower the floor: {by_formula:?} against {by_difference:?}"
+        );
+        assert!(
+            by_formula.decades_of_room() > by_difference.decades_of_room(),
+            "an analytic Jacobian did not widen the band: {by_formula:?} against {by_difference:?}"
+        );
     }
 
     /// A declared system solves to the same answer an undeclared one does, through `solve` rather
