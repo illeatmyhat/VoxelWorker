@@ -347,26 +347,27 @@ fn the_dots_that_draw(
         .collect();
 
     let mut touched: std::collections::BTreeSet<EntityId> = std::collections::BTreeSet::new();
-    let mut pending: Vec<(Option<EntityId>, ui::chrome::SketchVertexHandle)> =
+    let mut pending: Vec<(EntityId, ui::chrome::SketchVertexHandle)> =
         Vec::with_capacity(vertex_px.len());
-    for (index, center_px) in vertex_px.iter().enumerate() {
+    // Zipped rather than indexed: the handles build both lists from the same `points()` walk, so a
+    // vertex ALWAYS has an id, and zipping is how this function says so. Indexing would hand back
+    // an `Option` that no drawing can produce, and an `Option<EntityId>` compared against the
+    // dragged point reads `None == None` as "this one is being dragged" — a rung of the ladder
+    // firing on the absence of a point rather than on a point.
+    for (point_id, center_px) in handles.point_ids.iter().copied().zip(vertex_px) {
         let Some(center_px) = *center_px else {
             continue;
         };
-        let point_id = handles.point_ids.get(index).copied();
         let hovered = under_the_pointer(hand, center_px, pixels_per_point);
-        let selected = point_id.is_some_and(|entity| {
-            hand.selection
-                .contains(ui::panel::SelectionTarget::SketchPoint {
-                    sketch: hand.sketch,
-                    entity,
-                })
-        });
+        let selected = hand
+            .selection
+            .contains(ui::panel::SelectionTarget::SketchPoint {
+                sketch: hand.sketch,
+                entity: point_id,
+            });
         // Precedence: dragged > selected > hover > idle. A selected vertex stays filled-accent even
-        // under the cursor, matching the segment rule so a point and an edge read alike. A PREVIEW
-        // dot carries no id and no drag holds one either, so it lands here too — which is right:
-        // it is the mark the author's hand is placing right now.
-        let dragged = hand.dragging_point == point_id;
+        // under the cursor, matching the segment rule so a point and an edge read alike.
+        let dragged = hand.dragging_point == Some(point_id);
         let state = if dragged {
             ui::gizmos::HandleState::Snapped
         } else if selected {
@@ -378,7 +379,7 @@ fn the_dots_that_draw(
         };
         // A dot the author is already touching answers for itself.
         if hovered || selected || dragged {
-            touched.extend(point_id);
+            touched.insert(point_id);
         }
         pending.push((
             point_id,
@@ -388,13 +389,12 @@ fn the_dots_that_draw(
                     center_px.y / pixels_per_point,
                 ),
                 state,
-                ink: match point_id {
-                    Some(id) if arms.contains(&id) => ui::chrome::SketchVertexInk::TangentArm,
-                    Some(id) if on_ink.contains(&id) => ui::chrome::SketchVertexInk::OnInk,
-                    // A vertex with no id is a PREVIEW dot the tool is placing: it belongs to the
-                    // mark being drawn, so it reads as drawing.
-                    None => ui::chrome::SketchVertexInk::OnInk,
-                    Some(_) => ui::chrome::SketchVertexInk::OffInk,
+                ink: if arms.contains(&point_id) {
+                    ui::chrome::SketchVertexInk::TangentArm
+                } else if on_ink.contains(&point_id) {
+                    ui::chrome::SketchVertexInk::OnInk
+                } else {
+                    ui::chrome::SketchVertexInk::OffInk
                 },
             },
         ));
@@ -403,9 +403,7 @@ fn the_dots_that_draw(
     let revealed = the_dots_the_drawing_reveals(sketch, hand, &touched);
     let mut dots: Vec<ui::chrome::SketchVertexHandle> = pending
         .into_iter()
-        .filter(|(point_id, _)| {
-            point_id.is_none_or(|id| revealed.contains(&id) && !stacked.contains(&id))
-        })
+        .filter(|(point_id, _)| revealed.contains(point_id) && !stacked.contains(point_id))
         .map(|(_, handle)| handle)
         .collect();
 
@@ -662,6 +660,56 @@ mod tests {
             }),
             ui::gizmos::HandleState::Snapped,
             "a drag outranks both: the hand is holding this one"
+        );
+    }
+
+    /// The top rung fires on a POINT, never on the absence of one.
+    ///
+    /// A vertex's id used to arrive as an `Option`, indexed out of a list the handles build in
+    /// lockstep with the vertices — so it could never actually be missing, but `None == None`
+    /// against an empty drag still read as "the hand is holding this one". Zipping the two lists
+    /// removed the shape; this pins the reading, with a real drag in flight so the rung is live.
+    #[test]
+    fn a_dot_the_drag_is_not_holding_reads_untouched() {
+        let mut sketch = document::sketch::Sketch::empty(document::sketch::PlaneAxis::Z);
+        let held = sketch.add_free_point(document::sketch::SketchPoint::new(0, 0));
+        let other = sketch.add_free_point(document::sketch::SketchPoint::new(64, 40));
+        let scene = document::scene::Scene::from_nodes(vec![document::scene::Node::new(
+            "Two dots",
+            document::scene::NodeContent::SketchTool {
+                producer: document::sketch::SketchSolid::extrude(sketch, 16),
+                material: voxel_core::core_geom::MaterialChoice::Wood,
+            },
+        )]);
+        let node = scene.roots[0];
+        let handles = scene.sketch_handles(node, 16).expect("a sketch node");
+        let document::scene::NodeContent::SketchTool { producer, .. } =
+            &scene.node_by_id(node).expect("just built").content
+        else {
+            unreachable!("built as a sketch tool")
+        };
+        let plane = SketchPlaneProjection::new(&handles, glam::Mat4::IDENTITY, [0, 0, 1000, 1000]);
+        let nothing = ui::panel::Selection::default();
+        let mut hand = SketchHand::resting(node, &nothing);
+        hand.dragging_point = Some(held);
+        let marks = a_sketchs_marks(&producer.sketch, &handles, &plane, &hand, 1.0);
+        assert_eq!(marks.points.len(), 2, "two free points, both drawing");
+        let index_of = |wanted: document::sketch::EntityId| {
+            handles
+                .point_ids
+                .iter()
+                .position(|id| *id == wanted)
+                .expect("both points are in the handles")
+        };
+        assert_eq!(
+            marks.points[index_of(held)].state,
+            ui::gizmos::HandleState::Snapped,
+            "the dot the drag holds"
+        );
+        assert_eq!(
+            marks.points[index_of(other)].state,
+            ui::gizmos::HandleState::Idle,
+            "the other dot: a drag elsewhere is not a hand on this one"
         );
     }
 
