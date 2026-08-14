@@ -5736,7 +5736,7 @@ impl Problem {
                 &target,
                 &origin,
                 &opening,
-                &loosened,
+                loosened,
                 &mut positions,
                 &mut scalar_coordinates,
             )?;
@@ -5878,6 +5878,14 @@ impl Problem {
         // measured against: solving it alone leaves an achievable drag exactly where the second
         // pass put it, and takes an impossible one back to where the relations say it belongs
         // rather than reporting the author's own drawing as broken.
+        //
+        // The second pass does not always have an answer to reach. A hand on an arc's center is
+        // incompatible by construction — every cap center of a slot stalls around 1.7e-2 at every
+        // reach — so it exits with a compromise, and mirroring the drawing moves that compromise in
+        // the third decimal. Nothing reads the stalled residual: the report handed out is the third
+        // pass's. What carries is WHERE on the family the third pass re-seats, which is why a knob
+        // that ought to mean nothing moves the answer here without the arithmetic being wrong.
+        //
         // A point the author fixed does not travel with a body, so the preference is not allowed to
         // weigh carrying it: anchoring drops it out of the pass entirely rather than leaving the
         // spans to argue with the relation and lose the drag to a conflict neither one meant.
