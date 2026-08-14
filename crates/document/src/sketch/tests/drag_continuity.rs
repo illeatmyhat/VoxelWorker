@@ -526,6 +526,73 @@ fn an_arc_slot_end_follows_its_radius() {
     }
 }
 
+/// A long sweep does not fatten the slot it is sweeping.
+///
+/// The shell recomputes the whole gesture from the press on every frame, so a sweep arrives as one
+/// wide turn rather than as the frames the author drew it in, and the walk that carries it can only
+/// afford so many steps. A step wide enough to see the curvature of the circle the snap turns about
+/// lands beside the answer, and because nothing in the drawing prices its own width, that is where
+/// the error went: this eight-unit slot came back 9.8 wide at twenty degrees and 23.6 at a hundred
+/// and sixty, and FINER steps only slowed the drift. What fixes it is saying the quantity out loud
+/// — an arc the gesture drags but does not author keeps the radius the opening measured, so there
+/// is no free width left to spend.
+///
+/// Asked at nine angles rather than at the end, because it is the drawing under the cursor
+/// throughout the gesture that the author is watching, not the one they let go of.
+#[test]
+fn sweeping_a_slots_end_keeps_the_width_it_was_drawn_with() {
+    let slot = curved_slot();
+    let end = spine_end(&slot, [36.0, 0.0]);
+    let reaches = |sketch: &Sketch| {
+        sketch
+            .points()
+            .iter()
+            .map(|point| {
+                let at = point.at.in_plane();
+                at[0].hypot(at[1])
+            })
+            .collect::<Vec<f64>>()
+    };
+    // Swept AWAY from the far cap. Turned the other way the near end winds through it, and the
+    // drawing refuses the contact rather than answering — which the suite already states above.
+    //
+    // Replayed from the drawing at rest every time, never nudged from the last answer, because
+    // that is what the shell does with a held cursor and it is the only reading a long sweep has.
+    // Stopping at 160: a half turn winds this slot's own contact off the piece it was drawn on,
+    // and the drawing is right to refuse that rather than answer it.
+    for degrees in (20..=160).step_by(20) {
+        let asked = -f64::from(degrees);
+        let mut sketch = slot.clone();
+        let mut turns = crate::sketch::ArcTurnUnderAGesture::opening_over(&sketch);
+        sketch
+            .move_point_reporting_its_snap(
+                end,
+                SketchPoint::from_continuous(
+                    36.0 * asked.to_radians().cos(),
+                    36.0 * asked.to_radians().sin(),
+                ),
+                ctx(16),
+                SnapReach::UNBOUNDED,
+                &mut turns,
+            )
+            .unwrap_or_else(|refused| {
+                panic!("swept {degrees} degrees and the drawing refused it: {refused:?}")
+            });
+        let radii = reaches(&sketch);
+        let widest = radii.iter().fold(0.0_f64, |most, reach| most.max(*reach));
+        // The hub stands at the origin and is the one reach that is not a rail.
+        let narrowest = radii
+            .iter()
+            .filter(|reach| **reach > 1.0)
+            .fold(f64::INFINITY, |least, reach| least.min(*reach));
+        assert!(
+            (widest - narrowest - 8.0).abs() < 0.05,
+            "swept {degrees} degrees, the slot came back {} wide",
+            widest - narrowest
+        );
+    }
+}
+
 /// The drawing's free sweep is no longer spent at random.
 ///
 /// [ADR 0043](../../../../../docs/adr/0043-a-snap-lets-go-gradually.md) measured the far cap of a

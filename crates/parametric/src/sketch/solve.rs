@@ -5861,6 +5861,16 @@ impl Problem {
                 self.resolve(pull).map_err(RequestError::InvalidRelation)?,
             );
         }
+        // SPIKE: hold every undimensioned metric quantity at what the OPENING measured — arc radii
+        // by taking their column away, segment lengths by adding the row that says so.
+        if snap.is_some() {
+            for (radius, at) in self.radii_a_snapped_gesture_keeps(loosened, opening) {
+                if let Some(parameter) = pulled.parameters.get_mut(radius.index) {
+                    parameter.stored = at;
+                    parameter.free = false;
+                }
+            }
+        }
         // Two passes, and the split is the whole idea. A drawing that is not fully determined has a
         // family of answers under the hand, and picking the one nearest where every point already
         // stood is what makes a shape stretch when it could have travelled: moving a body of N
@@ -6007,6 +6017,63 @@ impl Problem {
             }
         };
         Ok(Frame { report, kept })
+    }
+
+    /// Every radius a snapped gesture DRAGS BUT DOES NOT AUTHOR, at what the opening measured.
+    ///
+    /// A drawing that does not dimension its own width has a family of answers under the hand, and
+    /// a step wide enough to see the curvature of the circle the snap is turning about lands on the
+    /// wrong member of it. Nothing priced leaving that circle, so the error drained into whichever
+    /// quantity nothing else was pricing: swept 160 degrees, a slot four units wide came back drawn
+    /// seven and a half, and FINER steps only slowed the drift down. Held here it comes back four,
+    /// at every angle from twenty degrees to a hundred and eighty.
+    ///
+    /// The column is taken away rather than bid for, which is the same choice and the same reason
+    /// as [`Self::quantities_a_carry_holds_still`]: a bid in this system is traded against every
+    /// other bid in the same sum, and this one always loses.
+    ///
+    /// Two conditions, and both were measured rather than reasoned. The arc must not be one the
+    /// hand is RESHAPING, or a gesture whose whole meaning is the radius — a rim drag, a cap pulled
+    /// out to lengthen a slot — is refused; that alone was twenty-six failures. And it must share a
+    /// point with something the hand does reshape, because an arc the gesture never reaches has its
+    /// own relations to answer to: holding a symmetric pair's far arc left the pair with two mirror
+    /// answers and the walk jumped four units between them at an ordinary step.
+    fn radii_a_snapped_gesture_keeps(
+        &self,
+        loosened: &[SketchCurve],
+        opening: &[[f64; 2]],
+    ) -> Vec<(ParameterId, f64)> {
+        let drawn = |arc: &ArcCenter| {
+            let hub = opening.get(arc.center.index)?;
+            let end = opening.get(arc.from.index)?;
+            Some((end[0] - hub[0]).hypot(end[1] - hub[1]))
+        };
+        let mut authored: Vec<PointId> = Vec::new();
+        for curve in loosened {
+            match *curve {
+                SketchCurve::Segment(key) => {
+                    if let Some(segment) = self.segments.get(key.index) {
+                        authored.extend([segment.from, segment.to]);
+                    }
+                }
+                SketchCurve::Arc(key) => {
+                    if let Some(arc) = self.arc_centers.iter().find(|arc| arc.key == key) {
+                        authored.extend([arc.center, arc.from, arc.to]);
+                    }
+                }
+                SketchCurve::Circle(_) => {}
+            }
+        }
+        self.arc_centers
+            .iter()
+            .filter(|arc| !loosened.contains(&SketchCurve::Arc(arc.key)))
+            .filter(|arc| {
+                [arc.center, arc.from, arc.to]
+                    .iter()
+                    .any(|point| authored.contains(point))
+            })
+            .filter_map(|arc| Some((arc.radius?, drawn(arc)?)))
+            .collect()
     }
 
     /// This problem with every quantity the hands CARRY put beyond the solve's reach, or `None`

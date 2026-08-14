@@ -514,21 +514,26 @@ fn what_the_shells_replay_from_the_press_costs_as_the_sweep_grows() {
 /// eleven. That is coarser than the step the walk's own justification says loses the width.
 ///
 /// So this asks the same 180 degrees two ways and compares the rails, not the clock: once as the
-/// shell asks it, and once at the granularity the law names. It comes back RED, and not narrowly —
-/// a slot four units wide is drawn seven and a half wide by the end of a half turn:
+/// shell asks it, and once at the granularity the law names. It came back RED, and not narrowly —
+/// a slot four units wide was drawn seven and a half wide by the end of a half turn:
 ///
-/// | swept | step taken | slot width | error |
-/// | ----- | ---------- | ---------- | ----- |
-/// | 20°   | 1.25°      | 4.26       | +7%   |
-/// | 60°   | 3.75°      | 5.30       | +33%  |
-/// | 100°  | 6.25°      | 6.32       | +58%  |
-/// | 160°  | 10.00°     | 7.58       | +90%  |
+/// | swept | step taken | slot width, then | now  |
+/// | ----- | ---------- | ---------------- | ---- |
+/// | 20°   | 1.25°      | 4.26 (+7%)       | 4.00 |
+/// | 60°   | 3.75°      | 5.30 (+33%)      | 4.00 |
+/// | 100°  | 6.25°      | 6.32 (+58%)      | 4.00 |
+/// | 160°  | 10.00°     | 7.58 (+90%)      | 4.00 |
 ///
-/// Walked a degree at a time over the same travel the width holds to within four percent. So the
-/// cost this file spent its first half measuring is not the whole of what the replay is doing: on a
-/// long sweep the shell pays the most it can pay AND hands back a drawing the author did not ask
-/// for. The invariant the walk exists to protect is already being violated on exactly the gestures
-/// the owner reported as slow.
+/// **FIXED, and not by walking harder.** The step was never the cause; the free width was. Nothing
+/// in the drawing priced its own width, so every step's linearization error drained into it, which
+/// is why finer steps only slowed the drift instead of stopping it. A snapped gesture now holds the
+/// radius of every arc it drags but does not author — `Problem::radii_a_snapped_gesture_keeps` —
+/// and the whole table reads 4.000 at the same sixteen-step cap. Asserted, on the shell's own seam,
+/// by `sweeping_a_slots_end_keeps_the_width_it_was_drawn_with`.
+///
+/// The cap itself is still the cap: dropped to two steps the width starts to drift again (+9% at
+/// 160°) and a slot test reds, so the walk continues to earn its keep. What is gone is the answer
+/// being wrong at the cap the shell actually uses.
 #[test]
 #[ignore = "perf probe — run in release with --ignored --nocapture"]
 fn whether_the_step_cap_moves_the_answer_on_a_long_sweep() {
