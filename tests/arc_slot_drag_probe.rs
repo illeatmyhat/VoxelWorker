@@ -504,3 +504,122 @@ fn what_the_shells_replay_from_the_press_costs_as_the_sweep_grows() {
         }
     }
 }
+
+/// Whether the sixteen-step cap is degrading the ANSWER on a long sweep, not just the clock.
+///
+/// `walk_of` exists because a single 7.8-degree step collapsed a slot's rails from 36/40/44 to
+/// 33.5/38.3/43.2 — that measurement is in its own doc comment, and it is the whole argument for
+/// walking a degree at a time. But `MOST_FRAMES` caps the walk at sixteen steps, and the shell hands
+/// it the gesture's WHOLE displacement, so a hundred and eighty degrees is walked in steps of
+/// eleven. That is coarser than the step the walk's own justification says loses the width.
+///
+/// So this asks the same 180 degrees two ways and compares the rails, not the clock: once as the
+/// shell asks it, and once at the granularity the law names. It comes back RED, and not narrowly —
+/// a slot four units wide is drawn seven and a half wide by the end of a half turn:
+///
+/// | swept | step taken | slot width | error |
+/// | ----- | ---------- | ---------- | ----- |
+/// | 20°   | 1.25°      | 4.26       | +7%   |
+/// | 60°   | 3.75°      | 5.30       | +33%  |
+/// | 100°  | 6.25°      | 6.32       | +58%  |
+/// | 160°  | 10.00°     | 7.58       | +90%  |
+///
+/// Walked a degree at a time over the same travel the width holds to within four percent. So the
+/// cost this file spent its first half measuring is not the whole of what the replay is doing: on a
+/// long sweep the shell pays the most it can pay AND hands back a drawing the author did not ask
+/// for. The invariant the walk exists to protect is already being violated on exactly the gestures
+/// the owner reported as slow.
+#[test]
+#[ignore = "perf probe — run in release with --ignored --nocapture"]
+fn whether_the_step_cap_moves_the_answer_on_a_long_sweep() {
+    let original = arc_slots(1);
+    let id = original.sketch.points()[3].id;
+    let stood = original
+        .sketch
+        .points()
+        .iter()
+        .find(|point| point.id == id)
+        .expect("the point the sweep is holding")
+        .at
+        .in_plane();
+    let target = |turn: f64| {
+        SketchPoint::from_continuous(
+            stood[0].mul_add(turn.cos(), -(stood[1] * turn.sin())),
+            stood[0].mul_add(turn.sin(), stood[1] * turn.cos()),
+        )
+    };
+    let sweep = |made: &SketchSolid| {
+        made.sketch
+            .points()
+            .iter()
+            .map(|point| {
+                let at = point.at.in_plane();
+                at[0].hypot(at[1])
+            })
+            .collect::<Vec<f64>>()
+    };
+
+    // As the shell asks it: the whole gesture from the press, in one call, capped at sixteen steps
+    // of eleven degrees each.
+    let mut replayed = original.clone();
+    drop(replayed.sketch.move_point_reporting_its_snap(
+        id,
+        target(std::f64::consts::PI),
+        context(),
+        document::sketch::SnapReach::of_length(9.0),
+        &mut [],
+    ));
+
+    // At the granularity the walk is named for: a hundred and eighty frames of one degree, each of
+    // which the walk covers in a single step of exactly one degree.
+    let mut nudged = original.clone();
+    for frame in 1..=180_u32 {
+        drop(nudged.sketch.move_point_reporting_its_snap(
+            id,
+            target(f64::from(frame) * std::f64::consts::PI / 180.0),
+            context(),
+            document::sketch::SnapReach::of_length(9.0),
+            &mut [],
+        ));
+    }
+
+    // The curve the author actually watches: the shell recomputes from the press on EVERY frame, so
+    // this is the width on screen at each point of the sweep, not just at the end of it.
+    println!(
+        "{:>8} {:>12} {:>12} {:>10}",
+        "swept", "step taken", "slot width", "error"
+    );
+    for degrees in (20..=180).step_by(20) {
+        let mut frame = original.clone();
+        drop(frame.sketch.move_point_reporting_its_snap(
+            id,
+            target(f64::from(degrees) * std::f64::consts::PI / 180.0),
+            context(),
+            document::sketch::SnapReach::of_length(9.0),
+            &mut [],
+        ));
+        let radii = sweep(&frame);
+        let width = radii
+            .iter()
+            .fold(0.0_f64, |widest, radius| widest.max(*radius))
+            - 6.0;
+        println!(
+            "{degrees:>7}° {:>11.2}° {width:>12.3} {:>9.0}%",
+            f64::from(degrees) / 16.0,
+            (width - 4.0) / 4.0 * 100.0
+        );
+    }
+
+    println!();
+    println!(
+        "{:>5} {:>10} {:>12} {:>10} {:>10}",
+        "point", "at rest", "replayed 16x", "nudged 1x", "moved by"
+    );
+    let (rest, coarse, fine) = (sweep(&original), sweep(&replayed), sweep(&nudged));
+    for (index, ((was, hard), soft)) in rest.iter().zip(&coarse).zip(&fine).enumerate() {
+        println!(
+            "{index:>5} {was:>10.4} {hard:>12.4} {soft:>10.4} {:>10.4}",
+            hard - soft
+        );
+    }
+}
