@@ -71,6 +71,25 @@ pub trait ResidualSystem {
     /// [`residual_count`](Self::residual_count) long.
     fn residuals(&self, parameters: &[f64], into: &mut [f64]);
 
+    /// Write only the rows named in `rows` — ascending and without duplicates — into their own
+    /// places in `into`, leaving every other entry holding whatever it held.
+    ///
+    /// A grouped Jacobian READS only the rows a column declared, and by default it EVALUATES the
+    /// whole vector to get them: one difference over a group of nineteen columns costs nineteen
+    /// rows' worth of arithmetic to use four. Answering this narrows each pass to the group's own
+    /// rows, and the total across a Jacobian falls from one whole residual vector per group to one
+    /// entry per non-zero of the sparsity pattern. The default answers the whole vector, which is
+    /// always correct and is what a system that cannot evaluate one row without the others keeps.
+    ///
+    /// **A row this writes must carry the bits [`residuals`](Self::residuals) would have left
+    /// there** — the grouped Jacobian's claim is bit-for-bit equality with the column-by-column
+    /// one, and a partial pass that rounds differently breaks it as surely as a wrong formula
+    /// would. [`first_subset_disagreement`] is the falsifier.
+    fn residuals_of_rows(&self, parameters: &[f64], rows: &[usize], into: &mut [f64]) {
+        let _ = rows;
+        self.residuals(parameters, into);
+    }
+
     /// Which parameters each residual row READS, if the system knows.
     ///
     /// Answering turns the finite-difference Jacobian from one residual pass per parameter into one
@@ -162,6 +181,10 @@ pub struct ColumnGrouping {
     columns: Vec<usize>,
     /// Group `index` owns `columns[column_bounds[index]..column_bounds[index + 1]]`.
     column_bounds: Vec<usize>,
+    /// The rows any column of each group is read by, groups concatenated and each ascending.
+    group_rows: Vec<usize>,
+    /// Group `index` owns `group_rows[group_row_bounds[index]..group_row_bounds[index + 1]]`.
+    group_row_bounds: Vec<usize>,
 }
 
 impl ColumnGrouping {
@@ -228,15 +251,30 @@ impl ColumnGrouping {
         }
         let mut columns = Vec::new();
         let mut column_bounds = vec![0];
+        let mut group_rows = Vec::new();
+        let mut group_row_bounds = vec![0];
+        let mut union = Vec::new();
         for members in &group_columns {
             columns.extend_from_slice(members);
             column_bounds.push(columns.len());
+            union.clear();
+            for column in members {
+                if let Some(bucket) = rows_of_column.get(*column) {
+                    union.extend_from_slice(bucket);
+                }
+            }
+            union.sort_unstable();
+            union.dedup();
+            group_rows.extend_from_slice(&union);
+            group_row_bounds.push(group_rows.len());
         }
         Self {
             rows,
             row_bounds,
             columns,
             column_bounds,
+            group_rows,
+            group_row_bounds,
         }
     }
 
@@ -257,6 +295,19 @@ impl ColumnGrouping {
             return &[];
         };
         self.columns.get(start..end).unwrap_or_default()
+    }
+
+    /// The rows any column of one group is read by, ascending — every row one central difference
+    /// over that group has to evaluate, and no other.
+    #[must_use]
+    pub fn rows_of_group(&self, index: usize) -> &[usize] {
+        let (Some(&start), Some(&end)) = (
+            self.group_row_bounds.get(index),
+            self.group_row_bounds.get(index.saturating_add(1)),
+        ) else {
+            return &[];
+        };
+        self.group_rows.get(start..end).unwrap_or_default()
     }
 
     /// The rows one column is read by, ascending.
@@ -336,6 +387,79 @@ pub fn first_undeclared_read(
         }
     }
     None
+}
+
+/// A row a partial residual pass answered differently from a whole one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SubsetDisagreement {
+    /// The residual whose bits differed.
+    pub row: usize,
+    /// The subset it was asked for as part of: a group of the system's own Curtis-Powell-Reid
+    /// grouping, or `None` where the row was asked for on its own.
+    pub group: Option<usize>,
+}
+
+/// The first row a partial residual pass gets wrong — the falsifier for
+/// [`residuals_of_rows`](ResidualSystem::residuals_of_rows).
+///
+/// Asks for every group of the system's own grouping, and then for every row on its own, and
+/// compares the bits against a whole-vector pass at the rows requested. Bits and not a tolerance,
+/// for the same reason [`first_undeclared_read`] uses them: the grouped Jacobian claims to equal
+/// the column-by-column one exactly, and a partial pass that reassociates a sum has broken that
+/// claim even where it is more accurate.
+///
+/// Answers `None` for a system that has not overridden the default, since it is then claiming
+/// nothing — but it cannot tell, so it does the work either way and simply finds nothing.
+#[must_use]
+pub fn first_subset_disagreement(
+    system: &dyn ResidualSystem,
+    parameters: &[f64],
+) -> Option<SubsetDisagreement> {
+    let residual_count = system.residual_count();
+    let mut whole = vec![0.0; residual_count];
+    system.residuals(parameters, &mut whole);
+    let mut partial = vec![0.0; residual_count];
+    let grouping = column_grouping(system);
+    let groups = grouping.as_ref().map_or(0, ColumnGrouping::group_count);
+    for group in 0..groups {
+        let asked = grouping
+            .as_ref()
+            .map_or(&[][..], |grouping| grouping.rows_of_group(group));
+        if let Some(row) = disagreeing_row(system, parameters, asked, &whole, &mut partial) {
+            return Some(SubsetDisagreement {
+                row,
+                group: Some(group),
+            });
+        }
+    }
+    for row in 0..residual_count {
+        let asked = [row];
+        if let Some(row) = disagreeing_row(system, parameters, &asked, &whole, &mut partial) {
+            return Some(SubsetDisagreement { row, group: None });
+        }
+    }
+    None
+}
+
+/// The first of `asked` a partial pass answers with different bits than `whole` holds.
+fn disagreeing_row(
+    system: &dyn ResidualSystem,
+    parameters: &[f64],
+    asked: &[usize],
+    whole: &[f64],
+    partial: &mut [f64],
+) -> Option<usize> {
+    if asked.is_empty() {
+        return None;
+    }
+    partial.fill(f64::NAN);
+    system.residuals_of_rows(parameters, asked, partial);
+    asked.iter().copied().find(|row| {
+        let (Some(&stood), Some(&now)) = (whole.get(*row), partial.get(*row)) else {
+            return false;
+        };
+        stood.to_bits() != now.to_bits()
+    })
 }
 
 /// Why the solve stopped.
@@ -655,6 +779,11 @@ fn jacobian_at(
 /// a coordinate overflowed, a parameter arrived as NaN — the quotient is reconstructed from `here`
 /// rather than assumed, because a solve that has wandered off the finite numbers must produce the
 /// same garbage it always did rather than a quietly different garbage.
+///
+/// Each pass asks for only the rows the group's columns are read by, through
+/// [`residuals_of_rows`](ResidualSystem::residuals_of_rows), whose default answers the whole vector
+/// anyway. Nothing else in the entries the pass produces changes: the rows it does not ask for are
+/// exactly the rows it never reads.
 fn jacobian_in_groups(
     system: &dyn ResidualSystem,
     parameters: &[f64],
@@ -680,6 +809,9 @@ fn jacobian_in_groups(
                 .get(*column)
                 .map_or(0.0, |parameter| DIFFERENCE_STEP * parameter.abs().max(1.0))
         }));
+        // Only the group's own rows are ever read out of `ahead` and `behind` below, so only they
+        // are evaluated. A group no row reads is not evaluated at all.
+        let touched = grouping.rows_of_group(group);
         for forward in [true, false] {
             for (column, step) in columns.iter().zip(&steps) {
                 let Some(&parameter) = parameters.get(*column) else {
@@ -693,7 +825,13 @@ fn jacobian_in_groups(
                     };
                 }
             }
-            system.residuals(&moved, if forward { &mut ahead } else { &mut behind });
+            if !touched.is_empty() {
+                system.residuals_of_rows(
+                    &moved,
+                    touched,
+                    if forward { &mut ahead } else { &mut behind },
+                );
+            }
         }
         for column in columns {
             let Some(&parameter) = parameters.get(*column) else {
@@ -1625,6 +1763,240 @@ mod tests {
                 "entry {index}: {one} against {other}"
             );
         }
+    }
+
+    /// A declared system that can also evaluate a subset of its rows, and counts the rows it
+    /// evaluated either way. `truthful` off makes one row come back a single ulp different when it
+    /// is asked for on its own, which is the mistake the subset falsifier exists to catch.
+    struct Sparse<'a> {
+        parameters: usize,
+        residuals: Vec<Residual<'a>>,
+        reads: Vec<Vec<usize>>,
+        rows_evaluated: std::cell::Cell<usize>,
+        truthful: bool,
+    }
+
+    impl<'a> Sparse<'a> {
+        fn new(parameters: usize, residuals: Vec<Residual<'a>>, reads: Vec<Vec<usize>>) -> Self {
+            Self {
+                parameters,
+                residuals,
+                reads,
+                rows_evaluated: std::cell::Cell::new(0),
+                truthful: true,
+            }
+        }
+    }
+
+    impl ResidualSystem for Sparse<'_> {
+        fn parameter_count(&self) -> usize {
+            self.parameters
+        }
+        fn residual_count(&self) -> usize {
+            self.residuals.len()
+        }
+        fn residuals(&self, parameters: &[f64], into: &mut [f64]) {
+            self.rows_evaluated
+                .set(self.rows_evaluated.get() + self.residuals.len());
+            for (slot, residual) in into.iter_mut().zip(&self.residuals) {
+                *slot = residual(parameters);
+            }
+        }
+        fn residuals_of_rows(&self, parameters: &[f64], rows: &[usize], into: &mut [f64]) {
+            self.rows_evaluated
+                .set(self.rows_evaluated.get() + rows.len());
+            for row in rows {
+                let (Some(residual), Some(slot)) = (self.residuals.get(*row), into.get_mut(*row))
+                else {
+                    continue;
+                };
+                *slot = residual(parameters);
+                if !self.truthful && rows.len() == 1 {
+                    *slot = f64::from_bits(slot.to_bits() ^ 1);
+                }
+            }
+        }
+        fn parameter_reads(&self) -> Option<ResidualReads> {
+            Some(ResidualReads::from_rows(self.reads.iter().cloned()))
+        }
+    }
+
+    /// A chain of rows over ten columns, sparse the way a sketch is: the fixture the row-narrowing
+    /// claims are measured on.
+    fn a_sparse_chain<'a>() -> Sparse<'a> {
+        // Ten parameters. Each row reads a neighbouring pair, and two rows read a wider spread.
+        Sparse::new(
+            10,
+            vec![
+                &|p: &[f64]| p[0] * p[1] - 1.0,
+                &|p: &[f64]| p[1] + p[2].sin(),
+                &|p: &[f64]| p[2] * p[3] - 2.0,
+                &|p: &[f64]| p[3].hypot(p[4]),
+                &|p: &[f64]| p[4] * p[5] - 3.0,
+                &|p: &[f64]| p[5] + p[6] * p[6],
+                &|p: &[f64]| p[6] * p[7] - 4.0,
+                &|p: &[f64]| p[7].hypot(p[8]),
+                &|p: &[f64]| p[8] * p[9] - 5.0,
+                &|p: &[f64]| p[9] + p[0],
+                &|p: &[f64]| p[0] + p[4] + p[8],
+                &|p: &[f64]| p[2] + p[6],
+                // Two wide rows, the shape a rigidity span has: they are what forces the coloring
+                // apart while every other row still reads a neighbouring pair.
+                &|p: &[f64]| p[0] + p[2] + p[4] + p[6],
+                &|p: &[f64]| p[1] + p[3] + p[5] + p[7] + p[9],
+            ],
+            vec![
+                vec![0, 1],
+                vec![1, 2],
+                vec![2, 3],
+                vec![3, 4],
+                vec![4, 5],
+                vec![5, 6],
+                vec![6, 7],
+                vec![7, 8],
+                vec![8, 9],
+                vec![9, 0],
+                vec![0, 4, 8],
+                vec![2, 6],
+                vec![0, 2, 4, 6],
+                vec![1, 3, 5, 7, 9],
+            ],
+        )
+    }
+
+    /// Every group's row set is the union of its columns' rows, ascending and without repeats —
+    /// which is what makes it safe to hand to a system as "these rows and no others".
+    #[test]
+    fn a_groups_rows_are_exactly_its_columns_rows() {
+        let system = a_sparse_chain();
+        let reads = system.parameter_reads().expect("declared");
+        let grouping = ColumnGrouping::curtis_powell_reid(&reads, system.parameter_count());
+        for group in 0..grouping.group_count() {
+            let mut expected: Vec<usize> = grouping
+                .group(group)
+                .iter()
+                .flat_map(|column| grouping.rows_of(*column).iter().copied())
+                .collect();
+            expected.sort_unstable();
+            expected.dedup();
+            assert_eq!(grouping.rows_of_group(group), expected, "group {group}");
+        }
+    }
+
+    /// Narrowing each pass to its group's own rows leaves the Jacobian BIT for bit what a
+    /// whole-vector pass produced, and costs a fraction of the row evaluations.
+    #[test]
+    fn a_narrowed_pass_is_the_wide_one_bit_for_bit_and_cheaper() {
+        let at = [0.7, -1.3, 0.25, 4.0, -0.5, 2.75, 1.1, -2.2, 0.33, 3.5];
+        let narrow = a_sparse_chain();
+        let mut wide = a_sparse_chain();
+        // The same system with the seam closed: every pass evaluates the whole vector.
+        wide.reads = narrow.reads.clone();
+        let grouping = ColumnGrouping::curtis_powell_reid(
+            &narrow.parameter_reads().expect("declared"),
+            narrow.parameter_count(),
+        );
+        let mut here = vec![0.0; narrow.residual_count()];
+        narrow.residuals(&at, &mut here);
+        narrow.rows_evaluated.set(0);
+        let narrowed = jacobian_in_groups(&narrow, &at, &here, &grouping);
+
+        let column_by_column = jacobian_column_by_column(&wide, &at);
+        for (index, (one, other)) in narrowed.iter().zip(&column_by_column).enumerate() {
+            assert_eq!(
+                one.to_bits(),
+                other.to_bits(),
+                "entry {index}: {one} against {other}"
+            );
+        }
+        // What a group-at-a-time pass would have cost with the seam closed: two whole vectors per
+        // group. What it cost narrowed: two entries per non-zero of the sparsity pattern.
+        let wide_cost = 2 * grouping.group_count() * narrow.residual_count();
+        let narrow_cost = narrow.rows_evaluated.get();
+        assert!(
+            narrow_cost * 2 < wide_cost,
+            "narrowing saved nothing: {narrow_cost} rows against {wide_cost}"
+        );
+    }
+
+    /// And it stays bit for bit through the non-finite door, where the untouched rows are
+    /// reconstructed from `here` rather than evaluated at all.
+    #[test]
+    fn a_narrowed_pass_matches_where_a_row_is_not_finite() {
+        let finite = |p: &[f64]| p[0] * 2.0;
+        let infinite = |p: &[f64]| f64::INFINITY * p[1].signum();
+        let system = Sparse::new(3, vec![&finite, &infinite], vec![vec![0], vec![1]]);
+        let at = [1.5, 2.5, -3.0];
+        let grouping = ColumnGrouping::curtis_powell_reid(
+            &system.parameter_reads().expect("declared"),
+            system.parameter_count(),
+        );
+        let mut here = vec![0.0; system.residual_count()];
+        system.residuals(&at, &mut here);
+        let narrowed = jacobian_in_groups(&system, &at, &here, &grouping);
+        let column_by_column = jacobian_column_by_column(&system, &at);
+        for (index, (one, other)) in narrowed.iter().zip(&column_by_column).enumerate() {
+            assert_eq!(
+                one.to_bits(),
+                other.to_bits(),
+                "entry {index}: {one} against {other}"
+            );
+        }
+    }
+
+    /// An honest subset pass survives the falsifier, and one ulp of dishonesty does not.
+    #[test]
+    fn a_subset_pass_that_answers_differently_is_found() {
+        let at = [0.7, -1.3, 0.25, 4.0, -0.5, 2.75, 1.1, -2.2, 0.33, 3.5];
+        let honest = a_sparse_chain();
+        assert_eq!(first_subset_disagreement(&honest, &at), None);
+
+        let mut lying = a_sparse_chain();
+        lying.truthful = false;
+        let found = first_subset_disagreement(&lying, &at);
+        assert!(
+            matches!(found, Some(SubsetDisagreement { group: None, .. })),
+            "the single-row ask is where it lies: {found:?}"
+        );
+    }
+
+    /// A system that never overrode the seam is not accused of anything.
+    #[test]
+    fn the_default_subset_pass_is_beyond_reproach() {
+        let first = |p: &[f64]| p[0] - 1.0;
+        let second = |p: &[f64]| p[1] * p[2];
+        let system = Declared {
+            parameters: 3,
+            residuals: vec![&first, &second],
+            reads: vec![vec![0], vec![1, 2]],
+        };
+        assert_eq!(first_subset_disagreement(&system, &[1.0, 2.0, 3.0]), None);
+    }
+
+    /// A narrowing system solves to the same bits an unnarrowed one does, through `solve` rather
+    /// than through the Jacobian alone.
+    #[test]
+    fn narrowing_the_passes_does_not_move_the_answer() {
+        let distance = |p: &[f64]| ((p[2] - p[0]).powi(2) + (p[3] - p[1]).powi(2)).sqrt() - 10.0;
+        let horizontal = |p: &[f64]| p[3] - p[1];
+        let wide = Declared {
+            parameters: 4,
+            residuals: vec![&distance, &horizontal],
+            reads: vec![vec![0, 1, 2, 3], vec![1, 3]],
+        };
+        let narrow = Sparse::new(
+            4,
+            vec![&distance, &horizontal],
+            vec![vec![0, 1, 2, 3], vec![1, 3]],
+        );
+        let mut one = vec![0.0, 0.0, 8.0, 1.0];
+        let mut other = vec![0.0, 0.0, 8.0, 1.0];
+        let first = solve(&wide, &mut one, SolveSettings::default());
+        let second = solve(&narrow, &mut other, SolveSettings::default());
+        for (index, (left, right)) in one.iter().zip(&other).enumerate() {
+            assert_eq!(left.to_bits(), right.to_bits(), "parameter {index}");
+        }
+        assert_eq!(first, second);
     }
 
     /// The falsifier catches a system that reads a parameter it did not declare — the exact
