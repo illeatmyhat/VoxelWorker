@@ -36,9 +36,11 @@ use super::tangent::{
 use crate::ResolvedLength;
 use std::sync::atomic::{AtomicU64, Ordering};
 use substrate::graph::biconnected_blocks;
+#[cfg(test)]
+use substrate::nonlinear_least_squares::{first_undeclared_read, ColumnGrouping};
 use substrate::nonlinear_least_squares::{
-    jacobian, rank, solve as solve_nlls, ResidualSystem, SolveOutcome as SubstrateSolveOutcome,
-    SolveReport as SubstrateSolveReport, SolveSettings,
+    jacobian, rank, solve as solve_nlls, ResidualReads, ResidualSystem,
+    SolveOutcome as SubstrateSolveOutcome, SolveReport as SubstrateSolveReport, SolveSettings,
 };
 
 /// A trial whose residual norm is at or below this tolerance has met its relations.
@@ -1565,6 +1567,425 @@ mod tests {
         // gets its own drawing rather than being left out.
         let (builder, on_a_spline, _, _) = point_beside_a_spline();
         accepts(&builder.finish().unwrap(), on_a_spline);
+    }
+
+    /// Every handle a relation could want, drawn once, so each relation below is one line.
+    ///
+    /// Named rather than positional: an array of points with per-index meaning is exactly the
+    /// shape a later edit renumbers silently.
+    struct Cast {
+        corner: PointId,
+        across: PointId,
+        up: PointId,
+        far: PointId,
+        loose: PointId,
+        arc_start: PointId,
+        arc_end: PointId,
+        other_end: PointId,
+        base: SegmentId,
+        lid: SegmentId,
+        riser: SegmentId,
+        arc: ArcId,
+        other_arc: ArcId,
+        round: CircleId,
+        spline: SplineId,
+        joint: PointId,
+        joint_arm: PointId,
+        neighbor: PointId,
+        neighbor_arm: PointId,
+        station: ParameterId,
+    }
+
+    /// The drawing every relation in the honesty check is asserted against.
+    ///
+    /// Deliberately generous and deliberately non-degenerate: a collapsed segment or an end
+    /// sitting on its own centre sends several residuals down a guard branch that reads nothing,
+    /// and a reads-set is only checked by rows that actually run.
+    fn cast() -> (ProblemBuilder, Cast) {
+        let mut builder = ProblemBuilder::new();
+        let corner = builder.add_point([0.0, 0.0]);
+        let across = builder.add_point([10.0, 1.0]);
+        let up = builder.add_point([1.0, 10.0]);
+        let far = builder.add_point([11.0, 12.0]);
+        let loose = builder.add_point([4.0, 3.0]);
+        let hub = builder.add_point([30.0, 0.0]);
+        let arc_start = builder.add_point([36.0, 1.0]);
+        let arc_end = builder.add_point([30.5, 6.0]);
+        let other_hub = builder.add_point([60.0, 0.0]);
+        let other_start = builder.add_point([64.0, 1.0]);
+        let other_end = builder.add_point([60.5, 4.0]);
+        let round_hub = builder.add_point([90.0, 0.0]);
+        let joint = builder.add_point([100.0, 0.0]);
+        let joint_arm = builder.add_point([103.0, 1.0]);
+        let neighbor = builder.add_point([110.0, 4.0]);
+        let neighbor_arm = builder.add_point([107.0, 3.0]);
+        let through: Vec<PointId> = [[0.0, 30.0], [10.0, 36.0], [20.0, 30.0]]
+            .into_iter()
+            .map(|at| builder.add_point(at))
+            .collect();
+        let base = builder.add_segment(corner, across);
+        let lid = builder.add_segment(up, far);
+        let riser = builder.add_segment(corner, up);
+        let arc = builder.add_arc(hub, arc_start, arc_end);
+        let other_arc = builder.add_arc(other_hub, other_start, other_end);
+        let radius = builder.add_free_positive_radius(7.0).unwrap();
+        let round = builder.add_circle(round_hub, radius);
+        let spline = builder.add_fit_point_spline(through, Vec::new(), false);
+        let station = builder.add_free_spline_station(1.25).unwrap();
+        let held = Cast {
+            corner,
+            across,
+            up,
+            far,
+            loose,
+            arc_start,
+            arc_end,
+            other_end,
+            base,
+            lid,
+            riser,
+            arc,
+            other_arc,
+            round,
+            spline,
+            joint,
+            joint_arm,
+            neighbor,
+            neighbor_arm,
+            station,
+        };
+        (builder, held)
+    }
+
+    /// One relation of every kind, over the cast above.
+    ///
+    /// Paired with [`relation_kind`], whose match is exhaustive: adding a `Relation` variant fails
+    /// to COMPILE there, and the assertion at the foot of the honesty check refuses to pass until
+    /// the new variant is named in `EVERY_RELATION` and appears here. That chain is the only thing
+    /// standing between a new relation and a Curtis-Powell-Reid group that perturbs two parameters
+    /// one of its rows can see.
+    #[allow(clippy::too_many_lines)]
+    fn one_of_every_relation(held: &Cast) -> Vec<Relation> {
+        vec![
+            Relation::Fix {
+                point: held.corner,
+                at: [0.0, 0.0],
+            },
+            Relation::Horizontal { segment: held.base },
+            Relation::Vertical {
+                segment: held.riser,
+            },
+            Relation::Distance {
+                from: held.corner,
+                to: held.far,
+                length: 12.0,
+            },
+            Relation::AxisDistance {
+                from: held.corner,
+                to: held.across,
+                axis: 0,
+                length: 9.0,
+            },
+            Relation::PointLineDistance {
+                point: held.loose,
+                line: held.base,
+                distance: 2.0,
+            },
+            Relation::Radius {
+                curve: SketchCurve::Arc(held.arc),
+                length: 6.0,
+            },
+            Relation::RimGap {
+                first: SketchCurve::Arc(held.arc),
+                second: SketchCurve::Circle(held.round),
+                distance: 1.0,
+            },
+            Relation::Coincident {
+                first: held.loose,
+                second: held.up,
+            },
+            Relation::Parallel {
+                first: held.base,
+                second: held.lid,
+            },
+            Relation::Perpendicular {
+                first: held.base,
+                second: held.riser,
+            },
+            Relation::Angle {
+                first: AngleArm::Segment(held.base),
+                second: AngleArm::ArcEnd {
+                    arc: held.arc,
+                    end: SpanEnd::Start,
+                },
+                radians: 0.7,
+            },
+            Relation::Equal {
+                first: held.base,
+                second: held.lid,
+            },
+            Relation::Midpoint {
+                point: held.loose,
+                segment: held.riser,
+            },
+            Relation::Collinear {
+                first: held.base,
+                second: held.lid,
+            },
+            Relation::PointOnCurve {
+                point: held.loose,
+                curve: SketchCurve::Circle(held.round),
+            },
+            Relation::PointOnSpline {
+                point: held.loose,
+                spline: held.spline,
+                station: held.station,
+            },
+            Relation::Tangent {
+                first: SketchCurve::Arc(held.arc),
+                second: SketchCurve::Circle(held.round),
+                branch: TangentBranch::External,
+            },
+            Relation::Concentric {
+                first: SketchCurve::Arc(held.arc),
+                second: SketchCurve::Arc(held.other_arc),
+            },
+            Relation::Symmetry {
+                first: SketchCurve::Arc(held.arc),
+                second: SketchCurve::Arc(held.other_arc),
+                axis: held.riser,
+                branch: SymmetryBranch::Direct,
+            },
+            Relation::TangentDirection {
+                joint: held.joint,
+                joint_arm: held.joint_arm,
+                against: SketchCurve::Circle(held.round),
+            },
+            Relation::Curvature {
+                joint: held.joint,
+                joint_arm: held.joint_arm,
+                neighbor: held.neighbor,
+                neighbor_arm: held.neighbor_arm,
+                end: SpanEnd::Start,
+                against: SketchCurve::Circle(held.round),
+            },
+            Relation::Quantize {
+                point: held.across,
+                pitch: 1.0,
+                phase: 0.0,
+            },
+        ]
+    }
+
+    /// What kind of relation this is. **EXHAUSTIVE, and that is its entire job.**
+    ///
+    /// A new `Relation` variant does not compile until it is named here, and once it is named the
+    /// honesty check will not pass until it also appears in `EVERY_RELATION` and in
+    /// [`one_of_every_relation`]. The alternative is a relation whose rows read a parameter they
+    /// never declared, which does not throw and does not fail a tolerance — it converges to a
+    /// slightly different drawing.
+    fn relation_kind(relation: Relation) -> &'static str {
+        match relation {
+            Relation::Fix { .. } => "Fix",
+            Relation::Horizontal { .. } => "Horizontal",
+            Relation::Vertical { .. } => "Vertical",
+            Relation::Distance { .. } => "Distance",
+            Relation::AxisDistance { .. } => "AxisDistance",
+            Relation::PointLineDistance { .. } => "PointLineDistance",
+            Relation::Radius { .. } => "Radius",
+            Relation::RimGap { .. } => "RimGap",
+            Relation::Coincident { .. } => "Coincident",
+            Relation::Parallel { .. } => "Parallel",
+            Relation::Perpendicular { .. } => "Perpendicular",
+            Relation::Angle { .. } => "Angle",
+            Relation::Equal { .. } => "Equal",
+            Relation::Midpoint { .. } => "Midpoint",
+            Relation::Collinear { .. } => "Collinear",
+            Relation::PointOnCurve { .. } => "PointOnCurve",
+            Relation::PointOnSpline { .. } => "PointOnSpline",
+            Relation::Tangent { .. } => "Tangent",
+            Relation::Concentric { .. } => "Concentric",
+            Relation::Symmetry { .. } => "Symmetry",
+            Relation::TangentDirection { .. } => "TangentDirection",
+            Relation::Curvature { .. } => "Curvature",
+            Relation::Quantize { .. } => "Quantize",
+        }
+    }
+
+    /// Every relation there is. Bump this when `relation_kind` stops compiling.
+    const EVERY_RELATION: [&str; 23] = [
+        "Fix",
+        "Horizontal",
+        "Vertical",
+        "Distance",
+        "AxisDistance",
+        "PointLineDistance",
+        "Radius",
+        "RimGap",
+        "Coincident",
+        "Parallel",
+        "Perpendicular",
+        "Angle",
+        "Equal",
+        "Midpoint",
+        "Collinear",
+        "PointOnCurve",
+        "PointOnSpline",
+        "Tangent",
+        "Concentric",
+        "Symmetry",
+        "TangentDirection",
+        "Curvature",
+        "Quantize",
+    ];
+
+    /// **The falsifier for the grouped Jacobian: no row moves under a parameter it did not
+    /// declare, bit for bit.**
+    ///
+    /// The Curtis-Powell-Reid grouping differences several parameters in one residual pass, which
+    /// is exact only while no row reads two of them. Nothing at solve time can notice a row that
+    /// reads a parameter its reads-set left out — the Jacobian simply comes back with two
+    /// derivatives added into one entry, the search still converges, and it converges somewhere
+    /// slightly else. So the claim is checked HERE, against every relation, at both rigidity
+    /// modes, at several perturbation sizes, and by comparing BITS rather than a tolerance: a row
+    /// that did not declare a parameter must be untouched by it, not merely near where it was.
+    ///
+    /// Several sizes because one is not enough. A six-millionths step is what the Jacobian uses,
+    /// but a dependency that only shows through a branch — a length crossing an epsilon guard, an
+    /// arc's sweep crossing its own tail — is invisible at that step and real at a larger one.
+    #[test]
+    fn every_relation_declares_what_its_rows_read() {
+        let mut checked: Vec<&'static str> = Vec::new();
+        for index in 0..one_of_every_relation(&cast().1).len() {
+            // The cast is rebuilt for each relation because handles are owner-tagged: a relation
+            // holding one drawing's points cannot be asserted against another's.
+            let (mut builder, held) = cast();
+            let relation = one_of_every_relation(&held)[index];
+            let kind = relation_kind(relation);
+            builder.add_constraint(relation);
+            let problem = builder.finish().unwrap();
+            let positions: Vec<[f64; 2]> = problem.points.iter().map(|point| point.at).collect();
+            let scalars = problem.scalar_coordinates();
+            for rigidity in [
+                Rigidity::Ignored,
+                Rigidity::Preferred {
+                    anchored: &[],
+                    flexible_curves: &[],
+                    was: &[],
+                    opening: &[],
+                    reshaping: true,
+                },
+            ] {
+                let system = Residuals::new(&problem, &scalars, rigidity).unwrap();
+                let reads = system.parameter_reads().unwrap();
+                assert_eq!(
+                    reads.row_count(),
+                    system.residual_count(),
+                    "{kind}: the reads-set is a different shape from the residual vector, which \
+                     pins every later row's claim to the wrong residual"
+                );
+                let guess = system.guess(&positions);
+                for step in [6.0e-6, 1.0e-3, 0.25] {
+                    assert_eq!(
+                        first_undeclared_read(&system, &guess, step),
+                        None,
+                        "{kind}: a row moved under a parameter it did not declare, at step {step}"
+                    );
+                }
+            }
+            checked.push(kind);
+        }
+        checked.sort_unstable();
+        let mut every = EVERY_RELATION.to_vec();
+        every.sort_unstable();
+        assert_eq!(
+            checked, every,
+            "every relation must be exercised, and only relations that exist"
+        );
+    }
+
+    /// The same honesty check over the drawings a DRAG builds, which are the ones the grouping is
+    /// there for: an arc slot carries rigidity spans, scalar holds and point stays, and those rows
+    /// outnumber the relations three to one.
+    #[test]
+    fn a_slots_rows_declare_what_they_read_under_every_rigidity() {
+        let (mut builder, held) = cast();
+        builder.add_constraint(Relation::Concentric {
+            first: SketchCurve::Arc(held.arc),
+            second: SketchCurve::Arc(held.other_arc),
+        });
+        builder.add_constraint(Relation::Horizontal { segment: held.base });
+        builder.add_constraint(Relation::Coincident {
+            first: held.arc_end,
+            second: held.other_end,
+        });
+        let problem = builder.finish().unwrap();
+        let positions: Vec<[f64; 2]> = problem.points.iter().map(|point| point.at).collect();
+        let scalars = problem.scalar_coordinates();
+        let hands = [(held.arc_start, [37.0, 2.0])];
+        for rigidity in [
+            Rigidity::Ignored,
+            Rigidity::Preferred {
+                anchored: &[],
+                flexible_curves: &[],
+                was: &[],
+                opening: &[],
+                reshaping: false,
+            },
+            Rigidity::Preferred {
+                anchored: &[],
+                flexible_curves: &[SketchCurve::Arc(held.arc)],
+                was: &hands,
+                opening: &[],
+                reshaping: true,
+            },
+        ] {
+            let system = Residuals::new(&problem, &scalars, rigidity).unwrap();
+            assert_eq!(
+                system.parameter_reads().unwrap().row_count(),
+                system.residual_count()
+            );
+            let guess = system.guess(&positions);
+            for step in [6.0e-6, 1.0e-3, 0.25] {
+                assert_eq!(first_undeclared_read(&system, &guess, step), None);
+            }
+        }
+    }
+
+    /// What the grouping actually buys on the drawing that prompted it, as a COUNT rather than a
+    /// clock: the number of residual passes one Jacobian costs.
+    #[test]
+    fn a_slot_costs_fewer_residual_passes_than_it_has_parameters() {
+        let (mut builder, held) = cast();
+        builder.add_constraint(Relation::Concentric {
+            first: SketchCurve::Arc(held.arc),
+            second: SketchCurve::Arc(held.other_arc),
+        });
+        builder.add_constraint(Relation::Horizontal { segment: held.base });
+        let problem = builder.finish().unwrap();
+        let scalars = problem.scalar_coordinates();
+        let system = Residuals::new(
+            &problem,
+            &scalars,
+            Rigidity::Preferred {
+                anchored: &[],
+                flexible_curves: &[],
+                was: &[],
+                opening: &[],
+                reshaping: true,
+            },
+        )
+        .unwrap();
+        let grouping = ColumnGrouping::curtis_powell_reid(
+            &system.parameter_reads().unwrap(),
+            system.parameter_count(),
+        );
+        assert!(
+            grouping.group_count() * 3 < system.parameter_count(),
+            "{} groups against {} parameters",
+            grouping.group_count(),
+            system.parameter_count()
+        );
     }
 
     /// **A point held to a spline lands on the curve, and stays on it when the curve is redrawn.**
@@ -3611,6 +4032,217 @@ fn counter_clockwise_sweep(center: [f64; 2], from: [f64; 2], to: [f64; 2]) -> f6
     }
 }
 
+/// The two whole-coordinate slots a point occupies.
+///
+/// Every helper below answers in slots of the WIDENED vector, not in parameter columns. The two
+/// spaces are different — an anchored coordinate has a slot and no column — and mixing them is the
+/// one way a reads-set can be wrong without looking wrong. `Residuals::reads_by_row` does the
+/// single translation, at the end, once.
+fn point_slots(point: usize) -> [usize; 2] {
+    [
+        point.saturating_mul(2),
+        point.saturating_mul(2).saturating_add(1),
+    ]
+}
+
+/// Both ends of a segment, which is what every reader of a segment's direction or length touches.
+fn segment_slots(segment: SegmentSlots) -> Vec<usize> {
+    let mut slots = point_slots(segment.from).to_vec();
+    slots.extend(point_slots(segment.to));
+    slots
+}
+
+/// Everything [`curve_geometry`] reads for one curve.
+fn curve_slots(curve: ResolvedCurve, point_count: usize) -> Vec<usize> {
+    match curve {
+        ResolvedCurve::Segment(segment) => segment_slots(segment),
+        ResolvedCurve::Arc(arc) => {
+            let mut slots = point_slots(arc.center).to_vec();
+            slots.extend(point_slots(arc.from));
+            slots.extend(point_slots(arc.to));
+            slots
+        }
+        ResolvedCurve::Circle(circle) => {
+            let mut slots = point_slots(circle.center).to_vec();
+            slots.push(
+                point_count
+                    .saturating_mul(2)
+                    .saturating_add(circle.radius_parameter),
+            );
+            slots
+        }
+    }
+}
+
+/// Everything [`unit_of_arm`] reads for one arm of a stated angle.
+fn arm_slots(arm: ResolvedAngleArm) -> Vec<usize> {
+    match arm {
+        ResolvedAngleArm::Segment(segment) => segment_slots(segment),
+        ResolvedAngleArm::ArcEnd { center, end } => {
+            let mut slots = point_slots(center).to_vec();
+            slots.extend(point_slots(end));
+            slots
+        }
+    }
+}
+
+/// Every point a spline's shape is a function of — its own points and any steering arms.
+///
+/// The WHOLE spline, for every row that reads any of it. A spline is refit from its points on
+/// every residual pass, so moving any one of them moves the curve everywhere, and a station row
+/// two pieces away is not independent of it. See [`live_spline`].
+fn spline_slots(shape: &SplineShape) -> Vec<usize> {
+    let mut slots: Vec<usize> = shape
+        .points
+        .iter()
+        .flat_map(|point| point_slots(point.index))
+        .collect();
+    if let SplineForm::FitPoint { arms } = &shape.form {
+        slots.extend(arms.iter().flatten().flat_map(|arm| point_slots(arm.index)));
+    }
+    slots
+}
+
+/// The slots each of one relation's residual rows reads, appended in the order
+/// [`Residuals::residuals`] writes them.
+///
+/// **This match is the reads-set, and it must agree with the arithmetic row for row.** Declaring
+/// too MUCH is safe and costs only a Curtis-Powell-Reid group; declaring too little is a Jacobian
+/// that is quietly wrong, because two parameters one row reads would then be perturbed together
+/// and their effects summed into one difference. It is exhaustive over [`Resolved`] so a new
+/// relation cannot reach the grouped Jacobian without someone stating what its rows touch, and
+/// `every_relation_declares_what_its_rows_read` is what checks the statement is true.
+#[allow(clippy::too_many_lines)]
+fn push_relation_slots(
+    constraint: &ConstraintEntry,
+    point_count: usize,
+    splines: &[SplineShape],
+    rows: &mut Vec<Vec<usize>>,
+) {
+    let scalar_slot = |parameter: usize| point_count.saturating_mul(2).saturating_add(parameter);
+    match constraint.resolved {
+        Resolved::Fix { slot, .. } | Resolved::Quantize { slot, .. } => {
+            let [across, up] = point_slots(slot);
+            rows.push(vec![across]);
+            rows.push(vec![up]);
+        }
+        Resolved::SameCoordinate { from, to, axis }
+        | Resolved::AxisDistance { from, to, axis, .. } => rows.push(vec![
+            from.saturating_mul(2).saturating_add(axis),
+            to.saturating_mul(2).saturating_add(axis),
+        ]),
+        Resolved::Distance { from, to, .. } => {
+            let mut slots = point_slots(from).to_vec();
+            slots.extend(point_slots(to));
+            rows.push(slots);
+        }
+        Resolved::PointLineDistance { point, line, .. } => {
+            let mut slots = point_slots(point).to_vec();
+            slots.extend(segment_slots(line));
+            rows.push(slots);
+        }
+        Resolved::Coincident { first, second } | Resolved::Concentric { first, second } => {
+            let ([first_across, first_up], [second_across, second_up]) =
+                (point_slots(first), point_slots(second));
+            rows.push(vec![first_across, second_across]);
+            rows.push(vec![first_up, second_up]);
+        }
+        Resolved::Parallel { first, second }
+        | Resolved::Perpendicular { first, second }
+        | Resolved::Equal { first, second } => {
+            let mut slots = segment_slots(first);
+            slots.extend(segment_slots(second));
+            rows.push(slots);
+        }
+        Resolved::Angle { first, second, .. } => {
+            let mut slots = arm_slots(first);
+            slots.extend(arm_slots(second));
+            rows.push(slots);
+        }
+        Resolved::Midpoint { point, segment } => {
+            let ([across, up], [tail_across, tail_up], [head_across, head_up]) = (
+                point_slots(point),
+                point_slots(segment.from),
+                point_slots(segment.to),
+            );
+            rows.push(vec![across, tail_across, head_across]);
+            rows.push(vec![up, tail_up, head_up]);
+        }
+        Resolved::Collinear { datum, other } => {
+            for end in [other.from, other.to] {
+                let mut slots = segment_slots(datum);
+                slots.extend(point_slots(end));
+                rows.push(slots);
+            }
+        }
+        Resolved::PointOnCurve { point, curve } => {
+            let mut slots = point_slots(point).to_vec();
+            slots.extend(curve_slots(curve, point_count));
+            rows.push(slots);
+        }
+        Resolved::PointOnSpline {
+            point,
+            spline,
+            station,
+            ..
+        } => {
+            let mut slots = point_slots(point).to_vec();
+            slots.push(scalar_slot(station));
+            if let Some(shape) = splines.get(spline) {
+                slots.extend(spline_slots(shape));
+            }
+            rows.push(slots.clone());
+            rows.push(slots);
+        }
+        Resolved::Radius { curve, .. } => rows.push(curve_slots(curve, point_count)),
+        Resolved::RimGap { first, second, .. } | Resolved::Tangent { first, second, .. } => {
+            let mut slots = curve_slots(first, point_count);
+            slots.extend(curve_slots(second, point_count));
+            rows.push(slots);
+        }
+        Resolved::TangentDirection {
+            joint,
+            joint_arm,
+            against,
+        } => {
+            let mut slots = point_slots(joint).to_vec();
+            slots.extend(point_slots(joint_arm));
+            slots.extend(curve_slots(against, point_count));
+            rows.push(slots);
+        }
+        Resolved::Curvature {
+            joint,
+            joint_arm,
+            neighbor,
+            neighbor_arm,
+            against,
+            ..
+        } => {
+            let mut direction = point_slots(joint).to_vec();
+            direction.extend(point_slots(joint_arm));
+            direction.extend(curve_slots(against, point_count));
+            let mut bend = direction.clone();
+            bend.extend(point_slots(neighbor));
+            bend.extend(point_slots(neighbor_arm));
+            rows.push(direction);
+            rows.push(bend);
+        }
+        Resolved::Symmetry {
+            first,
+            second,
+            axis,
+            ..
+        } => {
+            let mut slots = curve_slots(first, point_count);
+            slots.extend(curve_slots(second, point_count));
+            slots.extend(segment_slots(axis));
+            for _ in 0..constraint.relation.residual_count() {
+                rows.push(slots.clone());
+            }
+        }
+    }
+}
+
 fn tangent_branch_matches_types(
     first: ResolvedCurve,
     second: ResolvedCurve,
@@ -3873,6 +4505,73 @@ impl<'a> Residuals<'a> {
             .saturating_mul(2)
             .saturating_add(parameter.index);
         physical_parameter_value(*specification, whole.get(slot).copied().unwrap_or_default())
+    }
+
+    /// The whole-coordinate slots every residual row reads, in residual order.
+    ///
+    /// Row for row with [`Residuals::residuals`], including the rows no relation asked for: the
+    /// arc's own radius rows, the rigidity spans, the scalar holds and the point stays. Those are
+    /// where the grouping is won — a span row reads one axis of two points and nothing else, so
+    /// the drawing's `x` columns and its `y` columns fall apart into different groups.
+    fn slots_by_row(&self) -> Vec<Vec<usize>> {
+        let point_count = self.problem.points.len();
+        let scalar_slot =
+            |parameter: usize| point_count.saturating_mul(2).saturating_add(parameter);
+        let mut rows: Vec<Vec<usize>> = Vec::with_capacity(self.residual_count());
+        for constraint in &self.problem.constraints {
+            push_relation_slots(constraint, point_count, &self.problem.splines, &mut rows);
+        }
+        for arc in &self.problem.arc_centers {
+            let center = point_slots(arc.center.index);
+            if let Some(radius) = arc.radius {
+                for end in [arc.from.index, arc.to.index] {
+                    let mut slots = center.to_vec();
+                    slots.extend(point_slots(end));
+                    slots.push(scalar_slot(radius.index));
+                    rows.push(slots);
+                }
+            } else {
+                let mut slots = center.to_vec();
+                slots.extend(point_slots(arc.from.index));
+                slots.extend(point_slots(arc.to.index));
+                rows.push(slots);
+            }
+        }
+        for edge in &self.rigidity {
+            let ([tail_across, tail_up], [head_across, head_up]) =
+                (point_slots(edge.from), point_slots(edge.to));
+            rows.push(vec![tail_across, head_across]);
+            rows.push(vec![tail_up, head_up]);
+        }
+        for hold in &self.scalars {
+            rows.push(vec![hold.slot]);
+        }
+        for hold in &self.holds {
+            let [across, up] = point_slots(hold.slot);
+            rows.push(vec![across]);
+            rows.push(vec![up]);
+        }
+        rows
+    }
+
+    /// The same rows in PARAMETER columns: the slots an anchored coordinate occupies drop out,
+    /// because the solve never moves them and no finite difference is ever taken along them.
+    fn reads_by_row(&self) -> Vec<Vec<usize>> {
+        let mut column_of_slot = vec![None; self.base.len()];
+        for (column, slot) in self.free.iter().enumerate() {
+            if let Some(entry) = column_of_slot.get_mut(*slot) {
+                *entry = Some(column);
+            }
+        }
+        self.slots_by_row()
+            .into_iter()
+            .map(|slots| {
+                slots
+                    .into_iter()
+                    .filter_map(|slot| column_of_slot.get(slot).copied().flatten())
+                    .collect()
+            })
+            .collect()
     }
 
     fn widen(&self, parameters: &[f64]) -> Vec<f64> {
@@ -4256,6 +4955,17 @@ impl ResidualSystem for Residuals<'_> {
             into[row + 1] = here[1] - hold.at[1];
             row += 2;
         }
+    }
+
+    /// What every row reads, so the Jacobian can be taken a GROUP of columns at a time.
+    ///
+    /// A sketch's rows are local — a distance names two points out of forty, a span row names one
+    /// axis of two — so most pairs of parameters have no row in common and can be differenced
+    /// together in one pass. The answer is exact rather than approximate: see
+    /// [`substrate::nonlinear_least_squares::ColumnGrouping`] for why, and
+    /// `every_relation_declares_what_its_rows_read` for the check that keeps it so.
+    fn parameter_reads(&self) -> Option<ResidualReads> {
+        Some(ResidualReads::from_rows(self.reads_by_row()))
     }
 }
 

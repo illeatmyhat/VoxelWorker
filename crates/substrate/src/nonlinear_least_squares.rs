@@ -70,6 +70,272 @@ pub trait ResidualSystem {
     /// Write the residuals at `parameters` into `into`, which is
     /// [`residual_count`](Self::residual_count) long.
     fn residuals(&self, parameters: &[f64], into: &mut [f64]);
+
+    /// Which parameters each residual row READS, if the system knows.
+    ///
+    /// Answering turns the finite-difference Jacobian from one residual pass per parameter into one
+    /// per GROUP of structurally independent parameters — see [`ColumnGrouping`]. Answering `None`,
+    /// the default, takes the column-by-column path and is always correct.
+    ///
+    /// **A row that reads a parameter and does not say so silently corrupts the Jacobian**, because
+    /// two parameters that row sees will then be perturbed together and their effects added into
+    /// one difference. Nothing here can detect that at solve time; it is the caller's claim.
+    /// [`first_undeclared_read`] is the falsifier — run it over every shape the system can take,
+    /// from a test, before answering anything but `None`.
+    ///
+    /// Declaring MORE than a row reads is safe and costs only group count, so where a read is hard
+    /// to pin down, name the superset.
+    fn parameter_reads(&self) -> Option<ResidualReads> {
+        None
+    }
+}
+
+/// Which parameters each residual row reads — the Jacobian's SPARSITY PATTERN, stated by the
+/// system that owns the arithmetic rather than sampled by the solver that consumes it.
+///
+/// Rows are in residual order and their entries are parameter indices. Duplicates and out-of-range
+/// indices are tolerated and ignored; order within a row does not matter.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ResidualReads {
+    /// Every row's columns, rows concatenated.
+    columns: Vec<usize>,
+    /// Row `index` owns `columns[bounds[index]..bounds[index + 1]]`, so this is one longer than
+    /// the row count.
+    bounds: Vec<usize>,
+}
+
+impl ResidualReads {
+    /// Collect one row's columns after another, in residual order.
+    pub fn from_rows<Columns: IntoIterator<Item = usize>>(
+        rows: impl IntoIterator<Item = Columns>,
+    ) -> Self {
+        let mut columns = Vec::new();
+        let mut bounds = vec![0];
+        for row in rows {
+            columns.extend(row);
+            bounds.push(columns.len());
+        }
+        Self { columns, bounds }
+    }
+
+    /// How many rows were declared. Must equal the system's
+    /// [`residual_count`](ResidualSystem::residual_count) for the declaration to be used at all.
+    #[must_use]
+    pub const fn row_count(&self) -> usize {
+        self.bounds.len().saturating_sub(1)
+    }
+
+    /// The columns one row declared, or nothing for a row past the end.
+    #[must_use]
+    pub fn row(&self, index: usize) -> &[usize] {
+        let (Some(&start), Some(&end)) = (
+            self.bounds.get(index),
+            self.bounds.get(index.saturating_add(1)),
+        ) else {
+            return &[];
+        };
+        self.columns.get(start..end).unwrap_or_default()
+    }
+}
+
+/// Parameters partitioned into groups no residual row reads twice — Curtis, Powell and Reid's
+/// grouping, and the reason a Jacobian need not cost a pass per column.
+///
+/// The observation is theirs (1974): differencing along `e_j + e_k` gives, in ONE pass, the `j`
+/// column for every row that reads only `j` and the `k` column for every row that reads only `k`.
+/// No row reads both, so no difference mixes two derivatives, and the result is not an
+/// approximation of the column-by-column Jacobian — it is the same number, bit for bit. A sketch's
+/// rows are local (a distance names two points out of forty), so a nineteen-column system colors
+/// into single figures and the Jacobian costs what a handful of columns used to.
+///
+/// The coloring is the classic greedy one over the column-intersection graph, taken LARGEST FIRST:
+/// a column is placed in the first group none of whose rows it shares. Optimal coloring is
+/// NP-hard and worth nothing here — the grouping only decides how many passes are spent, never
+/// what they compute, so a group too many costs a pass and cannot cost an answer.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ColumnGrouping {
+    /// The rows each column is read by, columns concatenated and each ascending.
+    rows: Vec<usize>,
+    /// Column `index` owns `rows[row_bounds[index]..row_bounds[index + 1]]`.
+    row_bounds: Vec<usize>,
+    /// The columns of each group, groups concatenated.
+    columns: Vec<usize>,
+    /// Group `index` owns `columns[column_bounds[index]..column_bounds[index + 1]]`.
+    column_bounds: Vec<usize>,
+}
+
+impl ColumnGrouping {
+    /// Color `parameter_count` columns against the rows that read them.
+    #[must_use]
+    pub fn curtis_powell_reid(reads: &ResidualReads, parameter_count: usize) -> Self {
+        let row_count = reads.row_count();
+        let mut rows_of_column: Vec<Vec<usize>> = vec![Vec::new(); parameter_count];
+        for row in 0..row_count {
+            for &column in reads.row(row) {
+                if let Some(bucket) = rows_of_column.get_mut(column) {
+                    bucket.push(row);
+                }
+            }
+        }
+        for bucket in &mut rows_of_column {
+            bucket.sort_unstable();
+            bucket.dedup();
+        }
+
+        // Largest first: the column hardest to place goes while the groups are still empty. Ties
+        // break on index so the coloring is the same on every run of the same drawing.
+        let mut order: Vec<usize> = (0..parameter_count).collect();
+        order.sort_by(|left, right| {
+            let (Some(here), Some(there)) = (rows_of_column.get(*left), rows_of_column.get(*right))
+            else {
+                return left.cmp(right);
+            };
+            there.len().cmp(&here.len()).then_with(|| left.cmp(right))
+        });
+
+        let mut group_columns: Vec<Vec<usize>> = Vec::new();
+        let mut group_rows: Vec<Vec<bool>> = Vec::new();
+        for column in order {
+            let Some(mine) = rows_of_column.get(column) else {
+                continue;
+            };
+            let landed = group_rows.iter().position(|taken| {
+                mine.iter()
+                    .all(|row| !taken.get(*row).copied().unwrap_or(false))
+            });
+            let group = landed.unwrap_or_else(|| {
+                group_columns.push(Vec::new());
+                group_rows.push(vec![false; row_count]);
+                group_rows.len().saturating_sub(1)
+            });
+            if let (Some(members), Some(taken)) =
+                (group_columns.get_mut(group), group_rows.get_mut(group))
+            {
+                members.push(column);
+                for row in mine {
+                    if let Some(slot) = taken.get_mut(*row) {
+                        *slot = true;
+                    }
+                }
+            }
+        }
+
+        let mut rows = Vec::new();
+        let mut row_bounds = vec![0];
+        for bucket in &rows_of_column {
+            rows.extend_from_slice(bucket);
+            row_bounds.push(rows.len());
+        }
+        let mut columns = Vec::new();
+        let mut column_bounds = vec![0];
+        for members in &group_columns {
+            columns.extend_from_slice(members);
+            column_bounds.push(columns.len());
+        }
+        Self {
+            rows,
+            row_bounds,
+            columns,
+            column_bounds,
+        }
+    }
+
+    /// How many residual passes a Jacobian over this grouping costs, halved: one group is one
+    /// central difference, which is two passes.
+    #[must_use]
+    pub const fn group_count(&self) -> usize {
+        self.column_bounds.len().saturating_sub(1)
+    }
+
+    /// The columns one group perturbs together.
+    #[must_use]
+    pub fn group(&self, index: usize) -> &[usize] {
+        let (Some(&start), Some(&end)) = (
+            self.column_bounds.get(index),
+            self.column_bounds.get(index.saturating_add(1)),
+        ) else {
+            return &[];
+        };
+        self.columns.get(start..end).unwrap_or_default()
+    }
+
+    /// The rows one column is read by, ascending.
+    #[must_use]
+    pub fn rows_of(&self, column: usize) -> &[usize] {
+        let (Some(&start), Some(&end)) = (
+            self.row_bounds.get(column),
+            self.row_bounds.get(column.saturating_add(1)),
+        ) else {
+            return &[];
+        };
+        self.rows.get(start..end).unwrap_or_default()
+    }
+}
+
+/// A row whose value MOVED under a parameter it did not declare reading.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UndeclaredRead {
+    /// The residual that moved.
+    pub row: usize,
+    /// The parameter it moved under.
+    pub column: usize,
+}
+
+/// The first row that moves under a parameter it did not declare — the falsifier for
+/// [`parameter_reads`](ResidualSystem::parameter_reads), and the only thing standing between a
+/// grouped Jacobian and a quietly wrong one.
+///
+/// Perturbs one parameter at a time by `step` scaled to the parameter's own magnitude, exactly as
+/// the Jacobian does, and compares every undeclared row's BITS either side. Bits and not a
+/// tolerance: the grouping's whole claim is that the grouped Jacobian equals the column-by-column
+/// one exactly, and that rests on an undeclared row being not merely close but untouched.
+///
+/// Answers `None` for a system that declares nothing, since it is then claiming nothing.
+#[must_use]
+pub fn first_undeclared_read(
+    system: &dyn ResidualSystem,
+    parameters: &[f64],
+    step: f64,
+) -> Option<UndeclaredRead> {
+    let reads = system.parameter_reads()?;
+    let residual_count = system.residual_count();
+    let mut here = vec![0.0; residual_count];
+    system.residuals(parameters, &mut here);
+    let mut declared = vec![false; residual_count];
+    let mut moved = parameters.to_vec();
+    let mut seen = vec![0.0; residual_count];
+    for (column, &parameter) in parameters.iter().enumerate() {
+        declared.fill(false);
+        for row in 0..reads.row_count() {
+            if reads.row(row).contains(&column) {
+                if let Some(slot) = declared.get_mut(row) {
+                    *slot = true;
+                }
+            }
+        }
+        for reach in [step, -step] {
+            let Some(slot) = moved.get_mut(column) else {
+                continue;
+            };
+            *slot = reach.mul_add(parameter.abs().max(1.0), parameter);
+            system.residuals(&moved, &mut seen);
+            let found = here
+                .iter()
+                .zip(&seen)
+                .enumerate()
+                .find(|(row, (stood, now))| {
+                    !declared.get(*row).copied().unwrap_or(false)
+                        && stood.to_bits() != now.to_bits()
+                });
+            if let Some((row, _)) = found {
+                return Some(UndeclaredRead { row, column });
+            }
+        }
+        if let Some(slot) = moved.get_mut(column) {
+            *slot = parameter;
+        }
+    }
+    None
 }
 
 /// Why the solve stopped.
@@ -215,7 +481,12 @@ pub fn solve(
     let mut trust_radius = settings.initial_trust_radius.max(f64::MIN_POSITIVE);
     let mut outcome = SolveOutcome::ExhaustedIterations;
     let mut iterations = 0;
-    let mut jacobian_matrix = jacobian(system, parameters);
+    // The grouping is a fact about the SHAPE of the system, so it is colored once and reused for
+    // every Jacobian the search takes. The residuals at the current parameters are already in
+    // hand each time one is needed, which is the one extra pass the grouped path would otherwise
+    // cost — see `jacobian_in_groups` for what it is for.
+    let grouping = column_grouping(system);
+    let mut jacobian_matrix = jacobian_at(system, parameters, &residuals, grouping.as_ref());
 
     for iteration in 0..settings.maximum_iterations {
         iterations = iteration.saturating_add(1);
@@ -286,7 +557,7 @@ pub fn solve(
         if gain > 0.0 {
             parameters.copy_from_slice(&candidate);
             residuals = candidate_residuals;
-            jacobian_matrix = jacobian(system, parameters);
+            jacobian_matrix = jacobian_at(system, parameters, &residuals, grouping.as_ref());
             // Tested only on an ACCEPTED step, and after taking it. A rejected step leaves the
             // objective alone, so counting it as "no improvement" would stop the search at the
             // first bad guess rather than at the end of its progress — the trust radius collapsing
@@ -329,8 +600,150 @@ pub fn solve(
 /// residual is nearly zero and the whole answer is in their differences — that error is the
 /// answer. The step is scaled to each parameter's own magnitude so a coordinate of 1000 and one of
 /// 0.001 are both differenced sensibly.
+///
+/// A system that declares its [`parameter_reads`](ResidualSystem::parameter_reads) is differenced a
+/// GROUP of columns at a time instead, which is the same matrix in fewer passes. Reaching that path
+/// from here costs one extra residual pass to learn where the system stands; inside
+/// [`solve`] that value is already known and is threaded through instead.
 #[must_use]
 pub fn jacobian(system: &dyn ResidualSystem, parameters: &[f64]) -> Vec<f64> {
+    let Some(grouping) = column_grouping(system) else {
+        return jacobian_column_by_column(system, parameters);
+    };
+    let mut here = vec![0.0; system.residual_count()];
+    system.residuals(parameters, &mut here);
+    jacobian_in_groups(system, parameters, &here, &grouping)
+}
+
+/// The system's Curtis-Powell-Reid grouping, where it declared a reads-set the right shape.
+///
+/// A declaration with the wrong number of rows is REFUSED rather than padded. Rows are matched to
+/// residuals by position, so one row too few is not a smaller claim — it is every later row's claim
+/// attached to the wrong residual, which is precisely the silent corruption the grouping has to be
+/// incapable of.
+fn column_grouping(system: &dyn ResidualSystem) -> Option<ColumnGrouping> {
+    let reads = system.parameter_reads()?;
+    (reads.row_count() == system.residual_count())
+        .then(|| ColumnGrouping::curtis_powell_reid(&reads, system.parameter_count()))
+}
+
+/// The Jacobian at `parameters`, given the residuals there and the grouping if there is one.
+fn jacobian_at(
+    system: &dyn ResidualSystem,
+    parameters: &[f64],
+    here: &[f64],
+    grouping: Option<&ColumnGrouping>,
+) -> Vec<f64> {
+    grouping.map_or_else(
+        || jacobian_column_by_column(system, parameters),
+        |grouping| jacobian_in_groups(system, parameters, here, grouping),
+    )
+}
+
+/// The Jacobian one GROUP of columns per central difference, which is the same matrix bit for bit.
+///
+/// Perturbing a whole group at once works because no row reads two of its columns: a row that reads
+/// `j` sees a `moved` vector differing from the column-by-column one only in coordinates it does
+/// not touch, so its two evaluations come back with identical bits and its entry is the identical
+/// quotient. That is the entire argument, and it stands or falls on the reads-set being honest —
+/// [`first_undeclared_read`] is what makes that checkable.
+///
+/// **The rows a group does not touch are the subtle half.** Column by column, a row that ignores
+/// `j` still gets an entry: `(v − v) / 2h`, which is zero for a finite `v` and NaN for one that is
+/// not. Where every residual and every parameter is finite that is a zero, and the matrix is
+/// already zero, so nothing is written and identity is free. Where something has gone non-finite —
+/// a coordinate overflowed, a parameter arrived as NaN — the quotient is reconstructed from `here`
+/// rather than assumed, because a solve that has wandered off the finite numbers must produce the
+/// same garbage it always did rather than a quietly different garbage.
+fn jacobian_in_groups(
+    system: &dyn ResidualSystem,
+    parameters: &[f64],
+    here: &[f64],
+    grouping: &ColumnGrouping,
+) -> Vec<f64> {
+    let parameter_count = system.parameter_count();
+    let residual_count = system.residual_count();
+    let mut matrix = vec![0.0; residual_count.saturating_mul(parameter_count)];
+    let mut moved = parameters.to_vec();
+    let mut ahead = vec![0.0; residual_count];
+    let mut behind = vec![0.0; residual_count];
+    let mut steps: Vec<f64> = Vec::new();
+    let everything_is_finite = here
+        .iter()
+        .chain(parameters.iter())
+        .all(|value| value.is_finite());
+    for group in 0..grouping.group_count() {
+        let columns = grouping.group(group);
+        steps.clear();
+        steps.extend(columns.iter().map(|column| {
+            parameters
+                .get(*column)
+                .map_or(0.0, |parameter| DIFFERENCE_STEP * parameter.abs().max(1.0))
+        }));
+        for forward in [true, false] {
+            for (column, step) in columns.iter().zip(&steps) {
+                let Some(&parameter) = parameters.get(*column) else {
+                    continue;
+                };
+                if let Some(slot) = moved.get_mut(*column) {
+                    *slot = if forward {
+                        parameter + *step
+                    } else {
+                        parameter - *step
+                    };
+                }
+            }
+            system.residuals(&moved, if forward { &mut ahead } else { &mut behind });
+        }
+        for column in columns {
+            let Some(&parameter) = parameters.get(*column) else {
+                continue;
+            };
+            if let Some(slot) = moved.get_mut(*column) {
+                *slot = parameter;
+            }
+        }
+        for (column, step) in columns.iter().zip(&steps) {
+            for row in grouping.rows_of(*column) {
+                let (Some(&ahead_value), Some(&behind_value)) = (ahead.get(*row), behind.get(*row))
+                else {
+                    continue;
+                };
+                if let Some(slot) =
+                    matrix.get_mut(row.saturating_mul(parameter_count).saturating_add(*column))
+                {
+                    *slot = (ahead_value - behind_value) / (2.0 * step);
+                }
+            }
+            if everything_is_finite {
+                continue;
+            }
+            let mut read = grouping.rows_of(*column).iter().peekable();
+            for (row, value) in here.iter().enumerate().take(residual_count) {
+                if read.peek() == Some(&&row) {
+                    let _ = read.next();
+                    continue;
+                }
+                if let Some(slot) =
+                    matrix.get_mut(row.saturating_mul(parameter_count).saturating_add(*column))
+                {
+                    // `value - value` is the point, not a typo for zero: it is what the
+                    // column-by-column difference computes for a row that ignores this column,
+                    // and it is a NaN rather than a zero when the row is not finite.
+                    #[allow(clippy::eq_op)]
+                    {
+                        *slot = (value - value) / (2.0 * step);
+                    }
+                }
+            }
+        }
+    }
+    matrix
+}
+
+/// The Jacobian one column per central difference: the always-correct path, and what a grouped one
+/// has to reproduce exactly.
+fn jacobian_column_by_column(system: &dyn ResidualSystem, parameters: &[f64]) -> Vec<f64> {
     let parameter_count = system.parameter_count();
     let residual_count = system.residual_count();
     let mut matrix = vec![0.0; residual_count.saturating_mul(parameter_count)];
@@ -1062,5 +1475,233 @@ mod tests {
         // More rows than columns: the rank cannot exceed either.
         assert_eq!(rank(&[1.0, 2.0, 3.0], 3, 1), 1);
         assert_eq!(rank(&[], 0, 0), 0);
+    }
+
+    /// A residual system that also states which parameters each row reads, truthfully or not.
+    struct Declared<'a> {
+        parameters: usize,
+        residuals: Vec<Residual<'a>>,
+        reads: Vec<Vec<usize>>,
+    }
+
+    impl ResidualSystem for Declared<'_> {
+        fn parameter_count(&self) -> usize {
+            self.parameters
+        }
+        fn residual_count(&self) -> usize {
+            self.residuals.len()
+        }
+        fn residuals(&self, parameters: &[f64], into: &mut [f64]) {
+            for (slot, residual) in into.iter_mut().zip(&self.residuals) {
+                *slot = residual(parameters);
+            }
+        }
+        fn parameter_reads(&self) -> Option<ResidualReads> {
+            Some(ResidualReads::from_rows(self.reads.iter().cloned()))
+        }
+    }
+
+    /// The coloring's one invariant: no group holds two columns that some row reads together.
+    /// Everything the grouped Jacobian claims rests on this and on nothing else.
+    #[test]
+    fn no_group_holds_two_columns_one_row_reads() {
+        // A chain of five points, each row naming a neighbouring pair, plus one row that reads
+        // everything — the shape that forces the greedy to spread.
+        let reads = ResidualReads::from_rows(vec![
+            vec![0, 1],
+            vec![1, 2],
+            vec![2, 3],
+            vec![3, 4],
+            vec![0, 4],
+            vec![0, 1, 2, 3, 4],
+        ]);
+        let grouping = ColumnGrouping::curtis_powell_reid(&reads, 5);
+        // The row that reads everything makes every pair conflict, so the only valid coloring is
+        // one column per group.
+        assert_eq!(grouping.group_count(), 5);
+        for group in 0..grouping.group_count() {
+            for (position, column) in grouping.group(group).iter().enumerate() {
+                for other in grouping.group(group).iter().skip(position + 1) {
+                    for row in 0..reads.row_count() {
+                        let named = reads.row(row);
+                        assert!(
+                            !(named.contains(column) && named.contains(other)),
+                            "row {row} reads both {column} and {other}, and they share a group"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Structurally independent columns collapse into ONE group, which is the whole point: five
+    /// parameters, five rows that each read one, one central difference.
+    #[test]
+    fn independent_columns_share_a_single_group() {
+        let reads = ResidualReads::from_rows(vec![vec![0], vec![1], vec![2], vec![3], vec![4]]);
+        let grouping = ColumnGrouping::curtis_powell_reid(&reads, 5);
+        assert_eq!(grouping.group_count(), 1);
+        let mut members = grouping.group(0).to_vec();
+        members.sort_unstable();
+        assert_eq!(members, vec![0, 1, 2, 3, 4]);
+    }
+
+    /// A column no row reads still gets a group slot, and one that is read gets its rows back.
+    #[test]
+    fn a_column_nothing_reads_still_has_a_place() {
+        let reads = ResidualReads::from_rows(vec![vec![0], vec![0, 2]]);
+        let grouping = ColumnGrouping::curtis_powell_reid(&reads, 4);
+        assert_eq!(grouping.rows_of(0), &[0, 1]);
+        assert_eq!(grouping.rows_of(1), &[] as &[usize]);
+        assert_eq!(grouping.rows_of(2), &[1]);
+        let placed: usize = (0..grouping.group_count())
+            .map(|group| grouping.group(group).len())
+            .sum();
+        assert_eq!(placed, 4, "every column is placed exactly once");
+    }
+
+    /// The claim the whole change rests on: grouped and column-by-column agree BIT FOR BIT, not
+    /// to a tolerance. A tolerance would pass on a coloring that quietly mixed two derivatives.
+    #[test]
+    fn a_grouped_jacobian_is_the_column_by_column_one_bit_for_bit() {
+        let first = |p: &[f64]| p[0] * p[0] + (3.0 * p[1]).sin();
+        let second = |p: &[f64]| p[2].exp() - p[3];
+        let third = |p: &[f64]| (p[4] - p[0]).hypot(p[5] + 1.0);
+        let fourth = |p: &[f64]| p[1] * p[2] * p[4];
+        let system = Declared {
+            parameters: 6,
+            residuals: vec![&first, &second, &third, &fourth],
+            reads: vec![vec![0, 1], vec![2, 3], vec![4, 0, 5], vec![1, 2, 4]],
+        };
+        let at = [0.7, -1.3, 0.25, 4.0, -0.5, 2.75];
+        let grouping = ColumnGrouping::curtis_powell_reid(
+            &system.parameter_reads().expect("declared"),
+            system.parameter_count(),
+        );
+        assert!(
+            grouping.group_count() < system.parameter_count(),
+            "the grouping bought nothing: {} groups",
+            grouping.group_count()
+        );
+        let mut here = vec![0.0; system.residual_count()];
+        system.residuals(&at, &mut here);
+        let grouped = jacobian_in_groups(&system, &at, &here, &grouping);
+        let column_by_column = jacobian_column_by_column(&system, &at);
+        for (index, (one, other)) in grouped.iter().zip(&column_by_column).enumerate() {
+            assert_eq!(
+                one.to_bits(),
+                other.to_bits(),
+                "entry {index}: {one} against {other}"
+            );
+        }
+    }
+
+    /// And it stays bit for bit where a residual has gone INFINITE, which is the one place the
+    /// two paths could have disagreed for free: column by column an untouched row differences to
+    /// `inf - inf`, and a grouped pass that assumed zero there would answer 0 instead of NaN.
+    #[test]
+    fn grouping_matches_column_by_column_where_a_row_is_not_finite() {
+        let finite = |p: &[f64]| p[0] * 2.0;
+        let infinite = |p: &[f64]| f64::INFINITY * p[1].signum();
+        let system = Declared {
+            parameters: 3,
+            residuals: vec![&finite, &infinite],
+            reads: vec![vec![0], vec![1]],
+        };
+        let at = [1.5, 2.5, -3.0];
+        let grouping = ColumnGrouping::curtis_powell_reid(
+            &system.parameter_reads().expect("declared"),
+            system.parameter_count(),
+        );
+        assert_eq!(grouping.group_count(), 1, "all three columns differ freely");
+        let mut here = vec![0.0; system.residual_count()];
+        system.residuals(&at, &mut here);
+        let grouped = jacobian_in_groups(&system, &at, &here, &grouping);
+        let column_by_column = jacobian_column_by_column(&system, &at);
+        for (index, (one, other)) in grouped.iter().zip(&column_by_column).enumerate() {
+            assert_eq!(
+                one.to_bits(),
+                other.to_bits(),
+                "entry {index}: {one} against {other}"
+            );
+        }
+    }
+
+    /// The falsifier catches a system that reads a parameter it did not declare — the exact
+    /// mistake that would make a grouped Jacobian quietly wrong.
+    #[test]
+    fn a_read_nobody_declared_is_found() {
+        let honest = |p: &[f64]| p[0] - 1.0;
+        // Says it reads only column 1 and reads column 2 as well.
+        let lying = |p: &[f64]| p[1] + 0.5 * p[2];
+        let system = Declared {
+            parameters: 3,
+            residuals: vec![&honest, &lying],
+            reads: vec![vec![0], vec![1]],
+        };
+        assert_eq!(
+            first_undeclared_read(&system, &[1.0, 2.0, 3.0], 1.0e-3),
+            Some(UndeclaredRead { row: 1, column: 2 })
+        );
+    }
+
+    /// And says nothing about an honest one.
+    #[test]
+    fn an_honest_declaration_survives_the_falsifier() {
+        let first = |p: &[f64]| p[0] - 1.0;
+        let second = |p: &[f64]| p[1] * p[2];
+        let system = Declared {
+            parameters: 3,
+            residuals: vec![&first, &second],
+            reads: vec![vec![0], vec![1, 2]],
+        };
+        assert_eq!(
+            first_undeclared_read(&system, &[1.0, 2.0, 3.0], 1.0e-3),
+            None
+        );
+    }
+
+    /// A declaration with the wrong number of ROWS is refused outright rather than used for the
+    /// rows it does cover: rows are matched to residuals by position, so one row short is every
+    /// later row's claim pinned to the wrong residual.
+    #[test]
+    fn a_declaration_of_the_wrong_length_is_refused() {
+        let first = |p: &[f64]| p[0] - 1.0;
+        let second = |p: &[f64]| p[1] - 2.0;
+        let system = Declared {
+            parameters: 2,
+            residuals: vec![&first, &second],
+            reads: vec![vec![0]],
+        };
+        assert!(column_grouping(&system).is_none());
+        // And the Jacobian still comes out right, by the column-by-column door.
+        let matrix = jacobian(&system, &[0.0, 0.0]);
+        assert!((matrix[0] - 1.0).abs() < 1e-9, "{matrix:?}");
+        assert!((matrix[3] - 1.0).abs() < 1e-9, "{matrix:?}");
+    }
+
+    /// A declared system solves to the same answer an undeclared one does, through `solve` rather
+    /// than through the Jacobian alone — the grouping must survive the trust-region loop.
+    #[test]
+    fn declaring_reads_does_not_move_the_answer() {
+        let distance = |p: &[f64]| ((p[2] - p[0]).powi(2) + (p[3] - p[1]).powi(2)).sqrt() - 10.0;
+        let horizontal = |p: &[f64]| p[3] - p[1];
+        let plain = Closures {
+            parameters: 4,
+            residuals: vec![&distance, &horizontal],
+        };
+        let declared = Declared {
+            parameters: 4,
+            residuals: vec![&distance, &horizontal],
+            reads: vec![vec![0, 1, 2, 3], vec![1, 3]],
+        };
+        let mut one = vec![0.0, 0.0, 8.0, 1.0];
+        let mut other = vec![0.0, 0.0, 8.0, 1.0];
+        let first = solve(&plain, &mut one, SolveSettings::default());
+        let second = solve(&declared, &mut other, SolveSettings::default());
+        for (index, (left, right)) in one.iter().zip(&other).enumerate() {
+            assert_eq!(left.to_bits(), right.to_bits(), "parameter {index}");
+        }
+        assert_eq!(first, second);
     }
 }
