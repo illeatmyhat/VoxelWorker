@@ -1002,10 +1002,20 @@ impl Problem {
         }
         whole.extend(scalars);
         let at = |slot| solution.positions[slot];
-        let first_geometry =
-            curve_geometry(first, &at, &self.parameters, &whole, self.points.len());
-        let second_geometry =
-            curve_geometry(second, &at, &self.parameters, &whole, self.points.len());
+        let first_geometry = curve_geometry(
+            first,
+            &at,
+            &self.parameters,
+            Coordinates::of(&whole),
+            self.points.len(),
+        );
+        let second_geometry = curve_geometry(
+            second,
+            &at,
+            &self.parameters,
+            Coordinates::of(&whole),
+            self.points.len(),
+        );
         tangent_contact(first_geometry, second_geometry, branch)
     }
 
@@ -1045,8 +1055,15 @@ impl Problem {
         }
         whole.extend(scalars);
         let at = |slot| solution.positions[slot];
-        let geometry =
-            |curve| curve_geometry(curve, &at, &self.parameters, &whole, self.points.len());
+        let geometry = |curve| {
+            curve_geometry(
+                curve,
+                &at,
+                &self.parameters,
+                Coordinates::of(&whole),
+                self.points.len(),
+            )
+        };
         symmetry_witness(
             geometry(first),
             geometry(second),
@@ -2000,6 +2017,67 @@ mod tests {
                     written.iter().all(|value| !value.is_nan()),
                     "{kind}: a row the table names is written by no arm"
                 );
+            }
+        }
+    }
+
+    /// **The falsifier for reading the coordinates instead of building them: every slot answers
+    /// what the built vector would have held, bit for bit.**
+    ///
+    /// The map is the only thing that knows a slot's current value is in the parameter vector
+    /// rather than still in `base`. A slot it leaves out reads STALE — the value from before the
+    /// pass began — and stale is not a crash, it is a row quietly measuring the wrong drawing while
+    /// the search converges on it. The named trap is the scalar range: those rows read `whole`
+    /// directly rather than through a point, so a map built only over point coordinates leaves
+    /// every radius reading its opening value. Checked at a perturbed parameter vector, because at
+    /// the guess the two agree by accident.
+    #[test]
+    fn every_slot_reads_what_the_built_vector_would_have_held() {
+        for index in 0..one_of_every_relation(&cast().1).len() {
+            let (mut builder, held) = cast();
+            let relation = one_of_every_relation(&held)[index];
+            let kind = relation_kind(relation);
+            builder.add_constraint(relation);
+            let problem = builder.finish().unwrap();
+            let positions: Vec<[f64; 2]> = problem.points.iter().map(|point| point.at).collect();
+            let scalars = problem.scalar_coordinates();
+            for rigidity in [
+                Rigidity::Ignored,
+                Rigidity::Preferred {
+                    anchored: &[],
+                    flexible_curves: &[],
+                    was: &[],
+                    opening: &[],
+                    reshaping: true,
+                },
+            ] {
+                let system = Residuals::new(&problem, &scalars, rigidity).unwrap();
+                // Every column moved by a different amount, so a slot reading the wrong column is
+                // a disagreement and not a coincidence.
+                let mut nudge = 0.125;
+                let moved: Vec<f64> = system
+                    .guess(&positions)
+                    .iter()
+                    .map(|at| {
+                        nudge += 0.125;
+                        at + nudge
+                    })
+                    .collect();
+                let built = system.widen(&moved);
+                let read = system.coordinates(&moved);
+                assert_eq!(
+                    built.len(),
+                    system.base.len(),
+                    "{kind}: the map covers a shorter vector than the drawing has slots"
+                );
+                for (slot, stood) in built.iter().enumerate() {
+                    assert_eq!(
+                        stood.to_bits(),
+                        read.get(slot).to_bits(),
+                        "{kind}: slot {slot} reads {} where the built vector holds {stood}",
+                        read.get(slot)
+                    );
+                }
             }
         }
     }
@@ -3910,6 +3988,48 @@ enum Resolved {
 /// endpoints as slots, built once so the residual loop is arithmetic and never searches topology by
 /// handle; `base` is the pre-solve whole-coordinate vector; and `free` narrows that vector to
 /// mutable parameters while anchored coordinates remain in `base`.
+/// The whole coordinate vector, read without being built.
+///
+/// Every slot a residual pass reads is one of two things: a coordinate the solver is moving, whose
+/// current value is a column of the parameter vector, or one it is not, whose value has not changed
+/// since the pass began and is still in `base`. Assembling those into a vector first is a copy of
+/// the whole drawing, and a NARROWED pass pays that copy in full for the handful of rows it was
+/// asked for — the copy does not shrink with the arithmetic. Answering the question where it is
+/// asked costs one branch and no allocation at all.
+#[derive(Clone, Copy)]
+struct Coordinates<'a> {
+    /// Where every slot stood when the pass began.
+    base: &'a [f64],
+    /// The solver's current values, in parameter-vector order.
+    parameters: &'a [f64],
+    /// Which column holds each slot's current value, or `None` where `base` still does.
+    column_of_slot: &'a [Option<usize>],
+}
+
+impl<'a> Coordinates<'a> {
+    /// A reading of a vector that is already whole — a solution being examined rather than a pass
+    /// being searched, where nothing is moving and every slot is where it stands.
+    fn of(whole: &'a [f64]) -> Self {
+        Self {
+            base: whole,
+            parameters: &[],
+            column_of_slot: &[],
+        }
+    }
+
+    fn get(self, slot: usize) -> f64 {
+        if let Some(Some(column)) = self.column_of_slot.get(slot) {
+            return self.parameters.get(*column).copied().unwrap_or_default();
+        }
+        self.base.get(slot).copied().unwrap_or_default()
+    }
+
+    /// One point's place, which is the pair of slots it occupies.
+    fn at(self, point: usize) -> [f64; 2] {
+        [self.get(point * 2), self.get(point * 2 + 1)]
+    }
+}
+
 /// Which arm of the arithmetic a residual row comes out of.
 ///
 /// A drawing's row layout is a fact about the drawing, not about any one evaluation, so it is
@@ -3960,6 +4080,9 @@ struct Residuals<'a> {
     free: Vec<usize>,
     /// One entry per residual row, naming the arm that writes it. See [`RowSource`].
     rows: Vec<RowSource>,
+    /// Which parameter column holds each slot's current value, or `None` where `base` still does.
+    /// See [`Coordinates`], which is what reads it.
+    column_of_slot: Vec<Option<usize>>,
 }
 
 /// A scalar's SOLVER COORDINATE, which for a length is the length itself.
@@ -4120,7 +4243,7 @@ fn curve_geometry(
     curve: ResolvedCurve,
     at: &impl Fn(usize) -> [f64; 2],
     specifications: &[Parameter],
-    whole: &[f64],
+    whole: Coordinates,
     point_count: usize,
 ) -> CurveGeometry {
     match curve {
@@ -4144,7 +4267,7 @@ fn curve_geometry(
             center: at(circle.center),
             radius: physical_parameter_value(
                 specifications[circle.radius_parameter],
-                whole[point_count * 2 + circle.radius_parameter],
+                whole.get(point_count * 2 + circle.radius_parameter),
             ),
             arc: None,
         }),
@@ -4622,6 +4745,12 @@ impl<'a> Residuals<'a> {
         };
         free.extend(free_scalars());
         let rows = Self::row_sources(problem, &rigidity, &scalars, &holds);
+        let mut column_of_slot = vec![None; base.len()];
+        for (column, slot) in free.iter().enumerate() {
+            if let Some(entry) = column_of_slot.get_mut(*slot) {
+                *entry = Some(column);
+            }
+        }
         Some(Self {
             problem,
             resolved,
@@ -4631,6 +4760,7 @@ impl<'a> Residuals<'a> {
             base,
             free,
             rows,
+            column_of_slot,
         })
     }
 
@@ -4704,7 +4834,7 @@ impl<'a> Residuals<'a> {
     /// A scalar parameter's PHYSICAL value out of a widened coordinate vector. The transform is
     /// the same one every other reader goes through, so a finite-difference Jacobian sees the
     /// dependency by the identical route.
-    fn scalar(&self, parameter: ParameterId, whole: &[f64]) -> f64 {
+    fn scalar(&self, parameter: ParameterId, whole: Coordinates) -> f64 {
         let Some(specification) = self.problem.parameters.get(parameter.index) else {
             return 0.0;
         };
@@ -4714,7 +4844,7 @@ impl<'a> Residuals<'a> {
             .len()
             .saturating_mul(2)
             .saturating_add(parameter.index);
-        physical_parameter_value(*specification, whole.get(slot).copied().unwrap_or_default())
+        physical_parameter_value(*specification, whole.get(slot))
     }
 
     /// The whole-coordinate slots every residual row reads, in residual order.
@@ -4767,12 +4897,7 @@ impl<'a> Residuals<'a> {
     /// The same rows in PARAMETER columns: the slots an anchored coordinate occupies drop out,
     /// because the solve never moves them and no finite difference is ever taken along them.
     fn reads_by_row(&self) -> Vec<Vec<usize>> {
-        let mut column_of_slot = vec![None; self.base.len()];
-        for (column, slot) in self.free.iter().enumerate() {
-            if let Some(entry) = column_of_slot.get_mut(*slot) {
-                *entry = Some(column);
-            }
-        }
+        let column_of_slot = &self.column_of_slot;
         self.slots_by_row()
             .into_iter()
             .map(|slots| {
@@ -4786,9 +4911,9 @@ impl<'a> Residuals<'a> {
 
     /// One arm of the arithmetic, at the rows the table says are its own.
     #[allow(clippy::too_many_lines)]
-    fn write_arm(&self, source: RowSource, whole: &[f64], into: &mut [f64]) {
+    fn write_arm(&self, source: RowSource, whole: Coordinates, into: &mut [f64]) {
         let start = source.start;
-        let at = |slot: usize| [whole[slot * 2], whole[slot * 2 + 1]];
+        let at = |slot: usize| whole.at(slot);
         match source.arm {
             RowArm::Relation(index) => {
                 let Some(relation) = self.resolved.get(index) else {
@@ -4906,7 +5031,7 @@ impl<'a> Residuals<'a> {
                             curve,
                             &at,
                             &self.problem.parameters,
-                            &whole,
+                            whole,
                             self.problem.points.len(),
                         ) {
                             // The signed distance to the line, which is zero on either side of it and
@@ -4937,7 +5062,7 @@ impl<'a> Residuals<'a> {
                         let here = at(point);
                         let along = physical_parameter_value(
                             self.problem.parameters[station],
-                            whole[self.problem.points.len() * 2 + station],
+                            whole.get(self.problem.points.len() * 2 + station),
                         ) / per_unit;
                         // A spline that cannot be fit at these coordinates says nothing, rather than
                         // pulling the point onto a curve nobody can draw.
@@ -4957,7 +5082,7 @@ impl<'a> Residuals<'a> {
                             curve,
                             &at,
                             &self.problem.parameters,
-                            &whole,
+                            whole,
                             self.problem.points.len(),
                         ) {
                             CurveGeometry::Circular(support) => support.radius - length,
@@ -4977,7 +5102,7 @@ impl<'a> Residuals<'a> {
                                 which,
                                 &at,
                                 &self.problem.parameters,
-                                &whole,
+                                whole,
                                 self.problem.points.len(),
                             ) {
                                 CurveGeometry::Circular(support) => Some(support.radius),
@@ -5002,14 +5127,14 @@ impl<'a> Residuals<'a> {
                                 first,
                                 &at,
                                 &self.problem.parameters,
-                                &whole,
+                                whole,
                                 self.problem.points.len(),
                             ),
                             curve_geometry(
                                 second,
                                 &at,
                                 &self.problem.parameters,
-                                &whole,
+                                whole,
                                 self.problem.points.len(),
                             ),
                             branch,
@@ -5027,7 +5152,7 @@ impl<'a> Residuals<'a> {
                                 against,
                                 &at,
                                 &self.problem.parameters,
-                                &whole,
+                                whole,
                                 self.problem.points.len(),
                             ),
                         );
@@ -5044,7 +5169,7 @@ impl<'a> Residuals<'a> {
                             against,
                             &at,
                             &self.problem.parameters,
-                            &whole,
+                            whole,
                             self.problem.points.len(),
                         );
                         into[start] = direction_residual(at(joint), at(joint_arm), geometry);
@@ -5070,7 +5195,7 @@ impl<'a> Residuals<'a> {
                                 curve,
                                 &at,
                                 &self.problem.parameters,
-                                &whole,
+                                whole,
                                 self.problem.points.len(),
                             )
                         };
@@ -5100,7 +5225,7 @@ impl<'a> Residuals<'a> {
                 // its chord bisector still agrees — but stated this way the drawing also says WHAT the
                 // two ends are equidistant to, which is the quantity a preference can hold.
                 if let Some(radius) = arc.radius {
-                    let named = self.scalar(radius, &whole);
+                    let named = self.scalar(radius, whole);
                     into[start] = reach(from) - named;
                     into[start + 1] = reach(to) - named;
                 } else {
@@ -5120,7 +5245,7 @@ impl<'a> Residuals<'a> {
                 let Some(hold) = self.scalars.get(index) else {
                     return;
                 };
-                into[start] = whole.get(hold.slot).copied().unwrap_or_default() - hold.at;
+                into[start] = whole.get(hold.slot) - hold.at;
             }
             RowArm::Hold { hold, axis } => {
                 let Some(hold) = self.holds.get(hold) else {
@@ -5129,6 +5254,15 @@ impl<'a> Residuals<'a> {
                 let here = at(hold.slot);
                 into[start] = here[axis] - hold.at[axis];
             }
+        }
+    }
+
+    /// The coordinates this pass reads, without building them. See [`Coordinates`].
+    fn coordinates<'p>(&'p self, parameters: &'p [f64]) -> Coordinates<'p> {
+        Coordinates {
+            base: &self.base,
+            parameters,
+            column_of_slot: &self.column_of_slot,
         }
     }
 
@@ -5162,7 +5296,7 @@ impl ResidualSystem for Residuals<'_> {
             + self.holds.len() * 2
     }
     fn residuals(&self, parameters: &[f64], into: &mut [f64]) {
-        let whole = self.widen(parameters);
+        let whole = self.coordinates(parameters);
         // Every arm, once each, by walking the same table a narrowed pass walks. There is no second
         // description of the row order for one of them to fall behind.
         let mut written = usize::MAX;
@@ -5171,7 +5305,7 @@ impl ResidualSystem for Residuals<'_> {
                 continue;
             }
             written = source.start;
-            self.write_arm(*source, &whole, into);
+            self.write_arm(*source, whole, into);
         }
     }
 
@@ -5183,7 +5317,7 @@ impl ResidualSystem for Residuals<'_> {
     /// cannot be cut into anyway. `rows` arrives ascending, and an arm's rows are contiguous, so
     /// comparing against the arm last written is enough to write each one once.
     fn residuals_of_rows(&self, parameters: &[f64], rows: &[usize], into: &mut [f64]) {
-        let whole = self.widen(parameters);
+        let whole = self.coordinates(parameters);
         let mut written = usize::MAX;
         for row in rows {
             let Some(source) = self.rows.get(*row) else {
@@ -5193,7 +5327,7 @@ impl ResidualSystem for Residuals<'_> {
                 continue;
             }
             written = source.start;
-            self.write_arm(*source, &whole, into);
+            self.write_arm(*source, whole, into);
         }
     }
 
