@@ -85,6 +85,13 @@ pub trait ResidualSystem {
     /// there** — the grouped Jacobian's claim is bit-for-bit equality with the column-by-column
     /// one, and a partial pass that rounds differently breaks it as surely as a wrong formula
     /// would. [`first_subset_disagreement`] is the falsifier.
+    ///
+    /// It may write MORE rows than were asked for, and a system whose rows come in groups that
+    /// share their work will: rows that are computed together are written together rather than
+    /// half-discarded through a second, separable copy of the arithmetic. Every row written is
+    /// bit-equal to the full evaluation, so this is never observable in the values — but a caller
+    /// that seeds `into` with sentinels to see which rows were touched will find rows it did not
+    /// name. Ask what a row HOLDS, never whether it was written.
     fn residuals_of_rows(&self, parameters: &[f64], rows: &[usize], into: &mut [f64]) {
         let _ = rows;
         self.residuals(parameters, into);
