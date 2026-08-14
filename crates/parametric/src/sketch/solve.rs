@@ -4976,7 +4976,7 @@ impl Problem {
             .flat_map(|hand| self.standing_together(hand.point))
             .collect();
         let loosened = &self.curves_the_hands_may_reshape(&in_hand);
-        let mut positions: Vec<_> = self.points.iter().map(|point| point.at).collect();
+        let positions: Vec<_> = self.points.iter().map(|point| point.at).collect();
         // The drawing as the gesture FOUND it, kept aside so the walk cannot re-aim the preference
         // at its own intermediate answers — see [`Rigidity::Preferred::opening`]. The problem's own
         // points are not that drawing: the caller writes the hands into the sketch and prepares the
@@ -4988,49 +4988,88 @@ impl Problem {
                 *slot = *stood;
             }
         }
-        let mut scalar_coordinates = self.scalar_coordinates();
-        let (origin, frames) = self.walk_of(hands, was, &positions);
-        let mut answered = Frame::default();
-        for frame in 1..=frames {
-            let share = f64::from(frame) / f64::from(frames);
-            let target: Vec<Hand> = hands
-                .iter()
-                .zip(&origin)
-                .map(|(hand, (_, from))| Hand {
-                    to: [
-                        from[0] + (hand.to[0] - from[0]) * share,
-                        from[1] + (hand.to[1] - from[1]) * share,
-                    ],
-                    ..*hand
-                })
-                .collect();
-            // The drawing as the walk has left it. A frame reads its preference off what is in
-            // front of it, and a problem carries its own positions as that reference, so a walked
-            // frame has to be handed the drawing it walked to rather than the one the gesture
-            // started from — otherwise every frame re-asks for the original shape and the walk
-            // says nothing the first frame did not.
-            let standing = self.standing_at(&positions, &scalar_coordinates);
-            // Every step measures from where the GESTURE started, not from where the last step
-            // landed. The walk hands out a straight chord while a snapped drag sweeps an arc, so
-            // the two part company by the sagitta — a fixed amount of geometry — while a step's own
-            // travel shrinks as the walk gets finer. Measured against the previous step, the cone
-            // is a fraction of that shrinking travel and loses to the gap partway through: on a
-            // nine-step sweep the snap dropped out at step six and again at step nine, and step
-            // nine is the one that delivers the answer, so the whole walk was spent to hand over
-            // the raw cursor anyway. Against the origin the cone grows with the drag  it keeps.
-            //
-            // It also stops the answer creeping. A step that measures from the last one snaps to
-            // whatever that step settled at, so the quantity it is meant to be keeping drifts a
-            // little each time; measured from the origin it is the quantity the author had.
-            answered = standing.drag_one_frame(
-                &target,
-                &origin,
-                &opening,
-                &loosened,
-                &mut positions,
-                &mut scalar_coordinates,
-            )?;
-        }
+        let scalar_coordinates = self.scalar_coordinates();
+        let (origin, most) = self.walk_of(hands, was, &positions);
+        // How far apart two walks have to land before the finer one is believed to be saying
+        // something. It is the tolerance the drawing already judges an arrived drag by, so a
+        // refinement that moves the answer by less than this moves it by less than the difference
+        // between landing on the cursor and not.
+        let agreed = |before: &[[f64; 2]], after: &[[f64; 2]]| {
+            before.len() == after.len()
+                && before
+                    .iter()
+                    .zip(after)
+                    .all(|(was, is)| (was[0] - is[0]).hypot(was[1] - is[1]) <= SATISFIED_RESIDUAL)
+        };
+        // Walk as coarsely as the drawing will allow, not as finely as the turn suggests.
+        // [`Self::walk_of`] counts steps off the angle alone, which bounds how wrong one step
+        // COULD be rather than reading how wrong it is: an arc slot's end sweep asks for sixteen
+        // and lands the same drawing in two. So take its count as a ceiling, start at a single
+        // step and double only while refining still moves a point — the answer is the finest walk
+        // taken, and the walk stops the moment a finer one has nothing to add.
+        //
+        // Not a fixed count, and not because sixteen is the wrong number. Forced to any one count
+        // the suite breaks somewhere — one, two, three, six, eight and sixteen each fail a
+        // different width-preservation test — while the same runs disagree about quality with no
+        // trend in the count at all. The length was never load-bearing; growing when a gesture
+        // needs it is.
+        let mut coarser: Option<Vec<[f64; 2]>> = None;
+        let mut frames = 1;
+        let (positions, scalar_coordinates, answered) = loop {
+            let mut reached = positions.clone();
+            let mut reached_scalars = scalar_coordinates.clone();
+            let mut answered = Frame::default();
+            for frame in 1..=frames {
+                let share = f64::from(frame) / f64::from(frames);
+                let target: Vec<Hand> = hands
+                    .iter()
+                    .zip(&origin)
+                    .map(|(hand, (_, from))| Hand {
+                        to: [
+                            from[0] + (hand.to[0] - from[0]) * share,
+                            from[1] + (hand.to[1] - from[1]) * share,
+                        ],
+                        ..*hand
+                    })
+                    .collect();
+                // The drawing as the walk has left it. A frame reads its preference off what is in
+                // front of it, and a problem carries its own positions as that reference, so a
+                // walked frame has to be handed the drawing it walked to rather than the one the
+                // gesture started from — otherwise every frame re-asks for the original shape and
+                // the walk says nothing the first frame did not.
+                let standing = self.standing_at(&reached, &reached_scalars);
+                // Every step measures from where the GESTURE started, not from where the last step
+                // landed. The walk hands out a straight chord while a snapped drag sweeps an arc,
+                // so the two part company by the sagitta — a fixed amount of geometry — while a
+                // step's own travel shrinks as the walk gets finer. Measured against the previous
+                // step, the cone is a fraction of that shrinking travel and loses to the gap
+                // partway through: on a nine-step sweep the snap dropped out at step six and again
+                // at step nine, and step nine is the one that delivers the answer, so the whole
+                // walk was spent to hand over the raw cursor anyway. Against the origin the cone
+                // grows with the drag it keeps.
+                //
+                // It also stops the answer creeping. A step that measures from the last one snaps
+                // to whatever that step settled at, so the quantity it is meant to be keeping
+                // drifts a little each time; measured from the origin it is the quantity the
+                // author had.
+                answered = standing.drag_one_frame(
+                    &target,
+                    &origin,
+                    &opening,
+                    loosened,
+                    &mut reached,
+                    &mut reached_scalars,
+                )?;
+            }
+            let settled = coarser
+                .as_ref()
+                .is_some_and(|before| agreed(before, &reached));
+            if settled || frames >= most {
+                break (reached, reached_scalars, answered);
+            }
+            coarser = Some(reached);
+            frames *= 2;
+        };
         let solution = self.solution(positions, &scalar_coordinates);
         let diagnostics = diagnostics(self, &solution, answered.report);
         let settled = Settled {
