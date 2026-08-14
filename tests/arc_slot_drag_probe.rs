@@ -31,13 +31,42 @@
 //! only between 1.2e-6 and 2.0e-6 and the clock not at all: the failure is the drawing's, not the
 //! numerics'.
 //!
-//! # The walk is already incremental, and a sweep costs its ARC
+//! # THE SHELL REPLAYS THE WHOLE GESTURE FROM THE PRESS, EVERY FRAME
 //!
-//! Asked whether the walk could be amortized — nudged on from where the last frame left it rather
-//! than restarted from the grab. It already is. `point_move_attempt` reads the drawing as it stands
-//! at the top of every call, and `drag_together` walks from THAT to where the cursor now is, so
-//! nothing is ever measured from where the gesture opened. Which is why the frame does not grow as
-//! the sweep gets further from the grab.
+//! Read this before believing any other number in this file, because every other probe here nudges
+//! the drawing on from where the last frame left it and the shell does not do that.
+//! `render.rs` rebuilds the preview from `drag.original` each frame and hands the drag the cursor's
+//! whole displacement from the PRESS. So what the walk is asked to turn grows for as long as the
+//! gesture lasts, and a frame late in a sweep is doing the entire sweep again.
+//!
+//! Measured on one hand at one speed, four degrees a frame, both paths side by side:
+//!
+//! | swept | replayed from the press | nudged from last frame |
+//! | ----- | ----------------------- | ---------------------- |
+//! | 12°   | 5.2 ms                  | 1.4 ms                 |
+//! | 60°   | 8.4 ms                  | 1.9 ms                 |
+//! | 120°  | 12.1 ms                 | 1.5 ms                 |
+//! | 180°  | 14.8 ms                 | 1.8 ms                 |
+//!
+//! The nudged column is flat and the replayed one triples. **This is the whole of why a long sweep
+//! feels dearer per frame than a short one**, and the owner reported it as such before it was
+//! measured. It is not the arc, not the distance from the origin, and not the closure.
+//!
+//! Two things make it worse than the substep count alone suggests. `walk_of` caps at
+//! `MOST_FRAMES = 16`, so past sixteen degrees of gesture the walk is no longer a degree a step but
+//! `total / 16` — at 180° swept that is eleven degrees a step, an order coarser than the law it is
+//! named for. And each of those steps is a longer throw, so it costs more iterations as well as
+//! being cheaper reasoning. Late in a sweep the shell pays the most it can pay for the coarsest
+//! walk it can take.
+//!
+//! Replaying is not thoughtless — see `drag_together` and `point_move_attempt` for why a gesture is
+//! measured from its opening: summing frame over frame lets the kept quantity creep, and the snap
+//! cone wants to grow with the drag rather than shrink with the step. Which of those survives an
+//! incremental preview is a design question and an owner's call, not a speed-up to help oneself to.
+//!
+//! # A sweep costs its ARC, if it is nudged
+//!
+//! On the nudged path, cost tracks the turn in the frame and nothing else.
 //!
 //! What a frame costs is how far it TURNS, because the walk spends about one substep per degree.
 //! The same 264 degrees, sliced five ways:
@@ -357,5 +386,121 @@ fn whether_a_sweep_costs_less_when_it_arrives_in_smaller_frames() {
             "{degrees:>9.0}° {frames:>8} {:>9.2} ms {whole:>8.0} ms",
             whole / frames as f64
         );
+    }
+}
+
+/// Whether a LONG sweep gets dearer per frame than a short one at the same hand speed.
+///
+/// The owner reports that it does, and the probes next door say it should not: cost tracks the turn
+/// in the frame, and the turn here is the same every frame. Either something accumulates across the
+/// frames of one drag, or the fixture is not the product. This holds the hand speed fixed and prints
+/// the cost against how many frames the drag has already run, which is the one thing the other
+/// probes average away.
+#[test]
+#[ignore = "perf probe — run in release with --ignored --nocapture"]
+fn whether_a_long_sweep_gets_dearer_per_frame_than_a_short_one() {
+    const PER_FRAME: f64 = 2.0_f64 * std::f64::consts::PI / 180.0;
+    const FRAMES: usize = 180;
+    let mut live = arc_slots(1);
+    let id = live.sketch.points()[3].id;
+    let mut each = Vec::with_capacity(FRAMES);
+    for _ in 0..FRAMES {
+        let was = live
+            .sketch
+            .points()
+            .iter()
+            .find(|point| point.id == id)
+            .expect("the point the sweep is holding")
+            .at
+            .in_plane();
+        let to = SketchPoint::from_continuous(
+            was[0].mul_add(PER_FRAME.cos(), -(was[1] * PER_FRAME.sin())),
+            was[0].mul_add(PER_FRAME.sin(), was[1] * PER_FRAME.cos()),
+        );
+        let started = Instant::now();
+        drop(live.sketch.move_point_reporting_its_snap(
+            id,
+            to,
+            context(),
+            document::sketch::SnapReach::of_length(9.0),
+            &mut [],
+        ));
+        each.push(started.elapsed().as_secs_f64() * 1000.0);
+    }
+    println!("{:>12} {:>10} {:>10}", "frames in", "mean ms", "worst ms");
+    for (block, run) in each.chunks(30).enumerate() {
+        let mean = run.iter().sum::<f64>() / run.len() as f64;
+        let worst = run.iter().fold(0.0_f64, |best, ms| best.max(*ms));
+        println!(
+            "{:>9}-{:<3} {mean:>10.2} {worst:>10.2}",
+            block * 30,
+            block * 30 + run.len()
+        );
+    }
+}
+
+/// The drag the SHELL actually performs: the whole gesture replayed from the press, every frame.
+///
+/// Every probe above nudges the drawing on from where the last frame left it, and every one of them
+/// reports a flat frame. The shell does not do that. `render.rs` rebuilds the preview from
+/// `drag.original` each frame and hands the drag the cursor's whole displacement from the PRESS, so
+/// what the walk is asked to turn grows for as long as the gesture lasts. That is a different cost
+/// curve, and it is the one an author feels.
+#[test]
+#[ignore = "perf probe — run in release with --ignored --nocapture"]
+fn what_the_shells_replay_from_the_press_costs_as_the_sweep_grows() {
+    const PER_FRAME: f64 = 4.0_f64 * std::f64::consts::PI / 180.0;
+    let original = arc_slots(1);
+    let id = original.sketch.points()[3].id;
+    let stood = original
+        .sketch
+        .points()
+        .iter()
+        .find(|point| point.id == id)
+        .expect("the point the sweep is holding")
+        .at
+        .in_plane();
+    println!(
+        "{:>8} {:>10} {:>10} {:>9}",
+        "swept", "replay ms", "nudge ms", "clone ms"
+    );
+    // The nudged drawing runs alongside, carried on frame to frame, so both columns are the same
+    // hand at the same speed and differ only in what the frame is measured FROM.
+    let mut nudged = arc_slots(1);
+    for frame in 1..=45_u32 {
+        let turn = PER_FRAME * f64::from(frame);
+        let to = SketchPoint::from_continuous(
+            stood[0].mul_add(turn.cos(), -(stood[1] * turn.sin())),
+            stood[0].mul_add(turn.sin(), stood[1] * turn.cos()),
+        );
+
+        let started = Instant::now();
+        let mut preview = original.clone();
+        let clone_ms = started.elapsed().as_secs_f64() * 1000.0;
+        drop(preview.sketch.move_point_reporting_its_snap(
+            id,
+            to,
+            context(),
+            document::sketch::SnapReach::of_length(9.0),
+            &mut [],
+        ));
+        let replay_ms = started.elapsed().as_secs_f64() * 1000.0;
+
+        let started = Instant::now();
+        drop(nudged.sketch.move_point_reporting_its_snap(
+            id,
+            to,
+            context(),
+            document::sketch::SnapReach::of_length(9.0),
+            &mut [],
+        ));
+        let nudge_ms = started.elapsed().as_secs_f64() * 1000.0;
+
+        if frame % 3 == 0 {
+            println!(
+                "{:>7.0}° {replay_ms:>10.2} {nudge_ms:>10.2} {clone_ms:>9.2}",
+                turn.to_degrees()
+            );
+        }
     }
 }
