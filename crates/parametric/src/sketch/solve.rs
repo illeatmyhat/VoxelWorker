@@ -5233,7 +5233,30 @@ impl Problem {
                         })
                         .fold(0.0_f64, f64::max)
                 };
-                if held_report.is_some() && reached(positions) <= SATISFIED_RESIDUAL {
+                // How far the lead hand ASKED to go. No answer can cover more of the travel than
+                // was asked for, which is what makes the bound below exact.
+                let asked = hands
+                    .iter()
+                    .filter(|hand| hand.role == HandRole::Lead)
+                    .filter_map(|hand| {
+                        let stood = opening.get(hand.point.index)?;
+                        Some((stood[0] - hand.to[0]).hypot(stood[1] - hand.to[1]))
+                    })
+                    .fold(0.0_f64, f64::max);
+                let covered = |settled: &[[f64; 2]]| asked - reached(settled);
+                // The loose run exists only to give the hold something to lose to, and what it is
+                // judged by is `covered(held) >= MOST_OF_THE_TRAVEL * covered(loose)`. Since no
+                // answer can cover more than `asked`, a hold that already covers that share of
+                // `asked` beats every loose answer there could be, and running one can only
+                // produce a number it already beats. Skipping it is the SAME test evaluated
+                // against the bound instead of against the measurement, so the answer is
+                // unchanged bit for bit — not a tolerance and not an approximation. On a slot's
+                // cap center, where every drag takes this branch and the hold always wins, it is
+                // half the gesture's iterations.
+                if held_report.is_some()
+                    && (reached(positions) <= SATISFIED_RESIDUAL
+                        || covered(positions) >= MOST_OF_THE_TRAVEL * asked)
+                {
                     held_report
                 } else {
                     let (held, held_scalars) = (positions.clone(), scalar_coordinates.clone());
@@ -5253,15 +5276,6 @@ impl Problem {
                     // the 2.67 the drawing would otherwise have covered, while the slot dragged 163
                     // out gives back 5.2 of 155.3. A hundred percent against three, and the suite
                     // is unchanged at a tenth and at nine tenths.
-                    let asked = hands
-                        .iter()
-                        .filter(|hand| hand.role == HandRole::Lead)
-                        .filter_map(|hand| {
-                            let stood = opening.get(hand.point.index)?;
-                            Some((stood[0] - hand.to[0]).hypot(stood[1] - hand.to[1]))
-                        })
-                        .fold(0.0_f64, f64::max);
-                    let covered = |settled: &[[f64; 2]]| asked - reached(settled);
                     if held_report.is_some()
                         && covered(&held) >= MOST_OF_THE_TRAVEL * covered(positions)
                     {
