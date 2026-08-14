@@ -39,8 +39,9 @@ use substrate::graph::biconnected_blocks;
 #[cfg(test)]
 use substrate::nonlinear_least_squares::{first_undeclared_read, ColumnGrouping};
 use substrate::nonlinear_least_squares::{
-    jacobian, rank, solve as solve_nlls, ResidualReads, ResidualSystem,
-    SolveOutcome as SubstrateSolveOutcome, SolveReport as SubstrateSolveReport, SolveSettings,
+    jacobian, rank, search as search_nlls, solve as solve_nlls, ResidualReads, ResidualSystem,
+    SearchReport as SubstrateSearchReport, SolveOutcome as SubstrateSolveOutcome,
+    SolveReport as SubstrateSolveReport, SolveSettings,
 };
 
 /// A trial whose residual norm is at or below this tolerance has met its relations.
@@ -3066,7 +3067,7 @@ mod tests {
         let mut preferred_positions: Vec<_> =
             candidate.points.iter().map(|point| point.at).collect();
         let mut preferred_scalars = candidate.scalar_coordinates();
-        let preferred_trace = run(
+        let preferred_trace = run_reporting_only_the_search(
             &candidate,
             &mut preferred_positions,
             &mut preferred_scalars,
@@ -4969,19 +4970,55 @@ impl ResidualSystem for Residuals<'_> {
     }
 }
 
-fn domain_report(subtrate: SubstrateSolveReport) -> SolveReport {
-    let outcome = match subtrate.outcome {
+/// What a search did, before anything reads the shape of the drawing it landed in.
+///
+/// A [`SolveReport`]'s other two fields are a reading of that shape, and buying one costs a
+/// Jacobian at the answer plus a rank of it. A pass whose answer is on its way somewhere else has
+/// no shape worth reading, so it carries this instead.
+#[derive(Clone, Copy)]
+struct SearchTrace {
+    outcome: SolveOutcome,
+    iterations: usize,
+}
+
+fn domain_outcome(substrate: SubstrateSolveOutcome) -> SolveOutcome {
+    match substrate {
         SubstrateSolveOutcome::Converged => SolveOutcome::Converged,
         SubstrateSolveOutcome::Stalled => SolveOutcome::Stalled,
         SubstrateSolveOutcome::ExhaustedIterations => SolveOutcome::ExhaustedIterations,
-    };
+    }
+}
+
+fn domain_report(subtrate: SubstrateSolveReport) -> SolveReport {
     SolveReport {
-        outcome,
+        outcome: domain_outcome(subtrate.outcome),
         iterations: subtrate.iterations,
         residual_norm: subtrate.residual_norm,
         degrees_of_freedom: subtrate.degrees_of_freedom,
         redundant_residuals: subtrate.redundant_residuals,
     }
+}
+
+fn domain_trace(substrate: SubstrateSearchReport) -> SearchTrace {
+    SearchTrace {
+        outcome: domain_outcome(substrate.outcome),
+        iterations: substrate.iterations,
+    }
+}
+
+/// Seat the answer the search left in `parameters` back onto the drawing's own coordinates.
+fn seat(
+    problem: &Problem,
+    system: &Residuals,
+    parameters: &[f64],
+    positions: &mut Vec<[f64; 2]>,
+    scalar_coordinates: &mut Vec<f64>,
+) {
+    let whole = system.widen(parameters);
+    *positions = (0..problem.points.len())
+        .map(|slot| [whole[slot * 2], whole[slot * 2 + 1]])
+        .collect();
+    *scalar_coordinates = whole[problem.points.len() * 2..].to_vec();
 }
 
 fn run(
@@ -4999,19 +5036,39 @@ fn run(
     let system = Residuals::new(problem, scalar_coordinates, rigidity)?;
     let mut parameters = system.guess(positions);
     let report = solve_nlls(&system, &mut parameters, SolveSettings::default());
-    let whole = system.widen(&parameters);
-    *positions = (0..problem.points.len())
-        .map(|slot| [whole[slot * 2], whole[slot * 2 + 1]])
-        .collect();
-    *scalar_coordinates = whole[problem.points.len() * 2..].to_vec();
+    seat(problem, &system, &parameters, positions, scalar_coordinates);
     Some(domain_report(report))
+}
+
+/// Move the drawing exactly as [`run`] does, and report only what the search did.
+///
+/// The answer is [`run`]'s, parameter for parameter; what this does not buy is the reading of the
+/// shape at that answer. A drag frame runs three passes and reads the shape of one — the preference
+/// seed and the hand's own pass are both on their way somewhere else — and a settle runs two and
+/// reads the second. Counted over the sketch suite, one search in three converges on the guess it
+/// was handed and so takes no Jacobian at all under this verb; the suite's wall clock came down 6%.
+/// See [`substrate::nonlinear_least_squares::search`] for the measurement and its gates.
+fn run_reporting_only_the_search(
+    problem: &Problem,
+    positions: &mut Vec<[f64; 2]>,
+    scalar_coordinates: &mut Vec<f64>,
+    rigidity: Rigidity,
+) -> Option<SearchTrace> {
+    if problem.constraints.is_empty() {
+        return None;
+    }
+    let system = Residuals::new(problem, scalar_coordinates, rigidity)?;
+    let mut parameters = system.guess(positions);
+    let report = search_nlls(&system, &mut parameters, SolveSettings::default());
+    seat(problem, &system, &parameters, positions, scalar_coordinates);
+    Some(domain_trace(report))
 }
 
 fn exact_report_at(
     problem: &Problem,
     positions: &[[f64; 2]],
     scalar_coordinates: &[f64],
-    trace: SolveReport,
+    trace: SearchTrace,
 ) -> Option<SolveReport> {
     let system = Residuals::new(problem, scalar_coordinates, Rigidity::Ignored)?;
     let parameters = system.guess(positions);
@@ -5075,7 +5132,7 @@ impl Problem {
     pub fn settle(&self) -> Settled {
         let mut positions: Vec<_> = self.points.iter().map(|point| point.at).collect();
         let mut scalar_coordinates = self.scalar_coordinates();
-        run(
+        run_reporting_only_the_search(
             self,
             &mut positions,
             &mut scalar_coordinates,
@@ -5904,7 +5961,7 @@ impl Problem {
                        drawing: &Self,
                        positions: &mut Vec<[f64; 2]>,
                        scalars: &mut Vec<f64>| {
-            run(
+            run_reporting_only_the_search(
                 hand_problem,
                 positions,
                 scalars,
@@ -5916,7 +5973,7 @@ impl Problem {
                     reshaping,
                 },
             );
-            run(hand_problem, positions, scalars, Rigidity::Ignored);
+            run_reporting_only_the_search(hand_problem, positions, scalars, Rigidity::Ignored);
             run(drawing, positions, scalars, Rigidity::Ignored)
         };
         // The gesture is run as the drawing has always run it, and then run again with the radius
@@ -6218,7 +6275,7 @@ impl Problem {
     fn settle_with(&self, anchored: &[PointId], flexible_curves: &[SketchCurve]) -> Settled {
         let mut positions: Vec<_> = self.points.iter().map(|point| point.at).collect();
         let mut scalar_coordinates = self.scalar_coordinates();
-        let preferred_trace = run(
+        let preferred_trace = run_reporting_only_the_search(
             self,
             &mut positions,
             &mut scalar_coordinates,
