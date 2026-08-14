@@ -107,6 +107,70 @@ pub trait ResidualSystem {
     fn parameter_reads(&self) -> Option<ResidualReads> {
         None
     }
+
+    /// Which residual rows the system DIFFERENTIATES ITSELF, if any.
+    ///
+    /// A finite difference is two residual evaluations and a subtraction that throws half the
+    /// significant digits away; a row that is LINEAR in the parameters — a fix, a coincidence, one
+    /// coordinate against another — has a derivative that is a constant the system already knows.
+    /// Naming those rows here moves them off the difference path entirely: they cost no residual
+    /// evaluation, they are exact rather than accurate to a part in `10¹¹`, and the columns they
+    /// used to conflict over stop forcing the [`ColumnGrouping`] apart, so the rows that are still
+    /// differenced are differenced in fewer passes.
+    ///
+    /// Answering `None`, the default, differences everything and is what every system did before
+    /// the seam existed.
+    ///
+    /// **A row named here and differentiated wrongly is a wrong step direction, not a wrong
+    /// answer**, so it does not fail loudly — it makes the search wander. [`first_wrong_analytic_derivative`]
+    /// is the falsifier; run it over every shape the system can take, from a test.
+    fn analytic_rows(&self) -> Option<AnalyticRows> {
+        None
+    }
+
+    /// Write the derivative rows named by [`analytic_rows`](Self::analytic_rows) into the row-major
+    /// `residual_count × parameter_count` matrix `into`.
+    ///
+    /// Row `r` owns `into[r * parameter_count .. (r + 1) * parameter_count]` and must be written
+    /// WHOLE, zeros included: the entries it does not write hold whatever the finite-difference
+    /// pass left there. Rows not named are none of this method's business.
+    fn analytic_jacobian(&self, parameters: &[f64], into: &mut [f64]) {
+        let _ = (parameters, into);
+    }
+}
+
+/// The residual rows a system differentiates itself, ascending and without repeats.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AnalyticRows {
+    rows: Vec<usize>,
+}
+
+impl AnalyticRows {
+    /// Collect the rows, in any order and with any repeats.
+    pub fn from_rows(rows: impl IntoIterator<Item = usize>) -> Self {
+        let mut rows: Vec<usize> = rows.into_iter().collect();
+        rows.sort_unstable();
+        rows.dedup();
+        Self { rows }
+    }
+
+    /// The rows, ascending.
+    #[must_use]
+    pub fn rows(&self) -> &[usize] {
+        &self.rows
+    }
+
+    /// Whether the system named no row at all, which is the same claim as answering `None`.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.rows.is_empty()
+    }
+
+    /// Whether one row is among them.
+    #[must_use]
+    pub fn contains(&self, row: usize) -> bool {
+        self.rows.binary_search(&row).is_ok()
+    }
 }
 
 /// Which parameters each residual row reads — the Jacobian's SPARSITY PATTERN, stated by the
@@ -419,7 +483,7 @@ pub fn first_subset_disagreement(
     let mut whole = vec![0.0; residual_count];
     system.residuals(parameters, &mut whole);
     let mut partial = vec![0.0; residual_count];
-    let grouping = column_grouping(system);
+    let grouping = JacobianPlan::for_system(system).grouping;
     let groups = grouping.as_ref().map_or(0, ColumnGrouping::group_count);
     for group in 0..groups {
         let asked = grouping
@@ -460,6 +524,75 @@ fn disagreeing_row(
         };
         stood.to_bits() != now.to_bits()
     })
+}
+
+/// An analytic derivative that does not agree with the difference it replaced.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WrongDerivative {
+    /// The residual whose row it is in.
+    pub row: usize,
+    /// The parameter it is the derivative with respect to.
+    pub column: usize,
+    /// What the system said the derivative is.
+    pub analytic: f64,
+    /// What a central difference of the residual says it is.
+    pub differenced: f64,
+}
+
+/// The first analytic derivative that disagrees with a central difference of the same residual —
+/// the falsifier for [`analytic_rows`](ResidualSystem::analytic_rows).
+///
+/// A tolerance and not bits, unlike the other two falsifiers here, and the difference is the point:
+/// a correct analytic derivative is EXPECTED to differ from the difference that stood in for it, by
+/// about the difference's own error. What is being checked is that the two agree to roughly that
+/// error and no worse — a sign flip, a swapped pair of columns, a factor of two, a derivative taken
+/// with respect to the wrong parameter. `tolerance` is applied as
+/// `|analytic − differenced| <= tolerance * (1 + |differenced|)`, so it reads as a relative error on
+/// a large derivative and an absolute one on a derivative near zero. A central difference of a
+/// well-scaled residual carries about eleven digits, so `1e-6` catches every structural mistake
+/// while leaving room for a residual that is merely awkward.
+///
+/// Answers `None` for a system that names no analytic row, since it is then claiming nothing.
+#[must_use]
+pub fn first_wrong_analytic_derivative(
+    system: &dyn ResidualSystem,
+    parameters: &[f64],
+    tolerance: f64,
+) -> Option<WrongDerivative> {
+    let named = system.analytic_rows()?;
+    let parameter_count = system.parameter_count();
+    let differenced = jacobian_column_by_column(system, parameters);
+    let mut analytic = differenced.clone();
+    // Poisoned first, so a declared row the system only half writes is caught as loudly as one it
+    // writes wrongly.
+    for row in named.rows() {
+        for column in 0..parameter_count {
+            if let Some(slot) =
+                analytic.get_mut(row.saturating_mul(parameter_count).saturating_add(column))
+            {
+                *slot = f64::NAN;
+            }
+        }
+    }
+    system.analytic_jacobian(parameters, &mut analytic);
+    for row in named.rows() {
+        for column in 0..parameter_count {
+            let index = row.saturating_mul(parameter_count).saturating_add(column);
+            let (Some(&said), Some(&saw)) = (analytic.get(index), differenced.get(index)) else {
+                continue;
+            };
+            if (said - saw).abs() <= tolerance * (1.0 + saw.abs()) {
+                continue;
+            }
+            return Some(WrongDerivative {
+                row: *row,
+                column,
+                analytic: said,
+                differenced: saw,
+            });
+        }
+    }
+    None
 }
 
 /// Why the solve stopped.
@@ -605,12 +738,12 @@ pub fn solve(
     let mut trust_radius = settings.initial_trust_radius.max(f64::MIN_POSITIVE);
     let mut outcome = SolveOutcome::ExhaustedIterations;
     let mut iterations = 0;
-    // The grouping is a fact about the SHAPE of the system, so it is colored once and reused for
-    // every Jacobian the search takes. The residuals at the current parameters are already in
-    // hand each time one is needed, which is the one extra pass the grouped path would otherwise
-    // cost — see `jacobian_in_groups` for what it is for.
-    let grouping = column_grouping(system);
-    let mut jacobian_matrix = jacobian_at(system, parameters, &residuals, grouping.as_ref());
+    // How the Jacobian will be taken is a fact about the SHAPE of the system, so it is settled once
+    // and reused for every Jacobian the search takes. The residuals at the current parameters are
+    // already in hand each time one is needed, which is the one extra pass the grouped path would
+    // otherwise cost — see `jacobian_in_groups` for what it is for.
+    let plan = JacobianPlan::for_system(system);
+    let mut jacobian_matrix = jacobian_at(system, parameters, &residuals, &plan);
 
     for iteration in 0..settings.maximum_iterations {
         iterations = iteration.saturating_add(1);
@@ -681,7 +814,7 @@ pub fn solve(
         if gain > 0.0 {
             parameters.copy_from_slice(&candidate);
             residuals = candidate_residuals;
-            jacobian_matrix = jacobian_at(system, parameters, &residuals, grouping.as_ref());
+            jacobian_matrix = jacobian_at(system, parameters, &residuals, &plan);
             // Tested only on an ACCEPTED step, and after taking it. A rejected step leaves the
             // objective alone, so counting it as "no improvement" would stop the search at the
             // first bad guess rather than at the end of its progress — the trust radius collapsing
@@ -726,42 +859,90 @@ pub fn solve(
 /// 0.001 are both differenced sensibly.
 ///
 /// A system that declares its [`parameter_reads`](ResidualSystem::parameter_reads) is differenced a
-/// GROUP of columns at a time instead, which is the same matrix in fewer passes. Reaching that path
-/// from here costs one extra residual pass to learn where the system stands; inside
-/// [`solve`] that value is already known and is threaded through instead.
+/// GROUP of columns at a time instead, which is the same matrix in fewer passes, and rows it names
+/// in [`analytic_rows`](ResidualSystem::analytic_rows) are not differenced at all. Reaching those
+/// paths from here costs one extra residual pass to learn where the system stands; inside [`solve`]
+/// that value is already known and is threaded through instead.
 #[must_use]
 pub fn jacobian(system: &dyn ResidualSystem, parameters: &[f64]) -> Vec<f64> {
-    let Some(grouping) = column_grouping(system) else {
-        return jacobian_column_by_column(system, parameters);
-    };
+    let plan = JacobianPlan::for_system(system);
     let mut here = vec![0.0; system.residual_count()];
-    system.residuals(parameters, &mut here);
-    jacobian_in_groups(system, parameters, &here, &grouping)
+    if plan.grouping.is_some() {
+        system.residuals(parameters, &mut here);
+    }
+    jacobian_at(system, parameters, &here, &plan)
 }
 
-/// The system's Curtis-Powell-Reid grouping, where it declared a reads-set the right shape.
+/// How one system's Jacobian is taken: which rows it differentiates itself, and how the rest are
+/// coloured for central differences.
 ///
-/// A declaration with the wrong number of rows is REFUSED rather than padded. Rows are matched to
-/// residuals by position, so one row too few is not a smaller claim — it is every later row's claim
-/// attached to the wrong residual, which is precisely the silent corruption the grouping has to be
-/// incapable of.
-fn column_grouping(system: &dyn ResidualSystem) -> Option<ColumnGrouping> {
-    let reads = system.parameter_reads()?;
-    (reads.row_count() == system.residual_count())
-        .then(|| ColumnGrouping::curtis_powell_reid(&reads, system.parameter_count()))
+/// Both are facts about the SHAPE of the system rather than about where it stands, so they are
+/// settled once and reused for every Jacobian a search takes.
+#[derive(Debug, Clone, Default)]
+struct JacobianPlan {
+    /// The rows the system writes itself, if it named any.
+    analytic: Option<AnalyticRows>,
+    /// The colouring of the columns over the rows that are still DIFFERENCED — the analytic rows
+    /// are left out of it, so a column two of them share no longer forces a group apart.
+    grouping: Option<ColumnGrouping>,
 }
 
-/// The Jacobian at `parameters`, given the residuals there and the grouping if there is one.
+impl JacobianPlan {
+    /// Read the system's own declarations.
+    ///
+    /// A reads-set with the wrong number of rows is REFUSED rather than padded. Rows are matched to
+    /// residuals by position, so one row too few is not a smaller claim — it is every later row's
+    /// claim attached to the wrong residual, which is precisely the silent corruption the grouping
+    /// has to be incapable of.
+    fn for_system(system: &dyn ResidualSystem) -> Self {
+        let residual_count = system.residual_count();
+        let analytic = system.analytic_rows().filter(|named| {
+            !named.is_empty() && named.rows().iter().all(|row| *row < residual_count)
+        });
+        let grouping = system
+            .parameter_reads()
+            .filter(|reads| reads.row_count() == residual_count)
+            .map(|reads| {
+                let differenced = analytic.as_ref().map_or_else(
+                    || reads.clone(),
+                    |named| {
+                        ResidualReads::from_rows((0..residual_count).map(|row| {
+                            if named.contains(row) {
+                                Vec::new()
+                            } else {
+                                reads.row(row).to_vec()
+                            }
+                        }))
+                    },
+                );
+                ColumnGrouping::curtis_powell_reid(&differenced, system.parameter_count())
+            });
+        Self { analytic, grouping }
+    }
+}
+
+/// The Jacobian at `parameters`, given the residuals there and how the system asked to be
+/// differentiated.
+///
+/// The analytic rows go on LAST, over whatever the difference pass left in them. A row the system
+/// writes itself is worth nothing if a difference can land on top of it, and the difference pass has
+/// three ways of touching a row it was not asked about — the reconstruction for a non-finite value,
+/// a column-by-column pass that cannot narrow, a stale buffer entry — so the order is the guarantee
+/// rather than an optimisation.
 fn jacobian_at(
     system: &dyn ResidualSystem,
     parameters: &[f64],
     here: &[f64],
-    grouping: Option<&ColumnGrouping>,
+    plan: &JacobianPlan,
 ) -> Vec<f64> {
-    grouping.map_or_else(
+    let mut matrix = plan.grouping.as_ref().map_or_else(
         || jacobian_column_by_column(system, parameters),
         |grouping| jacobian_in_groups(system, parameters, here, grouping),
-    )
+    );
+    if plan.analytic.is_some() {
+        system.analytic_jacobian(parameters, &mut matrix);
+    }
+    matrix
 }
 
 /// The Jacobian one GROUP of columns per central difference, which is the same matrix bit for bit.
@@ -2045,11 +2226,222 @@ mod tests {
             residuals: vec![&first, &second],
             reads: vec![vec![0]],
         };
-        assert!(column_grouping(&system).is_none());
+        assert!(JacobianPlan::for_system(&system).grouping.is_none());
         // And the Jacobian still comes out right, by the column-by-column door.
         let matrix = jacobian(&system, &[0.0, 0.0]);
         assert!((matrix[0] - 1.0).abs() < 1e-9, "{matrix:?}");
         assert!((matrix[3] - 1.0).abs() < 1e-9, "{matrix:?}");
+    }
+
+    /// Two points, a coincidence and a distance: the first two rows are LINEAR and the system
+    /// differentiates them itself, the third is a square root and is left to differences. The shape
+    /// the sketch layer will eventually take, in four parameters instead of forty.
+    struct PartlyAnalytic {
+        /// How far apart the pair is asked to stand.
+        span: f64,
+        /// A deliberate mistake in one analytic entry, for the falsifier to find.
+        spoiled: bool,
+    }
+
+    impl ResidualSystem for PartlyAnalytic {
+        fn parameter_count(&self) -> usize {
+            4
+        }
+        fn residual_count(&self) -> usize {
+            3
+        }
+        fn residuals(&self, parameters: &[f64], into: &mut [f64]) {
+            // Rows 0 and 1: the first point sits at the origin. Row 2: the pair stands `span` apart.
+            into[0] = parameters[0];
+            into[1] = parameters[1];
+            into[2] =
+                (parameters[2] - parameters[0]).hypot(parameters[3] - parameters[1]) - self.span;
+        }
+        fn parameter_reads(&self) -> Option<ResidualReads> {
+            Some(ResidualReads::from_rows(vec![
+                vec![0],
+                vec![1],
+                vec![0, 1, 2, 3],
+            ]))
+        }
+        fn analytic_rows(&self) -> Option<AnalyticRows> {
+            Some(AnalyticRows::from_rows([0, 1]))
+        }
+        fn analytic_jacobian(&self, _parameters: &[f64], into: &mut [f64]) {
+            into[0..4].copy_from_slice(&[1.0, 0.0, 0.0, 0.0]);
+            into[4..8].copy_from_slice(&[0.0, 1.0, 0.0, 0.0]);
+            if self.spoiled {
+                into[5] = -1.0;
+            }
+        }
+    }
+
+    /// A row the system differentiates itself comes out EXACT, and one it does not is the same
+    /// central difference it always was.
+    #[test]
+    fn an_analytic_row_replaces_its_difference_and_leaves_the_others_alone() {
+        let system = PartlyAnalytic {
+            span: 10.0,
+            spoiled: false,
+        };
+        let at = [0.3, -0.2, 8.0, 1.0];
+        let matrix = jacobian(&system, &at);
+        // Exactly one and exactly zero, which a difference of these residuals is not.
+        assert_eq!(matrix[0..4], [1.0, 0.0, 0.0, 0.0]);
+        assert_eq!(matrix[4..8], [0.0, 1.0, 0.0, 0.0]);
+        // And the differenced row is untouched by the overlay.
+        let span = (at[2] - at[0]).hypot(at[3] - at[1]);
+        assert!(
+            (matrix[10] - (at[2] - at[0]) / span).abs() < 1e-7,
+            "{matrix:?}"
+        );
+        assert!(
+            (matrix[11] - (at[3] - at[1]) / span).abs() < 1e-7,
+            "{matrix:?}"
+        );
+    }
+
+    /// Naming rows analytic frees the colouring: the two linear rows stop conflicting over the
+    /// columns they read, so nothing but the differenced row is ever evaluated.
+    #[test]
+    fn analytic_rows_leave_the_colouring_to_the_rows_that_are_differenced() {
+        let system = PartlyAnalytic {
+            span: 10.0,
+            spoiled: false,
+        };
+        let plan = JacobianPlan::for_system(&system);
+        let grouping = plan.grouping.as_ref().expect("declared");
+        for group in 0..grouping.group_count() {
+            for row in grouping.rows_of_group(group) {
+                assert_eq!(*row, 2, "only the differenced row is ever evaluated");
+            }
+        }
+    }
+
+    /// The falsifier catches a wrong analytic entry, and clears a right one.
+    #[test]
+    fn a_wrong_analytic_derivative_is_found() {
+        let at = [0.3, -0.2, 8.0, 1.0];
+        let honest = PartlyAnalytic {
+            span: 10.0,
+            spoiled: false,
+        };
+        assert_eq!(first_wrong_analytic_derivative(&honest, &at, 1.0e-6), None);
+
+        let spoiled = PartlyAnalytic {
+            span: 10.0,
+            spoiled: true,
+        };
+        let found = first_wrong_analytic_derivative(&spoiled, &at, 1.0e-6);
+        assert!(
+            matches!(
+                found,
+                Some(WrongDerivative {
+                    row: 1,
+                    column: 1,
+                    ..
+                })
+            ),
+            "the flipped sign: {found:?}"
+        );
+    }
+
+    /// A row named analytic and never written is caught too: the poison says so rather than the
+    /// difference underneath it standing in.
+    #[test]
+    fn an_analytic_row_nobody_wrote_is_found() {
+        struct NamesAndDoesNotWrite;
+        impl ResidualSystem for NamesAndDoesNotWrite {
+            fn parameter_count(&self) -> usize {
+                1
+            }
+            fn residual_count(&self) -> usize {
+                1
+            }
+            fn residuals(&self, parameters: &[f64], into: &mut [f64]) {
+                into[0] = parameters[0] - 3.0;
+            }
+            fn analytic_rows(&self) -> Option<AnalyticRows> {
+                Some(AnalyticRows::from_rows([0]))
+            }
+        }
+        let found = first_wrong_analytic_derivative(&NamesAndDoesNotWrite, &[1.0], 1.0e-6);
+        assert!(
+            matches!(
+                found,
+                Some(WrongDerivative {
+                    row: 0,
+                    column: 0,
+                    ..
+                })
+            ),
+            "{found:?}"
+        );
+    }
+
+    /// The overlay wins on the column-by-column path too, where the difference pass cannot narrow
+    /// and writes an entry into every row whether it was asked to or not.
+    #[test]
+    fn an_analytic_row_survives_the_column_by_column_path() {
+        struct NoReadsDeclared;
+        impl ResidualSystem for NoReadsDeclared {
+            fn parameter_count(&self) -> usize {
+                2
+            }
+            fn residual_count(&self) -> usize {
+                2
+            }
+            fn residuals(&self, parameters: &[f64], into: &mut [f64]) {
+                into[0] = 3.0 * parameters[0] - parameters[1];
+                into[1] = parameters[0] * parameters[1];
+            }
+            fn analytic_rows(&self) -> Option<AnalyticRows> {
+                Some(AnalyticRows::from_rows([0]))
+            }
+            fn analytic_jacobian(&self, _parameters: &[f64], into: &mut [f64]) {
+                into[0..2].copy_from_slice(&[3.0, -1.0]);
+            }
+        }
+        let matrix = jacobian(&NoReadsDeclared, &[0.7, -1.3]);
+        assert_eq!(matrix[0..2], [3.0, -1.0], "exact, not differenced");
+        assert!((matrix[2] - (-1.3)).abs() < 1e-7, "{matrix:?}");
+        assert!((matrix[3] - 0.7).abs() < 1e-7, "{matrix:?}");
+    }
+
+    /// A system that names no analytic row is not accused of anything, and takes the same Jacobian
+    /// it always did.
+    #[test]
+    fn a_system_with_no_analytic_rows_is_unchanged() {
+        let first = |p: &[f64]| p[0] * p[0] + (3.0 * p[1]).sin();
+        let second = |p: &[f64]| p[2].exp() - p[3];
+        let system = Declared {
+            parameters: 4,
+            residuals: vec![&first, &second],
+            reads: vec![vec![0, 1], vec![2, 3]],
+        };
+        let at = [0.7, -1.3, 0.25, 4.0];
+        assert_eq!(first_wrong_analytic_derivative(&system, &at, 1.0e-6), None);
+        let through_the_plan = jacobian(&system, &at);
+        let column_by_column = jacobian_column_by_column(&system, &at);
+        for (index, (one, other)) in through_the_plan.iter().zip(&column_by_column).enumerate() {
+            assert_eq!(one.to_bits(), other.to_bits(), "entry {index}");
+        }
+    }
+
+    /// And the seam carries through `solve`: the partly-analytic system reaches its answer.
+    #[test]
+    fn a_partly_analytic_system_solves() {
+        let system = PartlyAnalytic {
+            span: 10.0,
+            spoiled: false,
+        };
+        let mut parameters = vec![0.3, -0.2, 8.0, 1.0];
+        let report = solve(&system, &mut parameters, SolveSettings::default());
+        assert_eq!(report.outcome, SolveOutcome::Converged, "{report:?}");
+        assert!(parameters[0].abs() < 1.0e-9, "{parameters:?}");
+        assert!(parameters[1].abs() < 1.0e-9, "{parameters:?}");
+        let span = (parameters[2] - parameters[0]).hypot(parameters[3] - parameters[1]);
+        assert!((span - 10.0).abs() < 1.0e-6, "{span}");
     }
 
     /// A declared system solves to the same answer an undeclared one does, through `solve` rather
