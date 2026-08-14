@@ -7,7 +7,7 @@ use super::*;
 /// How far (physical px) a drawn arc chord may sag from the true curve. A quarter pixel is under
 /// the width of the thinnest stroke the gizmo family draws, so the tessellation is invisible at
 /// any zoom; it only ever refines the DRAWING, never the resolved profile.
-const ARC_SCREEN_SAGITTA_PX: f64 = 0.25;
+pub(super) const ARC_SCREEN_SAGITTA_PX: f64 = 0.25;
 
 /// How much closer (logical px) a DERIVED vertex must be before it outranks an authored one under
 /// the cursor. Sub-pixel on purpose: it settles the stacked case and nothing else.
@@ -1481,150 +1481,6 @@ impl WindowedState {
                         )
                 })
             })
-            .collect()
-    }
-
-    /// Every conic's shoulder in this sketch, in profile space. See
-    /// [`conic_shoulders`](document::sketch::Sketch::conic_shoulders) for why it is a reading.
-    fn conic_shoulders_in_profile(
-        &self,
-        target: document::scene::NodeId,
-    ) -> Vec<(document::sketch::EntityId, [f64; 2])> {
-        let Some(node) = self.panel_state.scene.node_by_id(target) else {
-            return Vec::new();
-        };
-        let document::scene::NodeContent::SketchTool { producer, .. } = &node.content else {
-            return Vec::new();
-        };
-        producer.sketch.conic_shoulders()
-    }
-
-    /// The points the drawing already accounts for, and so may draw with nothing hovered.
-    ///
-    /// [`point_draws_at_rest`](document::sketch::Sketch::point_draws_at_rest) is the rule; this
-    /// gathers it, and joins the points of every SELECTED curve — selecting a line is a way of
-    /// saying "this one", and the corners it runs between are part of the answer.
-    ///
-    /// The rule holds under EVERY tool. Arming one used to show every point in the drawing, on the
-    /// reasoning that a tool reaching for a point must be able to see it — but the rest-rule is
-    /// already about which dots the drawing owes the author, and a tool does not change that
-    /// answer (owner, 2026-08-04). Hovering still reveals, which is what a tool actually reaches
-    /// through.
-    fn points_the_drawing_shows_by_itself(
-        &self,
-        target: document::scene::NodeId,
-    ) -> std::collections::BTreeSet<document::sketch::EntityId> {
-        let Some(node) = self.panel_state.scene.node_by_id(target) else {
-            return std::collections::BTreeSet::new();
-        };
-        let document::scene::NodeContent::SketchTool { producer, .. } = &node.content else {
-            return std::collections::BTreeSet::new();
-        };
-        let sketch = &producer.sketch;
-        let mut shown: std::collections::BTreeSet<document::sketch::EntityId> = sketch
-            .points()
-            .iter()
-            .filter(|point| sketch.point_draws_at_rest(point.id))
-            .map(|point| point.id)
-            .collect();
-        for curve in self.selected_sketch_curves(target) {
-            shown.extend(sketch.points_of(curve));
-        }
-        shown
-    }
-
-    /// Every point of this sketch that another dot already stands on, and so never draws.
-    ///
-    /// [`a_better_dot_stands_here`](document::sketch::Sketch::a_better_dot_stands_here) is the
-    /// rule; this gathers it once per frame rather than per revealed dot.
-    fn dots_standing_under_another(
-        &self,
-        target: document::scene::NodeId,
-    ) -> std::collections::BTreeSet<document::sketch::EntityId> {
-        let Some(node) = self.panel_state.scene.node_by_id(target) else {
-            return std::collections::BTreeSet::new();
-        };
-        let document::scene::NodeContent::SketchTool { producer, .. } = &node.content else {
-            return std::collections::BTreeSet::new();
-        };
-        producer
-            .sketch
-            .points()
-            .iter()
-            .filter(|point| producer.sketch.a_better_dot_stands_here(point.id))
-            .map(|point| point.id)
-            .collect()
-    }
-
-    /// The points the curve behind an edge hit stands on.
-    fn points_of_edge_hit(
-        &self,
-        target: document::scene::NodeId,
-        hit: SketchEdgeHit,
-    ) -> Vec<document::sketch::EntityId> {
-        let curve = match hit {
-            SketchEdgeHit::Segment(id) => document::sketch::SketchCurve::Segment(id),
-            SketchEdgeHit::Arc(id) => document::sketch::SketchCurve::Arc(id),
-            SketchEdgeHit::Circle(id) => document::sketch::SketchCurve::Circle(id),
-            SketchEdgeHit::HigherCurve(curve) => curve,
-        };
-        let Some(node) = self.panel_state.scene.node_by_id(target) else {
-            return Vec::new();
-        };
-        let document::scene::NodeContent::SketchTool { producer, .. } = &node.content else {
-            return Vec::new();
-        };
-        producer.sketch.points_of(curve)
-    }
-
-    /// Every curve of `target` the selection holds.
-    fn selected_sketch_curves(
-        &self,
-        target: document::scene::NodeId,
-    ) -> Vec<document::sketch::SketchCurve> {
-        self.panel_state
-            .selection
-            .targets()
-            .filter_map(|picked| match picked {
-                ui::panel::SelectionTarget::SketchSegment { sketch, entity }
-                    if sketch == target =>
-                {
-                    Some(document::sketch::SketchCurve::Segment(entity))
-                }
-                ui::panel::SelectionTarget::SketchArc { sketch, entity } if sketch == target => {
-                    Some(document::sketch::SketchCurve::Arc(entity))
-                }
-                ui::panel::SelectionTarget::SketchCircle { sketch, entity } if sketch == target => {
-                    Some(document::sketch::SketchCurve::Circle(entity))
-                }
-                ui::panel::SelectionTarget::SketchHigherCurve { sketch, curve }
-                    if sketch == target =>
-                {
-                    Some(curve)
-                }
-                _ => None,
-            })
-            .collect()
-    }
-
-    /// Every point some curve is drawn THROUGH, gathered once for the frame rather than asked per
-    /// dot — the predicate walks every curve store, and the overlay asks it of every vertex.
-    fn points_standing_on_ink(
-        &self,
-        target: document::scene::NodeId,
-    ) -> std::collections::BTreeSet<document::sketch::EntityId> {
-        let Some(node) = self.panel_state.scene.node_by_id(target) else {
-            return std::collections::BTreeSet::new();
-        };
-        let document::scene::NodeContent::SketchTool { producer, .. } = &node.content else {
-            return std::collections::BTreeSet::new();
-        };
-        producer
-            .sketch
-            .points()
-            .iter()
-            .filter(|point| producer.sketch.point_stands_on_ink(point.id))
-            .map(|point| point.id)
             .collect()
     }
 
@@ -5426,84 +5282,15 @@ impl WindowedState {
             self.sketch_circle_center = None;
             self.sketch_circle_target = None;
         }
+        // The sketch plane's map onto this frame's pixels, struck once. Every mark below — dot,
+        // edge, chord, badge — is a plane coordinate asked where it lands, and asking through one
+        // map is what keeps a curve and the dot on its end in the same place.
+        let plane = super::SketchPlaneProjection::new(&handles, view_projection, viewport_px);
         let [vx, vy, vw, vh] = viewport_px.map(|component| component as f32);
-        let tangent_arms = self.tangent_arm_points(target);
-        let on_ink = self.points_standing_on_ink(target);
-        let dragging_point = self.sketch_drag.as_ref().and_then(|drag| drag.held.point());
-        let mut revealed = self.points_the_drawing_shows_by_itself(target);
-        // A forgiving grab radius (physical px) so a hover reads as "draggable" near the thumb.
-        let hover_radius_px = (ui::chrome::SKETCH_HANDLE_HALF + ui::chrome::SKETCH_HANDLE_GRAB_PAD)
-            * pixels_per_point;
-        let mut pending_points: Vec<(
-            Option<document::sketch::EntityId>,
-            ui::chrome::SketchVertexHandle,
-        )> = Vec::with_capacity(handles.vertices.len());
-        for (index, vertex) in handles.vertices.iter().enumerate() {
-            let clip = view_projection * glam::Vec4::new(vertex[0], vertex[1], vertex[2], 1.0);
-            if clip.w <= 0.0 {
-                // Behind the camera: hold the index with `None` so segment adjacency survives.
-                self.sketch_vertex_px.push(None);
-                continue;
-            }
-            let ndc_x = clip.x / clip.w;
-            let ndc_y = clip.y / clip.w;
-            let px = vx + (ndc_x * 0.5 + 0.5) * vw;
-            let py = vy + (1.0 - (ndc_y * 0.5 + 0.5)) * vh;
-            let center_px = egui::Pos2::new(px, py);
-
-            let hovered = self
-                .last_cursor_position
-                .map(|(cx, cy)| (cx as f32 - px).hypot(cy as f32 - py) <= hover_radius_px)
-                .unwrap_or(false);
-            let point_id = handles.point_ids.get(index).copied();
-            let selected = point_id
-                .map(|entity| {
-                    let picked = ui::panel::SelectionTarget::SketchPoint {
-                        sketch: target,
-                        entity,
-                    };
-                    self.panel_state.selection.contains(picked)
-                })
-                .unwrap_or(false);
-            // Precedence: dragged > selected > hover > idle. A selected vertex stays
-            // filled-accent even under the cursor, matching the segment rule so a point and an
-            // edge read alike.
-            let state = if dragging_point == point_id {
-                ui::gizmos::HandleState::Snapped
-            } else if selected {
-                ui::gizmos::HandleState::Selected
-            } else if hovered {
-                ui::gizmos::HandleState::Hover
-            } else {
-                ui::gizmos::HandleState::Idle
-            };
-
-            let center_pt = egui::Pos2::new(px / pixels_per_point, py / pixels_per_point);
-            // Held back rather than pushed: whether this dot draws can depend on the curve under
-            // the cursor, and that is not resolved until the chord caches below are built. A dot
-            // the author is already touching answers for itself and is revealed here.
-            if hovered || selected || dragging_point == point_id {
-                revealed.extend(point_id);
-            }
-            pending_points.push((
-                point_id,
-                ui::chrome::SketchVertexHandle {
-                    at: center_pt,
-                    state,
-                    ink: match point_id {
-                        Some(id) if tangent_arms.contains(&id) => {
-                            ui::chrome::SketchVertexInk::TangentArm
-                        }
-                        Some(id) if on_ink.contains(&id) => ui::chrome::SketchVertexInk::OnInk,
-                        // A vertex with no id is a PREVIEW dot the tool is placing: it belongs to
-                        // the mark being drawn, so it reads as drawing.
-                        None => ui::chrome::SketchVertexInk::OnInk,
-                        Some(_) => ui::chrome::SketchVertexInk::OffInk,
-                    },
-                },
-            ));
-            self.sketch_vertex_px.push(Some(center_px));
-        }
+        // Where every vertex landed, holes and all: a behind-camera vertex keeps its index as
+        // `None` so segment adjacency survives. The press hit-tests read this cache, and so do the
+        // marks struck below.
+        self.sketch_vertex_px = plane.vertex_px();
 
         // The stable point id + segment connectivity for THIS frame, aligned with
         // `sketch_vertex_px` — the press hit-tests (in `events`) read these to resolve a click to
@@ -5515,16 +5302,7 @@ impl WindowedState {
         // Arc chord polylines in PHYSICAL px (#102), tessellated for the SCREEN. A behind-camera
         // chord vertex culls the whole arc, matching the segment rule: a partially-projected curve
         // would fold across the viewport.
-        let to_viewport_px = |coord: [f64; 2]| {
-            let vertex = handles.profile_to_render(coord);
-            let clip = view_projection * glam::Vec4::new(vertex[0], vertex[1], vertex[2], 1.0);
-            (clip.w > 0.0).then(|| {
-                egui::Pos2::new(
-                    vx + (clip.x / clip.w * 0.5 + 0.5) * vw,
-                    vy + (1.0 - (clip.y / clip.w * 0.5 + 0.5)) * vh,
-                )
-            })
-        };
+        let to_viewport_px = |coord: [f64; 2]| plane.at(coord);
         // The one rule every turn on this page is flattened by. A tolerance in the plane's own
         // units earns a chord count from the arc's size in the PLANE, so the same handful of
         // chords is drawn at every zoom and a magnified curve reads as a visible polygon. The
@@ -5533,58 +5311,11 @@ impl WindowedState {
         // follows from it. Never coarser than the resolve tolerance, which is the profile's own
         // meaning; this is the same curve, drawn smoothly.
         let screen_chord_tolerance = |center: [f64; 2], on_rim: [f64; 2], radius: f64| {
-            to_viewport_px(center)
-                .zip(to_viewport_px(on_rim))
-                .map(|(center_px, rim_px)| f64::from(center_px.distance(rim_px)))
-                .filter(|radius_px| *radius_px > 1.0)
-                .map_or(document::sketch::ARC_SAGITTA_TOLERANCE, |radius_px| {
-                    radius * ARC_SCREEN_SAGITTA_PX / radius_px
-                })
-                .min(document::sketch::ARC_SAGITTA_TOLERANCE)
+            plane.chord_tolerance(center, on_rim, radius)
         };
-        for arc in &handles.arcs {
-            let (arc_id, from, to, sweep) = (arc.entity, arc.from, arc.to, arc.sweep_degrees);
-            let tolerance = document::sketch::arc_center_radius(from, to, sweep).map_or(
-                document::sketch::ARC_SAGITTA_TOLERANCE,
-                |(center, radius)| screen_chord_tolerance(center, from, radius),
-            );
-            let mut profile = vec![from];
-            profile.extend(
-                document::sketch::arc_interior_points_within(from, to, sweep, tolerance)
-                    .iter()
-                    .map(|point| point.in_plane()),
-            );
-            profile.push(to);
-            let projected: Option<Vec<egui::Pos2>> =
-                profile.into_iter().map(&to_viewport_px).collect();
-            if let Some(projected) = projected {
-                self.sketch_arc_chords.push((arc_id, projected));
-            }
-        }
-        for circle in &handles.circles {
-            let circle_id = circle.entity;
-            let center = circle.center;
-            let radius = circle.radius;
-            let tolerance = screen_chord_tolerance(center, [center[0] + radius, center[1]], radius);
-            let profile = circle_ring(center, radius, tolerance);
-            let projected: Option<Vec<egui::Pos2>> =
-                profile.into_iter().map(&to_viewport_px).collect();
-            if let Some(projected) = projected {
-                self.sketch_circle_chords.push((circle_id, projected));
-            }
-        }
-        for curve in &handles.higher_curves {
-            for piece in &curve.pieces {
-                let projected: Option<Vec<egui::Pos2>> = break_piece_points(piece)
-                    .into_iter()
-                    .map(&to_viewport_px)
-                    .collect();
-                if let Some(projected) = projected {
-                    self.sketch_higher_curve_chords
-                        .push((curve.entity, projected));
-                }
-            }
-        }
+        self.sketch_arc_chords = plane.arc_chords();
+        self.sketch_circle_chords = plane.circle_chords();
+        self.sketch_higher_curve_chords = plane.higher_curve_chords();
         // The control frames, projected through the vertex cache their controls already went
         // through — so a leg meets its two dots exactly, rather than by two projections agreeing.
         // One behind-camera control culls the whole frame, as a behind-camera endpoint culls a
@@ -5616,30 +5347,11 @@ impl WindowedState {
             }
         }
 
-        // Which curved entities are construction, joined from the handles while they are still in
-        // hand. The chord caches above answer "where is it on screen" for the hit-test and are
-        // deliberately left free of linetype; the draw loops below join back to these.
+        // Whether a role draws as construction. The marks below join the handles' roles back
+        // themselves; this stays for the derived pattern instances, which carry a role but have no
+        // entity in any store.
         let construction =
             |role: document::sketch::EntityRole| role == document::sketch::EntityRole::Construction;
-        let construction_arcs: std::collections::BTreeSet<document::sketch::EntityId> = handles
-            .arcs
-            .iter()
-            .filter(|arc| construction(arc.role))
-            .map(|arc| arc.entity)
-            .collect();
-        let construction_circles: std::collections::BTreeSet<document::sketch::EntityId> = handles
-            .circles
-            .iter()
-            .filter(|circle| construction(circle.role))
-            .map(|circle| circle.entity)
-            .collect();
-        let construction_higher: std::collections::BTreeSet<document::sketch::SketchCurve> =
-            handles
-                .higher_curves
-                .iter()
-                .filter(|curve| construction(curve.role))
-                .map(|curve| curve.entity)
-                .collect();
 
         // The pick a drawing tool would take right now, resolved once. The lit curve below and the
         // snap mark are two readings of the same answer, and working them out separately is how
@@ -5749,12 +5461,13 @@ impl WindowedState {
             .and_then(|pick| to_viewport_px(pick.at().in_plane()))
             .map(|px| egui::Pos2::new(px.x / pixels_per_point, px.y / pixels_per_point));
 
-        // Now the dots. The curve under the cursor shows the points it stands on, which is the
-        // last thing `revealed` was waiting for — hovering a line has to bring up the corners it
-        // runs between, or the author cannot tell a joined corner from a seam without clicking.
-        if let Some((hit, _)) = hovered_edge {
-            revealed.extend(self.points_of_edge_hit(target, hit));
-        }
+        // Now the drawing itself: its dots, its edges and its curves. Every reading the hand
+        // contributes is resolved by this point — the pick under the pointer needed the chord
+        // caches above, and which levers are out needed `sketch_tangent_levers` — so the marks are
+        // struck here, in ONE call a headless capture makes too. Ten reports about marks leaving
+        // their plane were answered with pictures that had no drawing in them, because a capture
+        // could only photograph what it could also build.
+        //
         // An arm shows with its LEVER and never on its own, in every tool: a green dot with no
         // stick under it is a manipulator the author cannot read. `sketch_tangent_levers` already
         // holds exactly the levers that are out, so the two cannot disagree.
@@ -5763,43 +5476,23 @@ impl WindowedState {
             .iter()
             .flat_map(|(fit, _)| self.tangent_arms_of(target, *fit))
             .collect();
-        revealed.retain(|id| !tangent_arms.contains(id) || arms_out.contains(id));
-        revealed.extend(arms_out);
-        // A dot standing under another dot never draws, whatever revealed it. Hovering an arc
-        // brings up the points it stands on and one of those is the center it derives, so without
-        // this the stack the rest-rule collapsed comes straight back the moment the author looks
-        // at the shape.
-        let stacked = self.dots_standing_under_another(target);
-        for (point_id, handle) in pending_points {
-            if point_id.is_none_or(|id| revealed.contains(&id) && !stacked.contains(&id)) {
-                self.sketch_overlay_points.push(handle);
-            }
-        }
-        // A conic's shoulder, which is a reading rather than a point and so has no id to be
-        // revealed by. It draws unconditionally: rho is the conic's one authored freedom and this
-        // is the only mark that shows it, where every other dot here is answering the question of
-        // whether the ink has already said the same thing.
-        //
-        // It reads as ON the ink because it is, and it needs no grab of its own for the same
-        // reason — the press under it lands on the conic, whose body drag is already the rho drag.
-        for (_, at) in self.conic_shoulders_in_profile(target) {
-            let Some(px) = to_viewport_px(at) else {
-                continue;
-            };
-            let hovered = self
+        #[allow(clippy::cast_possible_truncation)]
+        let hand = super::SketchHand {
+            sketch: target,
+            selection: &self.panel_state.selection,
+            cursor_px: self
                 .last_cursor_position
-                .map(|(cx, cy)| (cx as f32 - px.x).hypot(cy as f32 - px.y) <= hover_radius_px)
-                .unwrap_or(false);
-            self.sketch_overlay_points
-                .push(ui::chrome::SketchVertexHandle {
-                    at: egui::Pos2::new(px.x / pixels_per_point, px.y / pixels_per_point),
-                    state: if hovered {
-                        ui::gizmos::HandleState::Hover
-                    } else {
-                        ui::gizmos::HandleState::Idle
-                    },
-                    ink: ui::chrome::SketchVertexInk::OnInk,
-                });
+                .map(|(cx, cy)| egui::Pos2::new(cx as f32, cy as f32)),
+            dragging_point: self.sketch_drag.as_ref().and_then(|drag| drag.held.point()),
+            hovered_edge,
+            arms_out,
+        };
+        if let Some((producer, _)) = self.sketch_node_state(target) {
+            let marks =
+                super::a_sketchs_marks(&producer.sketch, &handles, &plane, &hand, pixels_per_point);
+            self.sketch_overlay_points = marks.points;
+            self.sketch_segment_lines = marks.segment_lines;
+            self.sketch_arc_lines = marks.curve_lines;
         }
 
         self.refresh_sketch_constraint_badges(
@@ -5814,108 +5507,6 @@ impl WindowedState {
             viewport_px,
             pixels_per_point,
         );
-
-        // The segment LINES to draw next frame: each committed edge between its two projected
-        // endpoints, in egui points — an open sketch resolves to nothing, so the edges
-        // are the only thing that shows the profile is connected). A behind-camera endpoint
-        // (`None` in `sketch_vertex_px`) culls its line, matching the vertex-dot cull. The one
-        // hovered segment carries its Hover/Marked state; the rest are Idle.
-        for segment in &self.sketch_segments {
-            if let (Some(Some(a_px)), Some(Some(b_px))) = (
-                self.sketch_vertex_px.get(segment.from),
-                self.sketch_vertex_px.get(segment.to),
-            ) {
-                let a = egui::Pos2::new(a_px.x / pixels_per_point, a_px.y / pixels_per_point);
-                let b = egui::Pos2::new(b_px.x / pixels_per_point, b_px.y / pixels_per_point);
-                // Precedence: Selected > plain Hover > Idle. A selected edge stays bold even
-                // under the cursor (Select hover never shrinks it).
-                let picked = ui::panel::SelectionTarget::SketchSegment {
-                    sketch: target,
-                    entity: segment.entity,
-                };
-                let selected = self.panel_state.selection.contains(picked);
-                let state = match hovered_edge {
-                    _ if selected => ui::gizmos::HandleState::Selected,
-                    Some((SketchEdgeHit::Segment(id), state)) if id == segment.entity => state,
-                    _ => ui::gizmos::HandleState::Idle,
-                };
-                self.sketch_segment_lines.push(ui::chrome::SketchEdgeLine {
-                    a,
-                    b,
-                    state,
-                    construction: segment.role == document::sketch::EntityRole::Construction,
-                });
-            }
-        }
-
-        // The arc curves to draw next frame, in egui points — the same precedence the
-        // segments use, so a picked arc and a picked segment read identically (#102).
-        for (arc_id, chords) in &self.sketch_arc_chords {
-            let picked = ui::panel::SelectionTarget::SketchArc {
-                sketch: target,
-                entity: *arc_id,
-            };
-            let selected = self.panel_state.selection.contains(picked);
-            let state = match hovered_edge {
-                _ if selected => ui::gizmos::HandleState::Selected,
-                Some((SketchEdgeHit::Arc(id), state)) if id == *arc_id => state,
-                _ => ui::gizmos::HandleState::Idle,
-            };
-            let chords = chords
-                .iter()
-                .map(|px| egui::Pos2::new(px.x / pixels_per_point, px.y / pixels_per_point))
-                .collect();
-            self.sketch_arc_lines.push(ui::chrome::SketchCurveLine {
-                chords,
-                state,
-                ink: curve_ink(construction_arcs.contains(arc_id)),
-            });
-        }
-        for (circle_id, ring) in &self.sketch_circle_chords {
-            let picked = ui::panel::SelectionTarget::SketchCircle {
-                sketch: target,
-                entity: *circle_id,
-            };
-            let selected = self.panel_state.selection.contains(picked);
-            let state = match hovered_edge {
-                _ if selected => ui::gizmos::HandleState::Selected,
-                Some((SketchEdgeHit::Circle(id), state)) if id == *circle_id => state,
-                _ => ui::gizmos::HandleState::Idle,
-            };
-            let chords = ring
-                .iter()
-                .map(|px| egui::Pos2::new(px.x / pixels_per_point, px.y / pixels_per_point))
-                .collect();
-            self.sketch_arc_lines.push(ui::chrome::SketchCurveLine {
-                chords,
-                state,
-                ink: curve_ink(construction_circles.contains(circle_id)),
-            });
-        }
-        // Every span of an aggregate reads the SAME state, resolved from the aggregate identity —
-        // so selecting an ellipse lights all four quarters and hovering one span lights the
-        // whole spline. Anything per-span here would let one object draw in two states at once.
-        for (entity, chords) in &self.sketch_higher_curve_chords {
-            let picked = ui::panel::SelectionTarget::SketchHigherCurve {
-                sketch: target,
-                curve: *entity,
-            };
-            let selected = self.panel_state.selection.contains(picked);
-            let state = match hovered_edge {
-                _ if selected => ui::gizmos::HandleState::Selected,
-                Some((SketchEdgeHit::HigherCurve(curve), state)) if curve == *entity => state,
-                _ => ui::gizmos::HandleState::Idle,
-            };
-            let chords = chords
-                .iter()
-                .map(|px| egui::Pos2::new(px.x / pixels_per_point, px.y / pixels_per_point))
-                .collect();
-            self.sketch_arc_lines.push(ui::chrome::SketchCurveLine {
-                chords,
-                state,
-                ink: curve_ink(construction_higher.contains(entity)),
-            });
-        }
 
         // A control-point spline's frame, in construction ink and under the spline's own state:
         // hovering a leg lights the curve it steers, because that is what the leg resolves to.
@@ -7162,7 +6753,7 @@ fn newest_pattern_curves(
 /// Which kind of sketch EDGE a cursor resolved to (#102) — the two entity stores share an id
 /// space but not a vector, so the kind travels with the id rather than being re-derived.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum SketchEdgeHit {
+pub enum SketchEdgeHit {
     /// A straight segment.
     Segment(document::sketch::EntityId),
     /// An arc.
@@ -7174,7 +6765,9 @@ pub(super) enum SketchEdgeHit {
     HigherCurve(document::sketch::SketchCurve),
 }
 
-fn break_piece_points(piece: &substrate::curve_intersection::PlanarCurve) -> Vec<[f64; 2]> {
+pub(super) fn break_piece_points(
+    piece: &substrate::curve_intersection::PlanarCurve,
+) -> Vec<[f64; 2]> {
     match *piece {
         substrate::curve_intersection::PlanarCurve::Segment { start, end } => vec![start, end],
         substrate::curve_intersection::PlanarCurve::Arc { sweep_radians, .. } => {
@@ -7241,7 +6834,7 @@ fn polygon_base_circle(
     (!ring.is_empty()).then_some(ring)
 }
 
-fn circle_ring(center: [f64; 2], radius: f64, tolerance: f64) -> Vec<[f64; 2]> {
+pub(super) fn circle_ring(center: [f64; 2], radius: f64, tolerance: f64) -> Vec<[f64; 2]> {
     if !radius.is_finite() || radius <= 0.0 {
         return Vec::new();
     }
@@ -8806,7 +8399,7 @@ fn point_in_screen_polygon(boundary: &[egui::Pos2], point: egui::Pos2) -> bool {
 ///
 /// The third answer, [`TangentLever`](ui::chrome::SketchCurveInk::TangentLever), is never reached
 /// through here — a lever is not an entity with a role, so it names its ink at its own push site.
-fn curve_ink(construction: bool) -> ui::chrome::SketchCurveInk {
+pub(super) fn curve_ink(construction: bool) -> ui::chrome::SketchCurveInk {
     if construction {
         ui::chrome::SketchCurveInk::Construction
     } else {

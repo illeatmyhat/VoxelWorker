@@ -883,6 +883,11 @@ impl ReportedBadge {
 /// tolerance, and then each seat the capture reports has to match the reference over the square
 /// around it, where the glyph's own ink is the majority of what is being compared.
 ///
+/// The picture holds the DRAWING as well as the glyphs, because coplanarity is a relation between
+/// two things and a photograph of marks with nothing under them cannot show it. So a square that
+/// stops matching means either the mark moved or the curve it annotates did — both are the report
+/// this test exists to catch, and the diff says which.
+///
 /// **Cannot pass vacuously**, in any of the three ways available to it. A run that lays out no
 /// badges reports no seats and fails before an image is opened. A square the floating chrome
 /// covers holds no glyph, so each square's ink is MEASURED against a control render — the same
@@ -922,14 +927,15 @@ fn sketch_constraint_badges_stand_where_the_plane_puts_them() {
         reference_path.display()
     );
 
-    // The control: the same capture with the sketch still OPEN and the marks laid out and then
-    // dropped. Differs from the picture in the marks and in nothing else, which is what makes the
-    // subtraction below a measurement of badge ink rather than of sketch mode.
+    // The control: the same capture with the sketch still OPEN, its drawing still on the glass, and
+    // the GLYPHS laid out and then dropped. Differs from the picture in the glyphs and in nothing
+    // else, which is what makes the subtraction below a measurement of badge ink rather than of
+    // sketch mode — or of the curve that now runs through the square.
     let unmarked_path = out_dir.join(format!("{}-unmarked.png", SKETCH_CONSTRAINT_CASE.name));
     render_case_capturing(
         &SKETCH_CONSTRAINT_CASE,
         &unmarked_path,
-        &["--no-sketch-marks"],
+        &["--no-constraint-badges"],
     );
 
     let actual = load_rgba(&actual_path);
@@ -983,7 +989,8 @@ fn sketch_constraint_badges_stand_where_the_plane_puts_them() {
     );
     assert!(
         moved.is_empty(),
-        "constraint badge(s) no longer stand where the reference has them:\n{}\nactual: {}  diff: {}",
+        "square(s) around a constraint badge no longer hold what the reference has — the mark \
+         moved, or the drawing under it did:\n{}\nactual: {}  diff: {}",
         moved.join("\n"),
         actual_path.display(),
         diff_path.display()

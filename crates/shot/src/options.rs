@@ -36,7 +36,7 @@ pub(crate) struct ShotOptions {
     /// part of any demo: it puts EVERY sketch demo in reach of a marks capture. A dump restored
     /// with `--from-config` carries its own sketch mode and needs no flag.
     pub(crate) enter_sketch: Option<usize>,
-    /// `--no-sketch-marks`: lay out the open sketch's marks and then throw them away, leaving a
+    /// `--no-constraint-badges`: lay out the open sketch's marks and then throw them away, leaving a
     /// capture identical to the [`enter_sketch`](Self::enter_sketch) one in every respect EXCEPT
     /// the marks.
     ///
@@ -44,7 +44,7 @@ pub(crate) struct ShotOptions {
     /// badge's square actually holds by subtracting this render. Closing the sketch instead would
     /// subtract sketch mode as well, and any sketch-mode visual inside a square would then read as
     /// badge ink.
-    pub(crate) no_sketch_marks: bool,
+    pub(crate) no_constraint_badges: bool,
     /// `--select-root`: override the scene's active selection to the
     /// ROOT PART ([`voxel_worker::ROOT_NODE_ID`]), so a headless capture can prove a
     /// view mode applies scene-wide (Show-booleans x-rays every boolean). Takes precedence
@@ -365,7 +365,7 @@ impl Default for ShotOptions {
             show_origin_gizmo: false,
             select_node: None,
             enter_sketch: None,
-            no_sketch_marks: false,
+            no_constraint_badges: false,
             select_root: false,
             selection_cel: false,
             view_mode: ViewMode::Normal,
@@ -671,8 +671,8 @@ pub(crate) fn parse_options() -> ShotOptions {
                         .expect("--enter-sketch index must be a non-negative integer"),
                 );
             }
-            "--no-sketch-marks" => {
-                options.no_sketch_marks = true;
+            "--no-constraint-badges" => {
+                options.no_constraint_badges = true;
             }
             "--select-root" => {
                 options.select_root = true;
@@ -969,7 +969,7 @@ pub(crate) fn parse_options() -> ShotOptions {
                      \x20            [--demo-scene] [--demo-overlap] [--demo-subtract] [--demo-group-subtract] [--demo-intersect] [--demo-cutter-def] [--demo-window-fixture] [--demo-buried-cutter] [--demo-child-booleans] [--demo-two-material] [--demo-village] [--demo-village-far] [--demo-groups]\n\
                      \x20            [--demo-sketch-extrude] [--demo-sketch-revolve]\n\
                      \x20            [--demo-sketch-circle] [--demo-sketch-donut] [--demo-sketch-lens]\n\
-                     \x20            [--demo-sketch-constraints] [--enter-sketch <usize>] [--no-sketch-marks]\n\
+                     \x20            [--demo-sketch-constraints] [--enter-sketch <usize>] [--no-constraint-badges]\n\
                      \x20            [--demo-far-offset] [--demo-far-offset-near]\n\
                      \x20            [--layer-lower <u32>] [--layer-upper <u32>] [--onion <u32>]\n\
                      \x20            [--export-vox <path.vox>]\n\
@@ -1026,7 +1026,7 @@ pub(crate) fn parse_options() -> ShotOptions {
                      \x20  --enter-sketch <N> OPEN the sketch on top-level node N, as if the\n\
                      \x20                author had double-clicked into it, so the capture\n\
                      \x20                draws that sketch's own constraint badges.\n\
-                     \x20  --no-sketch-marks lay the marks out and then drop them — the control\n\
+                     \x20  --no-constraint-badges lay the marks out and then drop them — the control\n\
                      \x20                render the badge golden subtracts to measure how much\n\
                      \x20                ink each mark actually contributes.\n\
                      \x20  --demo-far-offset      build a small 4³ box at offset [100_000,0,0]\n\

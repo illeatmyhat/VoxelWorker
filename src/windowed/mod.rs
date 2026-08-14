@@ -64,6 +64,8 @@ mod render;
 /// which is a second authority over the same question and the class this repo kills on sight.
 /// The frame a test asks about has to be the frame the shell draws with.
 pub use render::{a_sketch_planes_frame, a_sketch_planes_map, a_sketchs_constraint_badges};
+mod sketch_marks;
+pub use sketch_marks::{a_sketchs_marks, SketchHand, SketchMarks, SketchPlaneProjection};
 mod sketch_target;
 mod slot;
 mod tangent_arc;
