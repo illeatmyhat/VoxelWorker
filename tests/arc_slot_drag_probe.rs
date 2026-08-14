@@ -31,6 +31,31 @@
 //! only between 1.2e-6 and 2.0e-6 and the clock not at all: the failure is the drawing's, not the
 //! numerics'.
 //!
+//! # The walk is already incremental, and a sweep costs its ARC
+//!
+//! Asked whether the walk could be amortized — nudged on from where the last frame left it rather
+//! than restarted from the grab. It already is. `point_move_attempt` reads the drawing as it stands
+//! at the top of every call, and `drag_together` walks from THAT to where the cursor now is, so
+//! nothing is ever measured from where the gesture opened. Which is why the frame does not grow as
+//! the sweep gets further from the grab.
+//!
+//! What a frame costs is how far it TURNS, because the walk spends about one substep per degree.
+//! The same 264 degrees, sliced five ways:
+//!
+//! | per frame | frames | per frame | whole sweep |
+//! | --------- | ------ | --------- | ----------- |
+//! | 2°        | 132    | 0.79 ms   | 104 ms      |
+//! | 4°        | 66     | 1.61 ms   | 106 ms      |
+//! | 8°        | 33     | 3.25 ms   | 107 ms      |
+//! | 16°       | 17     | 6.92 ms   | 118 ms      |
+//! | 24°       | 11     | 7.25 ms   | 80 ms       |
+//!
+//! The whole sweep costs the same however it is cut, so there is no amortization left to find: the
+//! work is already proportional to the arc and to nothing else. Twenty-four degrees a frame is
+//! cheaper only because `MOST_FRAMES` truncates the walk there — sixteen substeps for twenty-four
+//! degrees is a step and a half each, coarser than the degree the walk is built on, so that row buys
+//! its eighty milliseconds by walking less rather than by walking better.
+//!
 //! # Sweeping toward a full circle is the same cost, paid more times
 //!
 //! The owner's second report was narrower than the first: not that an arc slot is slow but that
@@ -47,8 +72,10 @@
 #![allow(
     clippy::arithmetic_side_effects,
     clippy::as_conversions,
+    clippy::cast_possible_truncation,
     clippy::cast_possible_wrap,
     clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
     clippy::expect_used,
     clippy::indexing_slicing,
     clippy::suboptimal_flops
@@ -239,6 +266,7 @@ fn what_a_sweep_costs_as_the_arc_closes_on_itself() {
     let id = live.sketch.points()[3].id;
     println!("{:>8} {:>10} {:>9}", "reached", "frame ms", "radius");
     let mut swept = 90.0_f64;
+    let mut every_frame = 0.0_f64;
     for frame in 0..34 {
         let was = live
             .sketch
@@ -270,11 +298,64 @@ fn what_a_sweep_costs_as_the_arc_closes_on_itself() {
             .expect("the point the sweep is holding")
             .at
             .in_plane();
+        every_frame += frame_ms;
         if frame % 2 == 0 {
             println!(
                 "{swept:>7.0}° {frame_ms:>10.2} {:>9.2}",
                 now[0].hypot(now[1])
             );
         }
+    }
+    println!("mean over ALL 34 frames: {:.2} ms", every_frame / 34.0);
+}
+
+/// Whether the same sweep costs less when it arrives in more, smaller frames.
+///
+/// The owner asked whether the walk could be amortized — nudged on from where the last frame left
+/// it instead of restarted. It already is: `was` is read off the drawing at the top of every call,
+/// so a frame walks from where the drawing rests to where the cursor now is, and nothing is measured
+/// from the grab. What that leaves open is the question this answers: if the walk spends one substep
+/// per degree, then a sweep costs its ARC and not its frame count, and slicing it finer buys nothing
+/// but more frames to pay in.
+#[test]
+#[ignore = "perf probe — run in release with --ignored --nocapture"]
+fn whether_a_sweep_costs_less_when_it_arrives_in_smaller_frames() {
+    const SWEEP: f64 = 264.0;
+    println!(
+        "{:>10} {:>8} {:>11} {:>11}",
+        "per frame", "frames", "per frame", "whole sweep"
+    );
+    for degrees in [2.0_f64, 4.0, 8.0, 16.0, 24.0] {
+        let step = degrees * std::f64::consts::PI / 180.0;
+        let frames = (SWEEP / degrees).round() as usize;
+        let mut live = arc_slots(1);
+        let id = live.sketch.points()[3].id;
+        let started = Instant::now();
+        for _ in 0..frames {
+            let was = live
+                .sketch
+                .points()
+                .iter()
+                .find(|point| point.id == id)
+                .expect("the point the sweep is holding")
+                .at
+                .in_plane();
+            let to = SketchPoint::from_continuous(
+                was[0].mul_add(step.cos(), -(was[1] * step.sin())),
+                was[0].mul_add(step.sin(), was[1] * step.cos()),
+            );
+            drop(live.sketch.move_point_reporting_its_snap(
+                id,
+                to,
+                context(),
+                document::sketch::SnapReach::of_length(9.0),
+                &mut [],
+            ));
+        }
+        let whole = started.elapsed().as_secs_f64() * 1000.0;
+        println!(
+            "{degrees:>9.0}° {frames:>8} {:>9.2} ms {whole:>8.0} ms",
+            whole / frames as f64
+        );
     }
 }

@@ -62,9 +62,16 @@
 //! centre, one drag frame made **twenty-nine thousand allocations and moved 4.8 MiB** — a quarter of
 //! a gigabyte a second of allocator traffic, for one slot.
 //!
-//! Flattening them cost fifteen percent of the frame and the pivot swap, which used to be two
-//! pointers and is now `rows` moves. It is worth being exact about what it did NOT buy: the
-//! allocation count only halved, because most of what remained was never in this file.
+//! Flattening them took **about a tenth off the frame** and cost the pivot swap, which used to be
+//! two pointers and is now `rows` moves. Two things it did NOT buy, both worth knowing: the
+//! allocation count only halved, because most of what remained was never in this file — and of that
+//! remainder, the biggest single site got SLOWER when its allocation was removed, because borrowing
+//! a scratch through a `RefCell` costs the optimizer the no-alias knowledge an owned local carries.
+//! Allocation count is not a cost model.
+//!
+//! A tenth and not the fifteenth first claimed: sequential A-then-B readings drifted upward over
+//! the minutes they took, which flatters whichever side is measured second. Ten pairs run
+//! alternating order put it at a **10.6% median, faster in nine of ten**.
 //!
 //! **Nothing about the arithmetic changed, and that is the property to preserve.** Every loop runs
 //! in the order it ran in, and no summation was re-associated — a storage change invites re-nesting
