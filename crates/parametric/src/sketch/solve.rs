@@ -37,7 +37,9 @@ use crate::ResolvedLength;
 use std::sync::atomic::{AtomicU64, Ordering};
 use substrate::graph::biconnected_blocks;
 #[cfg(test)]
-use substrate::nonlinear_least_squares::{first_undeclared_read, ColumnGrouping};
+use substrate::nonlinear_least_squares::{
+    first_subset_disagreement, first_undeclared_read, ColumnGrouping,
+};
 use substrate::nonlinear_least_squares::{
     jacobian, rank, search as search_nlls, solve as solve_nlls, ResidualReads, ResidualSystem,
     SearchReport as SubstrateSearchReport, SolveOutcome as SubstrateSolveOutcome,
@@ -1905,6 +1907,103 @@ mod tests {
         );
     }
 
+    /// **The falsifier for the narrowed pass: a row answers the same alone as it does in company,
+    /// bit for bit.**
+    ///
+    /// A grouped Jacobian reads only the rows a column's group declared, so it now asks for only
+    /// those rows. If a row computed on its own rounded differently from the same row computed in
+    /// a whole pass, the grouped Jacobian would stop matching the column-by-column one and the
+    /// exactness that whole path rests on would be gone — quietly, because both answers would still
+    /// be near enough to converge. Checked over every relation, at both rigidity modes, group by
+    /// group and then row by row.
+    #[test]
+    fn every_relations_rows_answer_the_same_alone_as_in_company() {
+        for index in 0..one_of_every_relation(&cast().1).len() {
+            let (mut builder, held) = cast();
+            let relation = one_of_every_relation(&held)[index];
+            let kind = relation_kind(relation);
+            builder.add_constraint(relation);
+            let problem = builder.finish().unwrap();
+            let positions: Vec<[f64; 2]> = problem.points.iter().map(|point| point.at).collect();
+            let scalars = problem.scalar_coordinates();
+            for rigidity in [
+                Rigidity::Ignored,
+                Rigidity::Preferred {
+                    anchored: &[],
+                    flexible_curves: &[],
+                    was: &[],
+                    opening: &[],
+                    reshaping: true,
+                },
+            ] {
+                let system = Residuals::new(&problem, &scalars, rigidity).unwrap();
+                let guess = system.guess(&positions);
+                assert_eq!(
+                    first_subset_disagreement(&system, &guess),
+                    None,
+                    "{kind}: a row came out differently when it was asked for on its own"
+                );
+            }
+        }
+    }
+
+    /// The row table is the only description of the row order, so this is what says it describes
+    /// the vector the arithmetic actually writes.
+    ///
+    /// Three claims. It is as long as the residual vector, or every row past the first mismatch is
+    /// attributed to the wrong arm. Each arm's rows are contiguous and start where the arm says,
+    /// which is what lets a walk skip an arm it has already written by comparing one number. And
+    /// every row is written by some arm: the vector is poisoned to NaN first, so a row no arm
+    /// covers is a NaN rather than a stale zero that would read as a satisfied relation.
+    #[test]
+    fn the_row_table_names_every_row_exactly_once() {
+        for index in 0..one_of_every_relation(&cast().1).len() {
+            let (mut builder, held) = cast();
+            let relation = one_of_every_relation(&held)[index];
+            let kind = relation_kind(relation);
+            builder.add_constraint(relation);
+            let problem = builder.finish().unwrap();
+            let positions: Vec<[f64; 2]> = problem.points.iter().map(|point| point.at).collect();
+            let scalars = problem.scalar_coordinates();
+            for rigidity in [
+                Rigidity::Ignored,
+                Rigidity::Preferred {
+                    anchored: &[],
+                    flexible_curves: &[],
+                    was: &[],
+                    opening: &[],
+                    reshaping: true,
+                },
+            ] {
+                let system = Residuals::new(&problem, &scalars, rigidity).unwrap();
+                assert_eq!(
+                    system.rows.len(),
+                    system.residual_count(),
+                    "{kind}: the table is a different length from the residual vector"
+                );
+                for (row, source) in system.rows.iter().enumerate() {
+                    let opens = source.start == row;
+                    let carries = row
+                        .checked_sub(1)
+                        .and_then(|before| system.rows.get(before))
+                        .is_some_and(|before| before.start == source.start);
+                    assert!(
+                        opens || carries,
+                        "{kind}: row {row} claims to start at {} without following its own arm",
+                        source.start
+                    );
+                }
+                let guess = system.guess(&positions);
+                let mut written = vec![f64::NAN; system.residual_count()];
+                system.residuals(&guess, &mut written);
+                assert!(
+                    written.iter().all(|value| !value.is_nan()),
+                    "{kind}: a row the table names is written by no arm"
+                );
+            }
+        }
+    }
+
     /// The same honesty check over the drawings a DRAG builds, which are the ones the grouping is
     /// there for: an arc slot carries rigidity spans, scalar holds and point stays, and those rows
     /// outnumber the relations three to one.
@@ -1950,6 +2049,9 @@ mod tests {
             for step in [6.0e-6, 1.0e-3, 0.25] {
                 assert_eq!(first_undeclared_read(&system, &guess, step), None);
             }
+            // And the same rows asked for alone. This shape is where the span, scalar-hold and
+            // point-stay arms live, which a single relation on the cast never produces enough of.
+            assert_eq!(first_subset_disagreement(&system, &guess), None);
         }
     }
 
@@ -1986,6 +2088,20 @@ mod tests {
             "{} groups against {} parameters",
             grouping.group_count(),
             system.parameter_count()
+        );
+        // And what each of those passes costs, in rows. A group differences a handful of columns,
+        // and only the rows those columns appear in can move, so a whole vector per pass is mostly
+        // arithmetic thrown away: on this slot, 88 rows against the 295 a whole vector per group
+        // would be. This is the count rather than the clock on purpose. The clock reads about two
+        // percent, because every narrowed pass still copies the whole coordinate vector to widen
+        // it — a fixed cost per pass that the arithmetic shrinking only makes more of the total.
+        let asked: usize = (0..grouping.group_count())
+            .map(|group| grouping.rows_of_group(group).len())
+            .sum();
+        let whole = grouping.group_count() * system.residual_count();
+        assert!(
+            asked * 2 < whole,
+            "a Jacobian evaluates {asked} rows where the whole vector each pass would be {whole}"
         );
     }
 
@@ -3794,6 +3910,39 @@ enum Resolved {
 /// endpoints as slots, built once so the residual loop is arithmetic and never searches topology by
 /// handle; `base` is the pre-solve whole-coordinate vector; and `free` narrows that vector to
 /// mutable parameters while anchored coordinates remain in `base`.
+/// Which arm of the arithmetic a residual row comes out of.
+///
+/// A drawing's row layout is a fact about the drawing, not about any one evaluation, so it is
+/// settled once per pass and BOTH the whole evaluation and a narrowed one walk it. That is the
+/// point of it. A second description of the row order, read by only one of the two, could fall
+/// behind the walk without failing loudly: every later row would simply be attributed to the wrong
+/// arm, and the falsifier would report the disagreement against the innocent relation.
+#[derive(Clone, Copy)]
+struct RowSource {
+    /// The first row this arm writes. Every row of one arm carries the same value, which is how a
+    /// walk tells that the arm has already been written.
+    start: usize,
+    arm: RowArm,
+}
+
+/// The arm itself, named rather than numbered wherever the name says anything.
+#[derive(Clone, Copy)]
+enum RowArm {
+    /// One relation of the resolved list, every row of it at once. A symmetry's rows come out of a
+    /// single call and a curvature's two share the geometry they are measured against, so this
+    /// family is not separable one row at a time.
+    Relation(usize),
+    /// One arc's form rows: both ends against the arc's own radius column, or the two reaches
+    /// equated where the arc has no radius to name.
+    ArcForm(usize),
+    /// One axis of one author-drawn span.
+    Span { edge: usize, axis: usize },
+    /// One scalar hold, which is a row on its own.
+    Scalar(usize),
+    /// One axis of one anchored point.
+    Hold { hold: usize, axis: usize },
+}
+
 struct Residuals<'a> {
     /// The validated source of point coordinates and topology.
     problem: &'a Problem,
@@ -3809,6 +3958,8 @@ struct Residuals<'a> {
     base: Vec<f64>,
     /// Indices into `base` that the numerical solver may alter, in parameter-vector order.
     free: Vec<usize>,
+    /// One entry per residual row, naming the arm that writes it. See [`RowSource`].
+    rows: Vec<RowSource>,
 }
 
 /// A scalar's SOLVER COORDINATE, which for a length is the length itself.
@@ -4470,6 +4621,7 @@ impl<'a> Residuals<'a> {
             }
         };
         free.extend(free_scalars());
+        let rows = Self::row_sources(problem, &rigidity, &scalars, &holds);
         Some(Self {
             problem,
             resolved,
@@ -4478,7 +4630,64 @@ impl<'a> Residuals<'a> {
             holds,
             base,
             free,
+            rows,
         })
+    }
+
+    /// Which arm writes which row, settled once for this pass.
+    ///
+    /// The strides come from [`Relation::residual_count`], which is the same answer
+    /// [`ResidualSystem::residual_count`] sums the vector's length out of, so the table and the
+    /// length cannot disagree about the layout — `the_row_table_names_every_row_exactly_once`
+    /// holds that over every shape the tests can build.
+    fn row_sources(
+        problem: &Problem,
+        rigidity: &[EdgeSpan],
+        scalars: &[ScalarHold],
+        holds: &[PointHold],
+    ) -> Vec<RowSource> {
+        let mut rows: Vec<RowSource> = Vec::new();
+        for (index, constraint) in problem.constraints.iter().enumerate() {
+            let start = rows.len();
+            for _ in 0..constraint.relation.residual_count() {
+                rows.push(RowSource {
+                    start,
+                    arm: RowArm::Relation(index),
+                });
+            }
+        }
+        for (index, arc) in problem.arc_centers.iter().enumerate() {
+            let start = rows.len();
+            for _ in 0..if arc.radius.is_some() { 2 } else { 1 } {
+                rows.push(RowSource {
+                    start,
+                    arm: RowArm::ArcForm(index),
+                });
+            }
+        }
+        for edge in 0..rigidity.len() {
+            for axis in 0..2 {
+                rows.push(RowSource {
+                    start: rows.len(),
+                    arm: RowArm::Span { edge, axis },
+                });
+            }
+        }
+        for index in 0..scalars.len() {
+            rows.push(RowSource {
+                start: rows.len(),
+                arm: RowArm::Scalar(index),
+            });
+        }
+        for hold in 0..holds.len() {
+            for axis in 0..2 {
+                rows.push(RowSource {
+                    start: rows.len(),
+                    arm: RowArm::Hold { hold, axis },
+                });
+            }
+        }
+        rows
     }
     fn guess(&self, positions: &[[f64; 2]]) -> Vec<f64> {
         self.free
@@ -4575,6 +4784,354 @@ impl<'a> Residuals<'a> {
             .collect()
     }
 
+    /// One arm of the arithmetic, at the rows the table says are its own.
+    #[allow(clippy::too_many_lines)]
+    fn write_arm(&self, source: RowSource, whole: &[f64], into: &mut [f64]) {
+        let start = source.start;
+        let at = |slot: usize| [whole[slot * 2], whole[slot * 2 + 1]];
+        match source.arm {
+            RowArm::Relation(index) => {
+                let Some(relation) = self.resolved.get(index) else {
+                    return;
+                };
+                match *relation {
+                    Resolved::Fix { slot, at: target } => {
+                        let here = at(slot);
+                        into[start] = here[0] - target[0];
+                        into[start + 1] = here[1] - target[1];
+                    }
+                    Resolved::Quantize { slot, pitch, phase } => {
+                        // The lattice branch is chosen from this pass's immutable starting point,
+                        // never from the optimizer's moving iterate. The preferred and exact passes
+                        // therefore form a bounded integer outer loop without a discontinuous
+                        // residual inside either continuous solve.
+                        let stood = [self.base[slot * 2], self.base[slot * 2 + 1]];
+                        let target =
+                            stood.map(|value| phase + ((value - phase) / pitch).round() * pitch);
+                        let here = at(slot);
+                        into[start] = here[0] - target[0];
+                        into[start + 1] = here[1] - target[1];
+                    }
+                    Resolved::SameCoordinate { from, to, axis } => {
+                        into[start] = at(to)[axis] - at(from)[axis];
+                    }
+                    Resolved::Distance { from, to, length } => {
+                        let (tail, head) = (at(from), at(to));
+                        into[start] = ((head[0] - tail[0]).powi(2) + (head[1] - tail[1]).powi(2))
+                            .sqrt()
+                            - length;
+                    }
+                    Resolved::AxisDistance {
+                        from,
+                        to,
+                        axis,
+                        length,
+                    } => {
+                        // The absolute value is what makes this the one-axis analogue of the distance
+                        // row above: both state a span, and neither carries a direction the author
+                        // did not give. Its slope is a sign, so the row is as well conditioned as a
+                        // row gets, and it reads the same on a long segment and a short one.
+                        into[start] = (at(to)[axis] - at(from)[axis]).abs() - length;
+                    }
+                    // One pair of rows for both: now that a center is a placed point (ADR 0038),
+                    // "these two arcs turn about the same spot" IS "these two points coincide". The
+                    // relations stay distinct so the author's word for what they asked survives into
+                    // diagnostics, but there is nothing different to solve.
+                    Resolved::Coincident { first, second }
+                    | Resolved::Concentric { first, second } => {
+                        let (a, b) = (at(first), at(second));
+                        into[start] = a[0] - b[0];
+                        into[start + 1] = a[1] - b[1];
+                    }
+                    Resolved::PointLineDistance {
+                        point,
+                        line,
+                        distance,
+                    } => {
+                        // How far ACROSS the line the point stands: the component of its offset from
+                        // the line's tail along the line's own normal, which is the cross product with
+                        // the unit direction. Measured against the infinite line, so it is unchanged by
+                        // where along the line the tail happens to sit.
+                        let unit = unit_along(&at, line);
+                        let (stood, tail) = (at(point), at(line.from));
+                        let across =
+                            unit[0] * (stood[1] - tail[1]) - unit[1] * (stood[0] - tail[0]);
+                        into[start] = across.abs() - distance;
+                    }
+                    Resolved::Parallel { first, second } => {
+                        // Cross(unit directions) is sine(angle): this remains scale independent.
+                        let (a, b) = (unit_along(&at, first), unit_along(&at, second));
+                        into[start] = a[0] * b[1] - a[1] * b[0];
+                    }
+                    Resolved::Perpendicular { first, second } => {
+                        // Dot(unit directions) is cosine(angle), also independent of segment length.
+                        let (a, b) = (unit_along(&at, first), unit_along(&at, second));
+                        into[start] = a[0] * b[0] + a[1] * b[1];
+                    }
+                    Resolved::Angle {
+                        first,
+                        second,
+                        radians,
+                    } => {
+                        // sin(turn - asked), expanded so no arctangent has to pick a branch: the two
+                        // pieces are Parallel's row and Perpendicular's row, mixed by the stated angle.
+                        let (a, b) = (unit_of_arm(&at, first), unit_of_arm(&at, second));
+                        let across = a[0] * b[1] - a[1] * b[0];
+                        let along = a[0] * b[0] + a[1] * b[1];
+                        into[start] = across * radians.cos() - along * radians.sin();
+                    }
+                    Resolved::Equal { first, second } => {
+                        into[start] = length_of(&at, first) - length_of(&at, second);
+                    }
+                    Resolved::Midpoint { point, segment } => {
+                        // Both coordinates are constrained because halfway names one exact place.
+                        let (p, a, b) = (at(point), at(segment.from), at(segment.to));
+                        into[start] = p[0] - (a[0] + b[0]) / 2.0;
+                        into[start + 1] = p[1] - (a[1] + b[1]) / 2.0;
+                    }
+                    Resolved::Collinear { datum, other } => {
+                        // Two distances to the datum line state both parallelism and zero offset.
+                        let along = unit_along(&at, datum);
+                        let normal = [-along[1], along[0]];
+                        let anchor = at(datum.from);
+                        for (offset, end) in [other.from, other.to].into_iter().enumerate() {
+                            let here = at(end);
+                            into[start + offset] = (here[0] - anchor[0]) * normal[0]
+                                + (here[1] - anchor[1]) * normal[1];
+                        }
+                    }
+                    Resolved::PointOnCurve { point, curve } => {
+                        let here = at(point);
+                        into[start] = match curve_geometry(
+                            curve,
+                            &at,
+                            &self.problem.parameters,
+                            &whole,
+                            self.problem.points.len(),
+                        ) {
+                            // The signed distance to the line, which is zero on either side of it and
+                            // has no kink at the ends the way a distance to the finite piece would.
+                            CurveGeometry::Segment { from, to } => {
+                                let span = [to[0] - from[0], to[1] - from[1]];
+                                let length = span[0].hypot(span[1]);
+                                if length <= f64::EPSILON {
+                                    0.0
+                                } else {
+                                    (here[1] - from[1])
+                                        .mul_add(span[0], -((here[0] - from[0]) * span[1]))
+                                        / length
+                                }
+                            }
+                            CurveGeometry::Circular(support) => {
+                                (here[0] - support.center[0]).hypot(here[1] - support.center[1])
+                                    - support.radius
+                            }
+                        };
+                    }
+                    Resolved::PointOnSpline {
+                        point,
+                        spline,
+                        station,
+                        per_unit,
+                    } => {
+                        let here = at(point);
+                        let along = physical_parameter_value(
+                            self.problem.parameters[station],
+                            whole[self.problem.points.len() * 2 + station],
+                        ) / per_unit;
+                        // A spline that cannot be fit at these coordinates says nothing, rather than
+                        // pulling the point onto a curve nobody can draw.
+                        let landed = self
+                            .problem
+                            .splines
+                            .get(spline)
+                            .and_then(|shape| live_spline(shape, &at))
+                            .and_then(|candidate| spline_place(&candidate, along));
+                        let (across, up) =
+                            landed.map_or((0.0, 0.0), |on| (here[0] - on[0], here[1] - on[1]));
+                        into[start] = across;
+                        into[start + 1] = up;
+                    }
+                    Resolved::Radius { curve, length } => {
+                        into[start] = match curve_geometry(
+                            curve,
+                            &at,
+                            &self.problem.parameters,
+                            &whole,
+                            self.problem.points.len(),
+                        ) {
+                            CurveGeometry::Circular(support) => support.radius - length,
+                            // Unreachable: the document will not build a radius against a straight
+                            // curve. Zero rather than a panic, so a hand-built problem misbehaves
+                            // by saying nothing instead of by falling over.
+                            CurveGeometry::Segment { .. } => 0.0,
+                        };
+                    }
+                    Resolved::RimGap {
+                        first,
+                        second,
+                        distance,
+                    } => {
+                        let radius = |which| {
+                            match curve_geometry(
+                                which,
+                                &at,
+                                &self.problem.parameters,
+                                &whole,
+                                self.problem.points.len(),
+                            ) {
+                                CurveGeometry::Circular(support) => Some(support.radius),
+                                // Unreachable: the document will not build a rim gap against a
+                                // straight curve. `None` rather than a panic, so a hand-built problem
+                                // misbehaves by saying nothing instead of by falling over.
+                                CurveGeometry::Segment { .. } => None,
+                            }
+                        };
+                        into[start] = match (radius(first), radius(second)) {
+                            (Some(inner), Some(outer)) => (outer - inner).abs() - distance,
+                            _ => 0.0,
+                        };
+                    }
+                    Resolved::Tangent {
+                        first,
+                        second,
+                        branch,
+                    } => {
+                        into[start] = tangent_residual(
+                            curve_geometry(
+                                first,
+                                &at,
+                                &self.problem.parameters,
+                                &whole,
+                                self.problem.points.len(),
+                            ),
+                            curve_geometry(
+                                second,
+                                &at,
+                                &self.problem.parameters,
+                                &whole,
+                                self.problem.points.len(),
+                            ),
+                            branch,
+                        );
+                    }
+                    Resolved::TangentDirection {
+                        joint,
+                        joint_arm,
+                        against,
+                    } => {
+                        into[start] = direction_residual(
+                            at(joint),
+                            at(joint_arm),
+                            curve_geometry(
+                                against,
+                                &at,
+                                &self.problem.parameters,
+                                &whole,
+                                self.problem.points.len(),
+                            ),
+                        );
+                    }
+                    Resolved::Curvature {
+                        joint,
+                        joint_arm,
+                        neighbor,
+                        neighbor_arm,
+                        end,
+                        against,
+                    } => {
+                        let geometry = curve_geometry(
+                            against,
+                            &at,
+                            &self.problem.parameters,
+                            &whole,
+                            self.problem.points.len(),
+                        );
+                        into[start] = direction_residual(at(joint), at(joint_arm), geometry);
+                        into[start + 1] = curvature_residual(
+                            JointSpan {
+                                joint: at(joint),
+                                joint_arm: at(joint_arm),
+                                neighbor: at(neighbor),
+                                neighbor_arm: at(neighbor_arm),
+                                end,
+                            },
+                            geometry,
+                        );
+                    }
+                    Resolved::Symmetry {
+                        first,
+                        second,
+                        axis,
+                        branch,
+                    } => {
+                        let geometry = |curve| {
+                            curve_geometry(
+                                curve,
+                                &at,
+                                &self.problem.parameters,
+                                &whole,
+                                self.problem.points.len(),
+                            )
+                        };
+                        let _ = symmetry_residuals(
+                            geometry(first),
+                            geometry(second),
+                            geometry(ResolvedCurve::Segment(axis)),
+                            branch,
+                        )
+                        .write_to(&mut into[start..]);
+                    }
+                }
+            }
+            RowArm::ArcForm(index) => {
+                let Some(arc) = self.problem.arc_centers.get(index) else {
+                    return;
+                };
+                // What makes three placed points an ARC rather than three points (ADR 0038): the center
+                // stands the same distance from both ends. It is a row and not a projection because the
+                // motion it forbids — the center sliding along the chord — is otherwise a gauge freedom
+                // the least-squares system cannot see, and a rank-deficient column is worse than a row.
+                let (center, from, to) =
+                    (at(arc.center.index), at(arc.from.index), at(arc.to.index));
+                let reach = |end: [f64; 2]| (end[0] - center[0]).hypot(end[1] - center[1]);
+                // Two rows against the arc's own radius column where it has one. Subtract them and the
+                // equal-radius condition comes back exactly, so everything that reads an arc through
+                // its chord bisector still agrees — but stated this way the drawing also says WHAT the
+                // two ends are equidistant to, which is the quantity a preference can hold.
+                if let Some(radius) = arc.radius {
+                    let named = self.scalar(radius, &whole);
+                    into[start] = reach(from) - named;
+                    into[start + 1] = reach(to) - named;
+                } else {
+                    into[start] = reach(from) - reach(to);
+                }
+            }
+            RowArm::Span { edge, axis } => {
+                // Per-axis spans intentionally do not leave a group free to rotate. The exact pass
+                // handles any genuine disagreement between this preference and a relation.
+                let Some(edge) = self.rigidity.get(edge) else {
+                    return;
+                };
+                let (tail, head) = (at(edge.from), at(edge.to));
+                into[start] = (head[axis] - tail[axis]) - edge.span[axis];
+            }
+            RowArm::Scalar(index) => {
+                let Some(hold) = self.scalars.get(index) else {
+                    return;
+                };
+                into[start] = whole.get(hold.slot).copied().unwrap_or_default() - hold.at;
+            }
+            RowArm::Hold { hold, axis } => {
+                let Some(hold) = self.holds.get(hold) else {
+                    return;
+                };
+                let here = at(hold.slot);
+                into[start] = here[axis] - hold.at[axis];
+            }
+        }
+    }
+
     fn widen(&self, parameters: &[f64]) -> Vec<f64> {
         let mut whole = self.base.clone();
         for (parameter, index) in parameters.iter().zip(&self.free) {
@@ -4604,357 +5161,39 @@ impl ResidualSystem for Residuals<'_> {
             + self.scalars.len()
             + self.holds.len() * 2
     }
-    #[allow(clippy::too_many_lines)]
     fn residuals(&self, parameters: &[f64], into: &mut [f64]) {
         let whole = self.widen(parameters);
-        let at = |slot: usize| [whole[slot * 2], whole[slot * 2 + 1]];
-        let mut row = 0;
-        for relation in &self.resolved {
-            match *relation {
-                Resolved::Fix { slot, at: target } => {
-                    let here = at(slot);
-                    into[row] = here[0] - target[0];
-                    into[row + 1] = here[1] - target[1];
-                    row += 2;
-                }
-                Resolved::Quantize { slot, pitch, phase } => {
-                    // The lattice branch is chosen from this pass's immutable starting point,
-                    // never from the optimizer's moving iterate. The preferred and exact passes
-                    // therefore form a bounded integer outer loop without a discontinuous
-                    // residual inside either continuous solve.
-                    let start = [self.base[slot * 2], self.base[slot * 2 + 1]];
-                    let target =
-                        start.map(|value| phase + ((value - phase) / pitch).round() * pitch);
-                    let here = at(slot);
-                    into[row] = here[0] - target[0];
-                    into[row + 1] = here[1] - target[1];
-                    row += 2;
-                }
-                Resolved::SameCoordinate { from, to, axis } => {
-                    into[row] = at(to)[axis] - at(from)[axis];
-                    row += 1;
-                }
-                Resolved::Distance { from, to, length } => {
-                    let (tail, head) = (at(from), at(to));
-                    into[row] =
-                        ((head[0] - tail[0]).powi(2) + (head[1] - tail[1]).powi(2)).sqrt() - length;
-                    row += 1;
-                }
-                Resolved::AxisDistance {
-                    from,
-                    to,
-                    axis,
-                    length,
-                } => {
-                    // The absolute value is what makes this the one-axis analogue of the distance
-                    // row above: both state a span, and neither carries a direction the author
-                    // did not give. Its slope is a sign, so the row is as well conditioned as a
-                    // row gets, and it reads the same on a long segment and a short one.
-                    into[row] = (at(to)[axis] - at(from)[axis]).abs() - length;
-                    row += 1;
-                }
-                // One pair of rows for both: now that a center is a placed point (ADR 0038),
-                // "these two arcs turn about the same spot" IS "these two points coincide". The
-                // relations stay distinct so the author's word for what they asked survives into
-                // diagnostics, but there is nothing different to solve.
-                Resolved::Coincident { first, second } | Resolved::Concentric { first, second } => {
-                    let (a, b) = (at(first), at(second));
-                    into[row] = a[0] - b[0];
-                    into[row + 1] = a[1] - b[1];
-                    row += 2;
-                }
-                Resolved::PointLineDistance {
-                    point,
-                    line,
-                    distance,
-                } => {
-                    // How far ACROSS the line the point stands: the component of its offset from
-                    // the line's tail along the line's own normal, which is the cross product with
-                    // the unit direction. Measured against the infinite line, so it is unchanged by
-                    // where along the line the tail happens to sit.
-                    let unit = unit_along(&at, line);
-                    let (stood, tail) = (at(point), at(line.from));
-                    let across = unit[0] * (stood[1] - tail[1]) - unit[1] * (stood[0] - tail[0]);
-                    into[row] = across.abs() - distance;
-                    row += 1;
-                }
-                Resolved::Parallel { first, second } => {
-                    // Cross(unit directions) is sine(angle): this remains scale independent.
-                    let (a, b) = (unit_along(&at, first), unit_along(&at, second));
-                    into[row] = a[0] * b[1] - a[1] * b[0];
-                    row += 1;
-                }
-                Resolved::Perpendicular { first, second } => {
-                    // Dot(unit directions) is cosine(angle), also independent of segment length.
-                    let (a, b) = (unit_along(&at, first), unit_along(&at, second));
-                    into[row] = a[0] * b[0] + a[1] * b[1];
-                    row += 1;
-                }
-                Resolved::Angle {
-                    first,
-                    second,
-                    radians,
-                } => {
-                    // sin(turn - asked), expanded so no arctangent has to pick a branch: the two
-                    // pieces are Parallel's row and Perpendicular's row, mixed by the stated angle.
-                    let (a, b) = (unit_of_arm(&at, first), unit_of_arm(&at, second));
-                    let across = a[0] * b[1] - a[1] * b[0];
-                    let along = a[0] * b[0] + a[1] * b[1];
-                    into[row] = across * radians.cos() - along * radians.sin();
-                    row += 1;
-                }
-                Resolved::Equal { first, second } => {
-                    into[row] = length_of(&at, first) - length_of(&at, second);
-                    row += 1;
-                }
-                Resolved::Midpoint { point, segment } => {
-                    // Both coordinates are constrained because halfway names one exact place.
-                    let (p, a, b) = (at(point), at(segment.from), at(segment.to));
-                    into[row] = p[0] - (a[0] + b[0]) / 2.0;
-                    into[row + 1] = p[1] - (a[1] + b[1]) / 2.0;
-                    row += 2;
-                }
-                Resolved::Collinear { datum, other } => {
-                    // Two distances to the datum line state both parallelism and zero offset.
-                    let along = unit_along(&at, datum);
-                    let normal = [-along[1], along[0]];
-                    let anchor = at(datum.from);
-                    for (offset, end) in [other.from, other.to].into_iter().enumerate() {
-                        let here = at(end);
-                        into[row + offset] =
-                            (here[0] - anchor[0]) * normal[0] + (here[1] - anchor[1]) * normal[1];
-                    }
-                    row += 2;
-                }
-                Resolved::PointOnCurve { point, curve } => {
-                    let here = at(point);
-                    into[row] = match curve_geometry(
-                        curve,
-                        &at,
-                        &self.problem.parameters,
-                        &whole,
-                        self.problem.points.len(),
-                    ) {
-                        // The signed distance to the line, which is zero on either side of it and
-                        // has no kink at the ends the way a distance to the finite piece would.
-                        CurveGeometry::Segment { from, to } => {
-                            let span = [to[0] - from[0], to[1] - from[1]];
-                            let length = span[0].hypot(span[1]);
-                            if length <= f64::EPSILON {
-                                0.0
-                            } else {
-                                (here[1] - from[1])
-                                    .mul_add(span[0], -((here[0] - from[0]) * span[1]))
-                                    / length
-                            }
-                        }
-                        CurveGeometry::Circular(support) => {
-                            (here[0] - support.center[0]).hypot(here[1] - support.center[1])
-                                - support.radius
-                        }
-                    };
-                    row += 1;
-                }
-                Resolved::PointOnSpline {
-                    point,
-                    spline,
-                    station,
-                    per_unit,
-                } => {
-                    let here = at(point);
-                    let along = physical_parameter_value(
-                        self.problem.parameters[station],
-                        whole[self.problem.points.len() * 2 + station],
-                    ) / per_unit;
-                    // A spline that cannot be fit at these coordinates says nothing, rather than
-                    // pulling the point onto a curve nobody can draw.
-                    let landed = self
-                        .problem
-                        .splines
-                        .get(spline)
-                        .and_then(|shape| live_spline(shape, &at))
-                        .and_then(|candidate| spline_place(&candidate, along));
-                    let (across, up) =
-                        landed.map_or((0.0, 0.0), |on| (here[0] - on[0], here[1] - on[1]));
-                    into[row] = across;
-                    into[row + 1] = up;
-                    row += 2;
-                }
-                Resolved::Radius { curve, length } => {
-                    into[row] = match curve_geometry(
-                        curve,
-                        &at,
-                        &self.problem.parameters,
-                        &whole,
-                        self.problem.points.len(),
-                    ) {
-                        CurveGeometry::Circular(support) => support.radius - length,
-                        // Unreachable: the document will not build a radius against a straight
-                        // curve. Zero rather than a panic, so a hand-built problem misbehaves
-                        // by saying nothing instead of by falling over.
-                        CurveGeometry::Segment { .. } => 0.0,
-                    };
-                    row += 1;
-                }
-                Resolved::RimGap {
-                    first,
-                    second,
-                    distance,
-                } => {
-                    let radius = |which| {
-                        match curve_geometry(
-                            which,
-                            &at,
-                            &self.problem.parameters,
-                            &whole,
-                            self.problem.points.len(),
-                        ) {
-                            CurveGeometry::Circular(support) => Some(support.radius),
-                            // Unreachable: the document will not build a rim gap against a
-                            // straight curve. `None` rather than a panic, so a hand-built problem
-                            // misbehaves by saying nothing instead of by falling over.
-                            CurveGeometry::Segment { .. } => None,
-                        }
-                    };
-                    into[row] = match (radius(first), radius(second)) {
-                        (Some(inner), Some(outer)) => (outer - inner).abs() - distance,
-                        _ => 0.0,
-                    };
-                    row += 1;
-                }
-                Resolved::Tangent {
-                    first,
-                    second,
-                    branch,
-                } => {
-                    into[row] = tangent_residual(
-                        curve_geometry(
-                            first,
-                            &at,
-                            &self.problem.parameters,
-                            &whole,
-                            self.problem.points.len(),
-                        ),
-                        curve_geometry(
-                            second,
-                            &at,
-                            &self.problem.parameters,
-                            &whole,
-                            self.problem.points.len(),
-                        ),
-                        branch,
-                    );
-                    row += 1;
-                }
-                Resolved::TangentDirection {
-                    joint,
-                    joint_arm,
-                    against,
-                } => {
-                    into[row] = direction_residual(
-                        at(joint),
-                        at(joint_arm),
-                        curve_geometry(
-                            against,
-                            &at,
-                            &self.problem.parameters,
-                            &whole,
-                            self.problem.points.len(),
-                        ),
-                    );
-                    row += 1;
-                }
-                Resolved::Curvature {
-                    joint,
-                    joint_arm,
-                    neighbor,
-                    neighbor_arm,
-                    end,
-                    against,
-                } => {
-                    let geometry = curve_geometry(
-                        against,
-                        &at,
-                        &self.problem.parameters,
-                        &whole,
-                        self.problem.points.len(),
-                    );
-                    into[row] = direction_residual(at(joint), at(joint_arm), geometry);
-                    into[row + 1] = curvature_residual(
-                        JointSpan {
-                            joint: at(joint),
-                            joint_arm: at(joint_arm),
-                            neighbor: at(neighbor),
-                            neighbor_arm: at(neighbor_arm),
-                            end,
-                        },
-                        geometry,
-                    );
-                    row += 2;
-                }
-                Resolved::Symmetry {
-                    first,
-                    second,
-                    axis,
-                    branch,
-                } => {
-                    let geometry = |curve| {
-                        curve_geometry(
-                            curve,
-                            &at,
-                            &self.problem.parameters,
-                            &whole,
-                            self.problem.points.len(),
-                        )
-                    };
-                    row += symmetry_residuals(
-                        geometry(first),
-                        geometry(second),
-                        geometry(ResolvedCurve::Segment(axis)),
-                        branch,
-                    )
-                    .write_to(&mut into[row..]);
-                }
+        // Every arm, once each, by walking the same table a narrowed pass walks. There is no second
+        // description of the row order for one of them to fall behind.
+        let mut written = usize::MAX;
+        for source in &self.rows {
+            if source.start == written {
+                continue;
             }
+            written = source.start;
+            self.write_arm(*source, &whole, into);
         }
-        // What makes three placed points an ARC rather than three points (ADR 0038): the center
-        // stands the same distance from both ends. It is a row and not a projection because the
-        // motion it forbids — the center sliding along the chord — is otherwise a gauge freedom
-        // the least-squares system cannot see, and a rank-deficient column is worse than a row.
-        for arc in &self.problem.arc_centers {
-            let (center, from, to) = (at(arc.center.index), at(arc.from.index), at(arc.to.index));
-            let reach = |end: [f64; 2]| (end[0] - center[0]).hypot(end[1] - center[1]);
-            // Two rows against the arc's own radius column where it has one. Subtract them and the
-            // equal-radius condition comes back exactly, so everything that reads an arc through
-            // its chord bisector still agrees — but stated this way the drawing also says WHAT the
-            // two ends are equidistant to, which is the quantity a preference can hold.
-            if let Some(radius) = arc.radius {
-                let named = self.scalar(radius, &whole);
-                into[row] = reach(from) - named;
-                into[row + 1] = reach(to) - named;
-                row += 2;
-            } else {
-                into[row] = reach(from) - reach(to);
-                row += 1;
+    }
+
+    /// Write only the rows named in `rows`, by writing the ARMS those rows come out of.
+    ///
+    /// An arm whose rows a group only partly asked for is written whole: the extra rows carry the
+    /// values [`ResidualSystem::residuals`] would have left there, so nothing downstream can tell,
+    /// and the alternative is a second, separable copy of arithmetic that a symmetry and a curvature
+    /// cannot be cut into anyway. `rows` arrives ascending, and an arm's rows are contiguous, so
+    /// comparing against the arm last written is enough to write each one once.
+    fn residuals_of_rows(&self, parameters: &[f64], rows: &[usize], into: &mut [f64]) {
+        let whole = self.widen(parameters);
+        let mut written = usize::MAX;
+        for row in rows {
+            let Some(source) = self.rows.get(*row) else {
+                continue;
+            };
+            if source.start == written {
+                continue;
             }
-        }
-        for edge in &self.rigidity {
-            // Per-axis spans intentionally do not leave a group free to rotate. The exact pass
-            // handles any genuine disagreement between this preference and a relation.
-            let (tail, head) = (at(edge.from), at(edge.to));
-            into[row] = (head[0] - tail[0]) - edge.span[0];
-            into[row + 1] = (head[1] - tail[1]) - edge.span[1];
-            row += 2;
-        }
-        for hold in &self.scalars {
-            into[row] = whole.get(hold.slot).copied().unwrap_or_default() - hold.at;
-            row += 1;
-        }
-        for hold in &self.holds {
-            let here = at(hold.slot);
-            into[row] = here[0] - hold.at[0];
-            into[row + 1] = here[1] - hold.at[1];
-            row += 2;
+            written = source.start;
+            self.write_arm(*source, &whole, into);
         }
     }
 
