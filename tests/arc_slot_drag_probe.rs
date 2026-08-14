@@ -31,6 +31,17 @@
 //! only between 1.2e-6 and 2.0e-6 and the clock not at all: the failure is the drawing's, not the
 //! numerics'.
 //!
+//! # Sweeping toward a full circle is the same cost, paid more times
+//!
+//! The owner's second report was narrower than the first: not that an arc slot is slow but that
+//! "sweeping towards a full circle" is. Those would be different faults. The walk is flat in the
+//! arc's own sweep; a parameterization degenerating as the arc closes on its own tail would RISE.
+//! Carried round in even eight-degree steps from ninety degrees to three hundred and fifty-four,
+//! the frame does not move — 3.4 ms at both ends and no trend between. So closure has no fault of
+//! its own. What a full-circle sweep costs is the ordinary frame paid forty-five times running,
+//! with no cheap frame anywhere in it to hide behind, which is what makes it the sweep a hand
+//! notices.
+//!
 //! Run: `cargo test --release --test arc_slot_drag_probe -- --ignored --nocapture`
 
 #![allow(
@@ -207,6 +218,62 @@ fn what_a_live_slot_sweep_costs_per_frame() {
                 "{shape:>11} slot at {pixels_per_frame:>2.0} px/frame: mean {:>5.2} ms, \
                  worst {worst:>5.2} ms",
                 total / 12.0
+            );
+        }
+    }
+}
+
+/// What the cost does as the arc is swept all the way round toward CLOSING on itself.
+///
+/// The owner's second report is narrower than the first: not "an arc slot is slow" but "sweeping
+/// toward a full circle is". Those are different claims. The first is the walk, which is flat in
+/// the arc's own sweep. The second would be a cost that GROWS as the arc approaches its own tail —
+/// a parameterization degenerating at closure, which the walk says nothing about. This carries a
+/// rail end round in even steps and prints the frame against the angle the arc has reached, so the
+/// two claims are told apart by their SHAPE rather than by their average.
+#[test]
+#[ignore = "perf probe — run in release with --ignored --nocapture"]
+fn what_a_sweep_costs_as_the_arc_closes_on_itself() {
+    const PER_FRAME: f64 = 8.0_f64 * std::f64::consts::PI / 180.0;
+    let mut live = arc_slots(1);
+    let id = live.sketch.points()[3].id;
+    println!("{:>8} {:>10} {:>9}", "reached", "frame ms", "radius");
+    let mut swept = 90.0_f64;
+    for frame in 0..34 {
+        let was = live
+            .sketch
+            .points()
+            .iter()
+            .find(|point| point.id == id)
+            .expect("the point the sweep is holding")
+            .at
+            .in_plane();
+        let to = SketchPoint::from_continuous(
+            was[0].mul_add(PER_FRAME.cos(), -(was[1] * PER_FRAME.sin())),
+            was[0].mul_add(PER_FRAME.sin(), was[1] * PER_FRAME.cos()),
+        );
+        let started = Instant::now();
+        drop(live.sketch.move_point_reporting_its_snap(
+            id,
+            to,
+            context(),
+            document::sketch::SnapReach::of_length(9.0),
+            &mut [],
+        ));
+        let frame_ms = started.elapsed().as_secs_f64() * 1000.0;
+        swept += 8.0;
+        let now = live
+            .sketch
+            .points()
+            .iter()
+            .find(|point| point.id == id)
+            .expect("the point the sweep is holding")
+            .at
+            .in_plane();
+        if frame % 2 == 0 {
+            println!(
+                "{swept:>7.0}° {frame_ms:>10.2} {:>9.2}",
+                now[0].hypot(now[1])
             );
         }
     }

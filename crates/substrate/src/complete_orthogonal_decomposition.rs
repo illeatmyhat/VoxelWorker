@@ -52,6 +52,25 @@
 //! rows of `Qᵀb` are reachable; the rest is the irreducible residual. `T w₁ = (Qᵀb)₁` by back
 //! substitution, `w₂ = 0` because `Z` is orthogonal and so `‖x‖ = ‖w‖` — zeroing the free half is
 //! literally what makes the answer shortest — and then `x = P Z w`.
+//!
+//! ## Every matrix here is ONE buffer, and that is a measurement
+//!
+//! The natural Rust for a column-major matrix is a `Vec` per column, which is what this held. A
+//! sketch drag runs this about a thousand times a frame on a matrix that fits in three kilobytes,
+//! and a `Vec` per column made that some sixty heap round-trips per call: `factored`, `working`, and
+//! a fresh direction vector for every Householder step. Counted on an arc slot swept round its own
+//! centre, one drag frame made **twenty-nine thousand allocations and moved 4.8 MiB** — a quarter of
+//! a gigabyte a second of allocator traffic, for one slot.
+//!
+//! Flattening them cost fifteen percent of the frame and the pivot swap, which used to be two
+//! pointers and is now `rows` moves. It is worth being exact about what it did NOT buy: the
+//! allocation count only halved, because most of what remained was never in this file.
+//!
+//! **Nothing about the arithmetic changed, and that is the property to preserve.** Every loop runs
+//! in the order it ran in, and no summation was re-associated — a storage change invites re-nesting
+//! a loop, and re-nesting a loop reorders a reduction, and a reordered reduction moves the last bits
+//! of the answer. Checked as an identity rather than a tolerance: over eight hundred solves of a
+//! live drag, every point position and every field of every solve report came back bit for bit.
 
 /// The minimum-norm least-squares solution, and the rank the decomposition found on the way.
 #[derive(Debug, Clone, PartialEq)]
@@ -88,38 +107,39 @@ pub fn minimum_norm_least_squares(
             rank: 0,
         });
     }
-    // COLUMN-major for the factorisation. A Householder reflection from the left mixes rows within
-    // one column and leaves the columns independent, so a column is the run the inner loop walks —
-    // and in a row-major matrix that run is strided, which costs a bounds check and a cache line per
-    // element. Held this way it is a contiguous slice, a pivot swap is two pointers rather than
-    // `rows` moves, and the pivot norms are plain dot products.
-    let mut factored: Vec<Vec<f64>> = (0..columns)
-        .map(|column| {
-            matrix
-                .chunks_exact(columns)
-                .take(rows)
-                .map(|row| row.get(column).copied().unwrap_or_default())
-                .collect()
-        })
-        .collect();
+    // COLUMN-major for the factorisation, in ONE buffer. A Householder reflection from the left
+    // mixes rows within one column and leaves the columns independent, so a column is the run the
+    // inner loop walks — and in a row-major matrix that run is strided, which costs a bounds check
+    // and a cache line per element. Held this way it is a contiguous slice and the pivot norms are
+    // plain dot products.
+    //
+    // One buffer and not a `Vec` per column, which is what this held before: nothing about the
+    // arithmetic changes, and a drag frame runs this a thousand times. See the module header.
+    let mut factored = vec![0.0; columns.saturating_mul(rows)];
+    for (column, run) in factored.chunks_exact_mut(rows).enumerate() {
+        for (slot, row) in run.iter_mut().zip(matrix.chunks_exact(columns)) {
+            *slot = row.get(column).copied().unwrap_or_default();
+        }
+    }
     let mut projected: Vec<f64> = right_hand_side.iter().take(rows).copied().collect();
-    let ordering = pivoted_householder_qr(&mut factored, &mut projected, rows);
-    let rank = revealed_rank(&factored, rows.min(columns), rank_tolerance);
+    // The one scratch every reflection writes its direction into, sized once for the longest run.
+    let mut direction: Vec<f64> = Vec::with_capacity(rows);
+    let ordering =
+        pivoted_householder_qr(&mut factored, &mut projected, rows, columns, &mut direction);
+    let rank = revealed_rank(&factored, rows, columns, rows.min(columns), rank_tolerance);
     // Back to row-major for what is left. The trapezoidal stage and the back substitution both walk
     // ROWS, both touch only the leading `rank` of them, and both are small enough that the transpose
     // costs less than the strides would.
-    let mut working: Vec<Vec<f64>> = (0..rank)
-        .map(|row| {
-            factored
-                .iter()
-                .map(|column| column.get(row).copied().unwrap_or_default())
-                .collect()
-        })
-        .collect();
+    let mut working = vec![0.0; rank.saturating_mul(columns)];
+    for (row, line) in working.chunks_exact_mut(columns).enumerate() {
+        for (slot, column) in line.iter_mut().zip(factored.chunks_exact(rows)) {
+            *slot = column.get(row).copied().unwrap_or_default();
+        }
+    }
     let annihilated = annihilate_the_trailing_block(&mut working, rank, columns);
     let mut weights = back_substitute(&working, &projected, rank, columns);
     for reflector in &annihilated {
-        apply_reflector(&mut weights, reflector);
+        apply_reflector(&mut weights, reflector, rank, columns);
     }
     let mut solution = vec![0.0; columns];
     for (slot, weight) in ordering.iter().zip(weights.iter()) {
@@ -130,38 +150,48 @@ pub fn minimum_norm_least_squares(
     Some(LeastSquaresSolution { solution, rank })
 }
 
-/// A Householder reflection `I − beta v vᵀ` acting on a scattered set of indices.
+/// A Householder reflection `I − beta v vᵀ` acting on a SCATTERED set of indices: column `step`,
+/// then the whole trailing block `rank..columns`, and nothing between.
 ///
-/// Scattered rather than contiguous because the trapezoidal stage's reflections touch column `k`
-/// and the whole trailing block `r..columns` and nothing between — LAPACK stores that shape
-/// implicitly and pays for it in index arithmetic every time it is applied. Naming the indices
-/// costs a small vector per reflection and makes the application one loop.
+/// Scattered because that is the shape the trapezoidal stage's reflections have — LAPACK stores it
+/// implicitly and pays for it in index arithmetic every time it is applied. Here the run is named by
+/// the one index that varies, and the `rank` and `columns` that fix the rest come from the caller
+/// that already knows them, so a reflector carries no index vector of its own.
 struct Reflector {
-    indices: Vec<usize>,
+    step: usize,
     direction: Vec<f64>,
     beta: f64,
 }
 
+/// The indices a reflector acts on, in the order its direction is stored in.
+fn reflector_indices(step: usize, rank: usize, columns: usize) -> impl Iterator<Item = usize> {
+    core::iter::once(step).chain(rank..columns)
+}
+
 /// `y ← y − beta (vᵀy) v`, over the indices the reflector names.
-fn apply_reflector(vector: &mut [f64], reflector: &Reflector) {
+fn apply_reflector(vector: &mut [f64], reflector: &Reflector, rank: usize, columns: usize) {
     let mut projection = 0.0;
-    for (index, component) in reflector.indices.iter().zip(reflector.direction.iter()) {
-        projection += vector.get(*index).copied().unwrap_or_default() * component;
+    for (index, component) in
+        reflector_indices(reflector.step, rank, columns).zip(reflector.direction.iter())
+    {
+        projection += vector.get(index).copied().unwrap_or_default() * component;
     }
     let scale = reflector.beta * projection;
     if scale == 0.0 {
         return;
     }
-    for (index, component) in reflector.indices.iter().zip(reflector.direction.iter()) {
-        if let Some(slot) = vector.get_mut(*index) {
+    for (index, component) in
+        reflector_indices(reflector.step, rank, columns).zip(reflector.direction.iter())
+    {
+        if let Some(slot) = vector.get_mut(index) {
             *slot = (-scale).mul_add(*component, *slot);
         }
     }
 }
 
 /// The scattered counterpart of [`reflection_below`], for the trapezoidal stage: the reflection
-/// taking `values` to `(∓‖values‖, 0, …, 0)`, tagged with the indices it acts on.
-fn reflection_onto_the_first_axis(indices: Vec<usize>, values: &[f64]) -> Option<Reflector> {
+/// taking `values` to `(∓‖values‖, 0, …, 0)`, tagged with the column it starts at.
+fn reflection_onto_the_first_axis(step: usize, values: &[f64]) -> Option<Reflector> {
     let norm = values.iter().map(|value| value * value).sum::<f64>().sqrt();
     if norm == 0.0 {
         return None;
@@ -177,7 +207,7 @@ fn reflection_onto_the_first_axis(indices: Vec<usize>, values: &[f64]) -> Option
         return None;
     }
     Some(Reflector {
-        indices,
+        step,
         direction,
         beta: 2.0 / squared,
     })
@@ -193,27 +223,54 @@ fn reflection_onto_the_first_axis(indices: Vec<usize>, values: &[f64]) -> Option
 /// exactly when the columns are becoming dependent — which is the only moment the rank decision is
 /// close. Held column-major the recomputation is one contiguous dot product per remaining column.
 fn pivoted_householder_qr(
-    factored: &mut [Vec<f64>],
+    factored: &mut [f64],
     projected: &mut [f64],
     rows: usize,
+    columns: usize,
+    direction: &mut Vec<f64>,
 ) -> Vec<usize> {
-    let columns = factored.len();
     let mut ordering: Vec<usize> = (0..columns).collect();
     for step in 0..rows.min(columns) {
-        let pivot = widest_remaining_column(factored, step);
+        let pivot = widest_remaining_column(factored, rows, columns, step);
         if pivot != step {
-            factored.swap(step, pivot);
+            swap_columns(factored, rows, step, pivot);
             ordering.swap(step, pivot);
         }
-        let Some((direction, beta)) = reflection_below(factored.get(step), step) else {
+        let Some(beta) = reflection_below(factored.chunks_exact(rows).nth(step), step, direction)
+        else {
             continue;
         };
-        for column in factored.iter_mut().skip(step) {
-            reflect_a_run(column.get_mut(step..), &direction, beta);
+        for column in factored.chunks_exact_mut(rows).take(columns).skip(step) {
+            reflect_a_run(column.get_mut(step..), direction, beta);
         }
-        reflect_a_run(projected.get_mut(step..), &direction, beta);
+        reflect_a_run(projected.get_mut(step..), direction, beta);
     }
     ordering
+}
+
+/// Exchange two columns of a flat column-major buffer — the pivot swap, which the `Vec`-per-column
+/// shape got for two pointers and this one pays `rows` moves for. Cheaper than the allocation it
+/// replaces, and it is `rows.min(columns)` of them against a thousand factorisations a frame.
+fn swap_columns(factored: &mut [f64], rows: usize, first: usize, second: usize) {
+    let (low, high) = if first < second {
+        (first, second)
+    } else {
+        (second, first)
+    };
+    if low == high {
+        return;
+    }
+    let (before, after) = factored.split_at_mut(high.saturating_mul(rows).min(factored.len()));
+    let Some(left) = before
+        .get_mut(low.saturating_mul(rows)..)
+        .and_then(|run| run.get_mut(..rows))
+    else {
+        return;
+    };
+    let Some(right) = after.get_mut(..rows) else {
+        return;
+    };
+    left.swap_with_slice(right);
 }
 
 /// `y ← y − beta (vᵀy) v` over one contiguous run — the whole inner loop of the factorisation.
@@ -241,7 +298,7 @@ fn reflect_a_run(run: Option<&mut [f64]>, direction: &[f64], beta: f64) {
 /// forming `v` never cancels. Taking the near sign is the classic way to lose every digit of a
 /// nearly-aligned vector. `None` when the run is already on its axis, which is not a failure: there
 /// is simply nothing to reflect.
-fn reflection_below(column: Option<&Vec<f64>>, from: usize) -> Option<(Vec<f64>, f64)> {
+fn reflection_below(column: Option<&[f64]>, from: usize, direction: &mut Vec<f64>) -> Option<f64> {
     let values = column?.get(from..)?;
     let norm = values.iter().map(|value| value * value).sum::<f64>().sqrt();
     if norm == 0.0 {
@@ -249,7 +306,8 @@ fn reflection_below(column: Option<&Vec<f64>>, from: usize) -> Option<(Vec<f64>,
     }
     let leading = values.first().copied().unwrap_or_default();
     let alpha = if leading >= 0.0 { -norm } else { norm };
-    let mut direction = values.to_vec();
+    direction.clear();
+    direction.extend_from_slice(values);
     if let Some(slot) = direction.first_mut() {
         *slot -= alpha;
     }
@@ -257,13 +315,14 @@ fn reflection_below(column: Option<&Vec<f64>>, from: usize) -> Option<(Vec<f64>,
     if squared <= 0.0 {
         return None;
     }
-    Some((direction, 2.0 / squared))
+    Some(2.0 / squared)
 }
 
 /// Which of the columns from `step` on has the largest norm below row `step`.
-fn widest_remaining_column(factored: &[Vec<f64>], step: usize) -> usize {
+fn widest_remaining_column(factored: &[f64], rows: usize, columns: usize, step: usize) -> usize {
     factored
-        .iter()
+        .chunks_exact(rows)
+        .take(columns)
         .enumerate()
         .skip(step)
         .map(|(index, column)| {
@@ -294,11 +353,22 @@ fn widest_remaining_column(factored: &[Vec<f64>], step: usize) -> usize {
 /// already put the diagonal in decreasing order, so a small entry followed by a large one would
 /// mean the ordering broke down, and treating the large one as informative anyway would be reading
 /// a triangle that is no longer triangular in the way the count assumes.
-fn revealed_rank(factored: &[Vec<f64>], limit: usize, tolerance: f64) -> usize {
+fn revealed_rank(
+    factored: &[f64],
+    rows: usize,
+    columns: usize,
+    limit: usize,
+    tolerance: f64,
+) -> usize {
     let diagonal = |index: usize| {
+        // Guarded on the COLUMN count as well as the length: past the last column a flat index
+        // lands in a neighbouring column rather than off the end, which is the one way this shape
+        // can read something the `Vec`-per-column shape would have refused.
+        if index >= columns || index >= rows {
+            return 0.0;
+        }
         factored
-            .get(index)
-            .and_then(|column| column.get(index))
+            .get(index.saturating_mul(rows).saturating_add(index))
             .copied()
             .unwrap_or_default()
             .abs()
@@ -320,7 +390,7 @@ fn revealed_rank(factored: &[Vec<f64>], limit: usize, tolerance: f64) -> usize {
 /// across the trailing block because it has already been processed — is left exactly alone. Rows
 /// above `k` are disturbed and are put right when their own turn comes.
 fn annihilate_the_trailing_block(
-    working: &mut [Vec<f64>],
+    working: &mut [f64],
     rank: usize,
     columns: usize,
 ) -> Vec<Reflector> {
@@ -328,23 +398,23 @@ fn annihilate_the_trailing_block(
         return Vec::new();
     }
     let mut applied = Vec::new();
+    let mut values: Vec<f64> = Vec::with_capacity(columns.saturating_sub(rank).saturating_add(1));
     for step in (0..rank).rev() {
-        let indices: Vec<usize> = core::iter::once(step).chain(rank..columns).collect();
-        let values: Vec<f64> = indices
-            .iter()
-            .map(|index| {
-                working
-                    .get(step)
-                    .and_then(|row| row.get(*index))
-                    .copied()
-                    .unwrap_or_default()
-            })
-            .collect();
-        let Some(reflector) = reflection_onto_the_first_axis(indices, &values) else {
+        let row = working.chunks_exact(columns).nth(step);
+        values.clear();
+        values.extend(reflector_indices(step, rank, columns).map(|index| {
+            row.and_then(|entries| entries.get(index))
+                .copied()
+                .unwrap_or_default()
+        }));
+        let Some(reflector) = reflection_onto_the_first_axis(step, &values) else {
             continue;
         };
-        for row in working.iter_mut().take(step.saturating_add(1)) {
-            apply_reflector(row, &reflector);
+        for line in working
+            .chunks_exact_mut(columns)
+            .take(step.saturating_add(1))
+        {
+            apply_reflector(line, &reflector, rank, columns);
         }
         applied.push(reflector);
     }
@@ -355,16 +425,11 @@ fn annihilate_the_trailing_block(
 
 /// `T w = (Qᵀb)₁` by back substitution through the leading `rank × rank` triangle, with the
 /// remaining `columns − rank` entries left at zero — which is what makes the result shortest.
-fn back_substitute(
-    working: &[Vec<f64>],
-    projected: &[f64],
-    rank: usize,
-    columns: usize,
-) -> Vec<f64> {
+fn back_substitute(working: &[f64], projected: &[f64], rank: usize, columns: usize) -> Vec<f64> {
     let mut weights = vec![0.0; columns];
     for row in (0..rank).rev() {
         let mut sum = projected.get(row).copied().unwrap_or_default();
-        let values = working.get(row);
+        let values = working.chunks_exact(columns).nth(row);
         for column in row.saturating_add(1)..rank {
             let coefficient = values
                 .and_then(|entries| entries.get(column))
