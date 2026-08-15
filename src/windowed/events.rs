@@ -201,8 +201,12 @@ impl ApplicationHandler for App {
                                         // so a press on the context menu never arms it).
                                         state.sketch_select_press = true;
                                         // A new gesture starts owing nothing: the last drag's snap
-                                        // circle belonged to the hand that has already let go.
-                                        state.forget_the_snap_ghost();
+                                        // circle belonged to the hand that has already let go, and
+                                        // a drag still standing here never saw its release (a lost
+                                        // focus can eat one). Put it back rather than overwrite it
+                                        // — the field is the only handle on the pre-drag drawing,
+                                        // and the preview has already written past it.
+                                        state.cancel_the_vertex_drag();
                                         state.sketch_drag =
                                             state.begin_sketch_vertex_drag(cursor_x, cursor_y);
                                         // An EMPTY-SPACE press may become a marquee past the click

@@ -413,6 +413,10 @@ impl WindowedState {
             self.app_core.begin_sketch_group();
         }
         if let Some(exit) = prepared.panel_response.exit_sketch.take() {
+            // Before the group closes, and in that order: a live drag has written onto the node
+            // without recording anything, so leaving the mode with a hand still down would seal
+            // the group over a change no command describes.
+            self.cancel_the_vertex_drag();
             self.reset_sketch_gestures();
             self.sketch_chamfer_pending = None;
             self.sketch_offset_pending = None;
@@ -1073,17 +1077,27 @@ impl WindowedState {
         viewport_px: [u32; 4],
     ) -> crate::IntentEffect {
         use crate::IntentEffect;
-        let Some((held, original_min, original_offset)) = self
-            .sketch_drag
-            .as_ref()
-            .map(|drag| (drag.held, drag.original_min, drag.original_offset))
+        let Some((target, held, original_min, original_offset)) =
+            self.sketch_drag.as_ref().map(|drag| {
+                (
+                    drag.target,
+                    drag.held,
+                    drag.original_min,
+                    drag.original_offset,
+                )
+            })
         else {
             return IntentEffect::none();
         };
-        let Some(target) = self.panel_state.sketch_mode else {
-            self.end_the_vertex_drag();
+        // A FRAME THIS CANNOT DRAW IS A FRAME IT DOES NOT DRAW — never the end of the gesture.
+        // Nothing below writes until the last two lines, so every early return here leaves the
+        // drawing exactly where the previous frame left it and the next frame rebuilds from
+        // `drag.original` regardless. Lifetime belongs to the press, the release, and
+        // `cancel_the_vertex_drag`; a render pass answers what to show, not whether the hand is
+        // still holding anything.
+        if self.panel_state.sketch_mode != Some(target) {
             return IntentEffect::none();
-        };
+        }
         let Some((cursor_x, cursor_y)) = self.last_cursor_position else {
             return IntentEffect::none();
         };
@@ -1154,7 +1168,6 @@ impl WindowedState {
         // The snap policy re-authors the whole position (#96/#101): a snapped drag zeroes
         // the fraction, NoSnap carries it; either way a stale retained expression drops.
         let Some(context) = self.sketch_evaluation_context() else {
-            self.end_the_vertex_drag();
             return IntentEffect::none();
         };
         // A CLICK IS NOT A TINY DRAG. Every arm below is gated on the gesture having begun, and a
@@ -1249,20 +1262,20 @@ impl WindowedState {
             drag.began = true;
             drag.arc_turns = carried_arcs;
         }
-        let Ok(moved) = moved else {
-            self.end_the_vertex_drag();
-            return IntentEffect::none();
-        };
-        // A frame the drawing would not stand under is DROPPED, not the end of the gesture. The
-        // hand crossing an arc's far end lands on a frame whose two ends are one dot, which is no
-        // arc and is written nowhere — and it is the single frame the author is most committed to
-        // the wind. Ending there would strand the gesture mid-crossing. Nothing was written, so
-        // the next frame picks up from exactly where this one started.
-        if !moved {
+        // A frame the drawing would not stand under is DROPPED, not the end of the gesture — and a
+        // frame it REFUSES is dropped for the same reason and by the same words. The hand crossing
+        // an arc's far end lands on a frame whose two ends are one dot, which is no arc and is
+        // written nowhere; a hand sweeping a slot's end walks it through whole bands where the
+        // tangent's contact has left the piece it was drawn on, and a straight slot refuses most of
+        // the far half of a turn. Both are frames the author is committed to passing THROUGH.
+        // Ending there stranded the gesture mid-crossing and, because the earlier frames had
+        // already written the preview onto the node with no command behind it, left the drawing
+        // holding a half-finished drag that undo could not reach. Nothing was written this frame,
+        // so the next one picks up from exactly where this one started.
+        if moved != Ok(true) {
             return IntentEffect::none();
         }
         let Some(new_min) = self.profile_bbox_min(&preview) else {
-            self.end_the_vertex_drag();
             return IntentEffect::none();
         };
         let [in0, in1] = preview.sketch.plane.in_plane_axes();
@@ -1285,11 +1298,23 @@ impl WindowedState {
         pointer_left_the_press(self.press_position, self.last_cursor_position)
     }
 
-    /// End the vertex drag, and with it the snap ghost — the circle means "your hand is sliding
-    /// along this", which stops being true the moment the hand lets go.
-    fn end_the_vertex_drag(&mut self) {
-        self.sketch_drag = None;
+    /// Put a vertex drag back where it started and record nothing — the second of the gesture's
+    /// exactly TWO doors, the other being [`commit_sketch_vertex_drag`].
+    ///
+    /// The preview writes straight onto the node, so a gesture that ends without either door leaves
+    /// the drawing holding a change no command describes. Both doors therefore restore first and
+    /// decide afterwards; this one decides on nothing, which returns the node to its last recorded
+    /// state and so leaves nothing to undo. Reports whether a drag was actually put back, so the
+    /// Escape chain can fall through when no hand was down.
+    ///
+    /// [`commit_sketch_vertex_drag`]: Self::commit_sketch_vertex_drag
+    pub(super) fn cancel_the_vertex_drag(&mut self) -> bool {
         self.forget_the_snap_ghost();
+        let Some(drag) = self.sketch_drag.take() else {
+            return false;
+        };
+        self.set_sketch_node(drag.target, drag.original, drag.original_offset);
+        true
     }
 
     /// Drop the snap circle. A gesture ending and a gesture starting both owe this: the circle
@@ -1310,14 +1335,17 @@ impl WindowedState {
         let Some(drag) = self.sketch_drag.take() else {
             return;
         };
-        let Some(target) = self.panel_state.sketch_mode else {
-            return;
-        };
-        let Some((final_producer, final_offset)) = self.sketch_node_state(target) else {
-            return;
-        };
-        // Restore the pre-drag state so `record()` captures original → final for the inverse.
+        let target = drag.target;
+        let read = self.sketch_node_state(target);
+        // Restore the pre-drag state FIRST and unconditionally, so `record()` captures
+        // original → final for the inverse — and so no way out of this function can skip it. Every
+        // early return past the `take()` used to leave the preview's un-recorded mutation standing
+        // in the document, which is why the target is carried on the drag rather than re-read from
+        // a `sketch_mode` that may have closed underneath it.
         self.set_sketch_node(target, drag.original.clone(), drag.original_offset);
+        let Some((final_producer, final_offset)) = read else {
+            return;
+        };
 
         if final_producer == drag.original && final_offset == drag.original_offset {
             return; // nothing moved — leave the restored original in place
@@ -3386,6 +3414,10 @@ impl WindowedState {
             self.sketch_edit_press = false;
             return false;
         }
+        // A hand still on a vertex is the most half-finished gesture there is, and the only one
+        // holding an un-recorded change to the drawing, so it goes back first and reports on its
+        // own. Escape is a button, which is the one thing allowed to end a drag the author started.
+        let vertex_drag_live = self.cancel_the_vertex_drag();
         // A constraint holding picks is a half-finished gesture like any other, and Escape puts
         // the picks back without putting the constraint down — the same rung, the same rule.
         let constraint_picks = self
@@ -3477,7 +3509,8 @@ impl WindowedState {
         let move_copy_live = self.sketch_move_copy_pending.take().is_some();
         let scale_live = self.sketch_scale_pending.take().is_some();
         let rectangular_pattern_live = self.sketch_rectangular_pattern_pending.take().is_some();
-        let live = constraint_picks
+        let live = vertex_drag_live
+            || constraint_picks
             || line_live
             || midpoint_line_live
             || center_arc_live
@@ -5039,6 +5072,7 @@ impl WindowedState {
             return None;
         };
         Some(SketchVertexDrag {
+            target,
             held,
             original: producer.clone(),
             original_offset: node.transform.offset_voxels,

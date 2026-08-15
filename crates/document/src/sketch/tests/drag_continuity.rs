@@ -1534,3 +1534,66 @@ fn an_unsnapped_walk_is_smooth_in_every_direction() {
         );
     }
 }
+
+/// A refused frame is a frame the shell may DROP, because it wrote nothing.
+///
+/// A hand sweeping a slot's end walks it through configurations the drawing will not stand under —
+/// a straight slot refuses most of the far half of a turn, every refusal a tangent whose contact
+/// has left the piece it was drawn on. The shell rebuilds the preview from the pre-drag drawing
+/// each frame, so it may only treat a refusal as a frame that did not happen if a refusal really
+/// does leave the drawing untouched. That is what is asserted here, bit for bit.
+///
+/// The count is asserted from BELOW rather than pinned: if the drawing one day stands where it
+/// used to refuse, this says so instead of passing on an empty sweep.
+#[test]
+fn a_frame_the_drawing_refuses_leaves_it_exactly_where_it_stood() {
+    let base = straight_slot();
+    let held = spine_end(&base, [36.0, 0.0]);
+    let standing = |sketch: &Sketch| {
+        sketch
+            .points()
+            .iter()
+            .map(|point| {
+                let at = point.at.in_plane();
+                (point.id, at[0].to_bits(), at[1].to_bits())
+            })
+            .collect::<Vec<_>>()
+    };
+    let stood = standing(&base);
+    let mut turns = crate::sketch::ArcTurnUnderAGesture::opening_over(&base);
+    let (mut refusals, mut answered_after_a_refusal) = (0_u32, false);
+    for degrees in 1..=359_u32 {
+        let turn = f64::from(degrees).to_radians();
+        let mut preview = base.clone();
+        let mut carried = turns.clone();
+        match preview.move_point_reporting_its_snap(
+            held,
+            SketchPoint::from_continuous(36.0 * turn.cos(), 36.0 * turn.sin()),
+            ctx(16),
+            SnapReach::of_length(0.5),
+            &mut carried,
+        ) {
+            Ok(answer) => {
+                turns = carried;
+                answered_after_a_refusal |= answer.moved && refusals > 0;
+            }
+            Err(why) => {
+                refusals += 1;
+                assert_eq!(
+                    standing(&preview),
+                    stood,
+                    "the drawing refused the frame at {degrees} degrees ({why:?}) and moved anyway"
+                );
+            }
+        }
+    }
+    assert!(
+        refusals > 0,
+        "a whole turn of a slot's end refused nothing, so this states nothing"
+    );
+    assert!(
+        answered_after_a_refusal,
+        "the sweep never answered again after its first refusal, so a refusal is indistinguishable \
+         here from the end of the gesture"
+    );
+}

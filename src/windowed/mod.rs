@@ -661,6 +661,14 @@ impl SketchGrab {
 /// An in-progress sketch drag, identified by the stable entity it holds.
 #[derive(Debug, Clone)]
 struct SketchVertexDrag {
+    /// The node the gesture is authoring, CARRIED from the press rather than re-read from
+    /// `sketch_mode` at release.
+    ///
+    /// The preview mutates this node directly and records nothing, so every way the gesture can
+    /// end owes it a restore. Re-deriving the target at release made that restore conditional on
+    /// state the gesture does not own — a mode that had since closed skipped it, and the node kept
+    /// a half-finished drag that no command described and no undo could reach.
+    target: document::scene::NodeId,
     /// What the press grabbed — a stable entity, NOT a loop index, which is invalid once the
     /// graph opens.
     held: SketchGrab,
