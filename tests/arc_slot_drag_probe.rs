@@ -208,7 +208,7 @@ fn which_point_of_an_arc_slot_is_slow_to_drag() {
                 to,
                 context(),
                 document::sketch::SnapReach::of_length(1e-6),
-                &mut [],
+                &mut document::sketch::GestureSoFar::none(),
             ));
             let reached_ms = started.elapsed().as_secs_f64() * 1000.0;
 
@@ -264,7 +264,7 @@ fn what_a_live_slot_sweep_costs_per_frame() {
                     to,
                     context(),
                     document::sketch::SnapReach::of_length(9.0),
-                    &mut [],
+                    &mut document::sketch::GestureSoFar::none(),
                 ));
                 let frame_ms = started.elapsed().as_secs_f64() * 1000.0;
                 worst = worst.max(frame_ms);
@@ -315,7 +315,7 @@ fn what_a_sweep_costs_as_the_arc_closes_on_itself() {
             to,
             context(),
             document::sketch::SnapReach::of_length(9.0),
-            &mut [],
+            &mut document::sketch::GestureSoFar::none(),
         ));
         let frame_ms = started.elapsed().as_secs_f64() * 1000.0;
         swept += 8.0;
@@ -378,7 +378,7 @@ fn whether_a_sweep_costs_less_when_it_arrives_in_smaller_frames() {
                 to,
                 context(),
                 document::sketch::SnapReach::of_length(9.0),
-                &mut [],
+                &mut document::sketch::GestureSoFar::none(),
             ));
         }
         let whole = started.elapsed().as_secs_f64() * 1000.0;
@@ -423,7 +423,7 @@ fn whether_a_long_sweep_gets_dearer_per_frame_than_a_short_one() {
             to,
             context(),
             document::sketch::SnapReach::of_length(9.0),
-            &mut [],
+            &mut document::sketch::GestureSoFar::none(),
         ));
         each.push(started.elapsed().as_secs_f64() * 1000.0);
     }
@@ -482,7 +482,7 @@ fn what_the_shells_replay_from_the_press_costs_as_the_sweep_grows() {
             to,
             context(),
             document::sketch::SnapReach::of_length(9.0),
-            &mut [],
+            &mut document::sketch::GestureSoFar::none(),
         ));
         let replay_ms = started.elapsed().as_secs_f64() * 1000.0;
 
@@ -492,7 +492,7 @@ fn what_the_shells_replay_from_the_press_costs_as_the_sweep_grows() {
             to,
             context(),
             document::sketch::SnapReach::of_length(9.0),
-            &mut [],
+            &mut document::sketch::GestureSoFar::none(),
         ));
         let nudge_ms = started.elapsed().as_secs_f64() * 1000.0;
 
@@ -572,7 +572,7 @@ fn whether_the_step_cap_moves_the_answer_on_a_long_sweep() {
         target(std::f64::consts::PI),
         context(),
         document::sketch::SnapReach::of_length(9.0),
-        &mut [],
+        &mut document::sketch::GestureSoFar::none(),
     ));
 
     // At the granularity the walk is named for: a hundred and eighty frames of one degree, each of
@@ -584,7 +584,7 @@ fn whether_the_step_cap_moves_the_answer_on_a_long_sweep() {
             target(f64::from(frame) * std::f64::consts::PI / 180.0),
             context(),
             document::sketch::SnapReach::of_length(9.0),
-            &mut [],
+            &mut document::sketch::GestureSoFar::none(),
         ));
     }
 
@@ -601,7 +601,7 @@ fn whether_the_step_cap_moves_the_answer_on_a_long_sweep() {
             target(f64::from(degrees) * std::f64::consts::PI / 180.0),
             context(),
             document::sketch::SnapReach::of_length(9.0),
-            &mut [],
+            &mut document::sketch::GestureSoFar::none(),
         ));
         let radii = sweep(&frame);
         let width = radii

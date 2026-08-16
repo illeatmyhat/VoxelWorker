@@ -2793,8 +2793,14 @@ impl Sketch {
         at: SketchPoint,
         context: parametric::EvaluationContext,
     ) -> Result<bool, SketchEvaluationError> {
-        self.move_point_reporting_its_snap(id, at, context, SnapReach::UNBOUNDED, &mut [])
-            .map(|answered| answered.moved)
+        self.move_point_reporting_its_snap(
+            id,
+            at,
+            context,
+            SnapReach::UNBOUNDED,
+            &mut GestureSoFar::none(),
+        )
+        .map(|answered| answered.moved)
     }
 
     /// [`move_point`](Self::move_point), and what the drag was pulled onto — the write path an
@@ -2818,7 +2824,7 @@ impl Sketch {
         at: SketchPoint,
         context: parametric::EvaluationContext,
         snap_reach: SnapReach,
-        carries: &mut [ArcTurnUnderAGesture],
+        carries: &mut GestureSoFar,
     ) -> Result<DragAnswer, SketchEvaluationError> {
         // Grabbing the BACK arm of a tangent lever steers the FRONT one. The two ends name one
         // quantity, so only one of them can be the thing that moves; the mirror is restored by
@@ -2842,7 +2848,14 @@ impl Sketch {
         if self.point_index(id).is_none() {
             return Ok(DragAnswer::stood(false));
         }
-        let held = carries.to_vec();
+        // Where the hand has got to, marked BEFORE anything is attempted and never rolled back.
+        // The reach is the cursor's, not the drawing's: a frame the drawing turns down still
+        // happened to the hand. The winding below is the drawing's and does roll back.
+        if let Some(pressed) = self.point_in_plane(id) {
+            let now = at.in_plane();
+            carries.reached((now[0] - pressed[0]).hypot(now[1] - pressed[1]));
+        }
+        let held = carries.arcs().to_vec();
         let once = self.drag_or_leave_it_alone(|sketch| {
             sketch.point_move_attempt(id, at, context, snap_reach, carries)
         });
@@ -2852,7 +2865,7 @@ impl Sketch {
         // The attempt declined, which leaves the drawing exactly where it stood — that is what
         // `drag_or_leave_it_alone` is for — so the winding it was lent goes back too, and the same
         // hand is offered again by a shorter road.
-        carries.clone_from_slice(&held);
+        carries.arcs().clone_from_slice(&held);
         self.walk_a_refused_drag(id, at, context, snap_reach, carries, refused)
     }
 
@@ -2898,7 +2911,13 @@ impl Sketch {
             }
             sketch.sync_derived_points();
             // No ceiling: a body drag names no lead hand, so there is no snap to bound.
-            sketch.settle_under_the_hands(&hands, &was, context, SnapReach::UNBOUNDED, &mut [])
+            sketch.settle_under_the_hands(
+                &hands,
+                &was,
+                context,
+                SnapReach::UNBOUNDED,
+                &mut GestureSoFar::none(),
+            )
         })
         .map(|answered| answered.moved)
     }
@@ -2980,7 +2999,7 @@ impl Sketch {
                             &[],
                             context,
                             SnapReach::UNBOUNDED,
-                            &mut [],
+                            &mut GestureSoFar::none(),
                         )?;
                         if !answered.moved {
                             break;
@@ -3026,7 +3045,13 @@ impl Sketch {
         // grip in it and the same two lines take it away either way.
         let stood = self
             .drag_or_leave_it_alone(|sketch| {
-                sketch.settle_under_the_hands(&hands, &[], context, SnapReach::UNBOUNDED, &mut [])
+                sketch.settle_under_the_hands(
+                    &hands,
+                    &[],
+                    context,
+                    SnapReach::UNBOUNDED,
+                    &mut GestureSoFar::none(),
+                )
             })
             .map(|answered| answered.moved);
         self.constraints
@@ -3348,7 +3373,13 @@ impl Sketch {
                 }
             }
             sketch.sync_derived_points();
-            sketch.settle_under_the_hands(&hands, &was, context, SnapReach::UNBOUNDED, &mut [])
+            sketch.settle_under_the_hands(
+                &hands,
+                &was,
+                context,
+                SnapReach::UNBOUNDED,
+                &mut GestureSoFar::none(),
+            )
         })
         .map(|answered| answered.moved)
     }
@@ -3468,9 +3499,10 @@ impl Sketch {
         at: SketchPoint,
         context: parametric::EvaluationContext,
         snap_reach: SnapReach,
-        carries: &mut [ArcTurnUnderAGesture],
+        carries: &mut GestureSoFar,
         refused: SketchEvaluationError,
     ) -> Result<DragAnswer, SketchEvaluationError> {
+        let reached = carries.furthest_the_hand_has_reached();
         let (Some(from), to) = (self.point_in_plane(id), at.in_plane()) else {
             return Err(refused);
         };
@@ -3491,10 +3523,10 @@ impl Sketch {
         // hand is on is the snap's own question and it has an answer for it; a second opinion
         // living at this layer is a second definition, and the two would drift.
         let turning_about = self
-            .quantity_a_drag_would_keep(id, at, context, snap_reach)
+            .quantity_a_drag_would_keep(id, at, context, snap_reach, reached)
             .map(|kept| kept.about);
         let mut walking = self.clone();
-        let mut walked = carries.to_vec();
+        let mut walked = carries.clone();
         let mut arrived = None;
         for step in 1..=steps {
             let share = f64::from(step) / f64::from(steps);
@@ -3525,7 +3557,7 @@ impl Sketch {
             return Err(refused);
         };
         *self = walking;
-        carries.clone_from_slice(&walked);
+        *carries = walked;
         Ok(answer)
     }
 
@@ -3544,6 +3576,7 @@ impl Sketch {
         at: SketchPoint,
         context: parametric::EvaluationContext,
         snap_reach: SnapReach,
+        reached: f64,
     ) -> Option<KeptQuantity> {
         let hands = self.hands_moving_with(id, at);
         let was: Vec<(EntityId, [f64; 2])> = self
@@ -3562,6 +3595,7 @@ impl Sketch {
         constraint::prepare_scoped(self, &standing, Some(context), Some(&reach))
             .ok()?
             .holding_a_snap_within(snap_reach)
+            .the_hand_having_reached(reached)
             .snap_the_hands(&hands, &was)
             .map(|(_, kept)| kept)
     }
@@ -3601,7 +3635,7 @@ impl Sketch {
         at: SketchPoint,
         context: parametric::EvaluationContext,
         snap_reach: SnapReach,
-        carries: &mut [ArcTurnUnderAGesture],
+        carries: &mut GestureSoFar,
     ) -> Result<DragAnswer, SketchEvaluationError> {
         // Every point moves the same way now, an arc's center included: ADR 0038 left the
         // drawing with no point whose coordinates are somebody else's arithmetic, so there is no
@@ -4366,14 +4400,19 @@ impl Sketch {
         was: &[(EntityId, [f64; 2])],
         context: parametric::EvaluationContext,
         snap_reach: SnapReach,
-        carries: &mut [ArcTurnUnderAGesture],
+        carries: &mut GestureSoFar,
     ) -> Result<DragAnswer, SketchEvaluationError> {
         let mut relabelled = self.clone();
         for id in crossing {
             relabelled.reverse_arc(*id);
         }
-        let answered =
-            relabelled.settle_under_the_hands(hands, was, context, snap_reach, &mut [])?;
+        let answered = relabelled.settle_under_the_hands(
+            hands,
+            was,
+            context,
+            snap_reach,
+            &mut carries.on_its_own_ground(),
+        )?;
         if answered.moved {
             // ONLY where the drawing has nothing left to spend. A relabel reverses an arc's
             // endpoint order, order is parity, and parity changes the route a solve takes — and a
@@ -4397,7 +4436,7 @@ impl Sketch {
                  input to a solve that had only one answer it could have found"
             );
             *self = relabelled;
-            for carry in carries.iter_mut() {
+            for carry in carries.arcs().iter_mut() {
                 carry.commit(self);
             }
         }
@@ -4410,7 +4449,7 @@ impl Sketch {
         was: &[(EntityId, [f64; 2])],
         context: parametric::EvaluationContext,
         snap_reach: SnapReach,
-        carries: &mut [ArcTurnUnderAGesture],
+        carries: &mut GestureSoFar,
     ) -> Result<DragAnswer, SketchEvaluationError> {
         // Everything the caller recorded, not just the hands.
         //
@@ -4483,26 +4522,26 @@ impl Sketch {
                 .and_then(|prepared| {
                     prepared
                         .holding_a_snap_within(snap_reach)
+                        .the_hand_having_reached(carries.furthest_the_hand_has_reached())
                         .snap_the_hands(hands, &was)
                 });
-            let (landing, kept) = match snapped {
-                Some((onto, kept)) => (onto, Some(kept)),
-                None => (hands.to_vec(), None),
-            };
+            let (landing, kept) =
+                snapped.map_or_else(|| (hands.to_vec(), None), |(onto, kept)| (onto, Some(kept)));
             for hand in &landing {
                 if let Some(index) = self.point_index(hand.point) {
                     self.points[index].at = SketchPoint::from_continuous(hand.to[0], hand.to[1]);
                 }
             }
             self.sync_derived_points();
-            for carry in carries.iter_mut() {
+            for carry in carries.arcs().iter_mut() {
                 carry.commit(self);
             }
             return Ok(DragAnswer { moved: true, kept });
         }
         let prepared = constraint::prepare_scoped(self, &standing, Some(context), Some(&reach))
             .map_err(map_prepare_evaluation_error)?
-            .holding_a_snap_within(snap_reach);
+            .holding_a_snap_within(snap_reach)
+            .the_hand_having_reached(carries.furthest_the_hand_has_reached());
         let (settled, accepted) = match prepared.drag_together(hands, &was) {
             Ok(parametric::sketch::DragOutcome::Accepted(settled)) => (settled, true),
             Ok(parametric::sketch::DragOutcome::Rejected(settled)) => (settled, false),
@@ -4511,6 +4550,7 @@ impl Sketch {
         // Which way round each arc is DRAWN is settled BEFORE the frame is validated, because one
         // validator reads it — see [`settle_again_the_other_way_round`](Self::settle_again_the_other_way_round).
         let crossing: Vec<EntityId> = carries
+            .arcs()
             .iter()
             .filter_map(|carry| {
                 carry.crossing_under(&self.arcs, &|id| {
@@ -4548,7 +4588,7 @@ impl Sketch {
         }
         // The frame stands, so the carry comes up to it. Last, and only here: every path above
         // that leaves the drawing where it was leaves the carry there too.
-        for carry in carries.iter_mut() {
+        for carry in carries.arcs().iter_mut() {
             carry.commit(self);
         }
         Ok(DragAnswer {
@@ -7118,6 +7158,91 @@ const ARC_MAX_CHORDS: u32 = 512;
 /// than written, and **the carry unwraps over WRITTEN frames only**. A stood frame writes nothing,
 /// so the next written frame is two frames of motion away from the last one, which is still far
 /// under the half turn the unwrapping needs.
+/// What a gesture remembers about its own path.
+///
+/// The drawing is rebuilt from the press every frame and the hand is applied to it fresh, which is
+/// what makes a drag a pure function of the cursor. The price is that the drawing cannot remember
+/// how the hand GOT here, and two things about a drag are authored by the road rather than by the
+/// destination. So the caller holds them, lends them to the drawing for the frame, and takes them
+/// back — the shell does exactly this across a `SketchDrag`.
+///
+/// One carrier rather than a loose parameter each, because the species is the thing: anything
+/// path-authored belongs here, and the next one costs a field instead of a signature.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct GestureSoFar {
+    /// Which way round each arc is being drawn — see [`ArcTurnUnderAGesture`].
+    arcs: Vec<ArcTurnUnderAGesture>,
+    /// The furthest the hand has stood from where it pressed, in plane units.
+    ///
+    /// A high-water mark, not a running total. The snap cone is opened by how far the gesture has
+    /// travelled, and a frame on its own can only report where the hand STANDS: sweep an arc end a
+    /// whole turn and it arrives back at the press, so the frame reads zero travel and the cone
+    /// shuts on a hand that walked the whole circumference. That is the fault the author reported
+    /// as the ghost failing "around the exact spot that the endpoint originally was".
+    ///
+    /// Summing each frame's step would fix that too, and would also let a hand held still ramp its
+    /// own cone open on tremor — the one thing the travel ramp exists to prevent. The high-water is
+    /// bounded by how far the hand actually WENT, so a still hand marks nothing.
+    ///
+    /// It is the CURSOR's reach, so a frame the drawing refuses does not roll it back: the hand
+    /// went there whether or not the drawing followed.
+    furthest_the_hand_has_reached: f64,
+}
+
+impl GestureSoFar {
+    /// A gesture opening over `sketch`, having gone nowhere yet.
+    #[must_use]
+    pub fn opening_over(sketch: &Sketch) -> Self {
+        Self {
+            arcs: ArcTurnUnderAGesture::opening_over(sketch),
+            furthest_the_hand_has_reached: 0.0,
+        }
+    }
+
+    /// A gesture with no memory at all: no arcs watched, no ground covered.
+    ///
+    /// What a caller that is not a drag passes — a single programmatic move has no path for
+    /// anything here to be read off.
+    #[must_use]
+    pub fn none() -> Self {
+        Self::default()
+    }
+
+    /// Note that the hand has stood `reach` from where it pressed. Keeps the furthest.
+    fn reached(&mut self, reach: f64) {
+        if reach.is_finite() && reach > self.furthest_the_hand_has_reached {
+            self.furthest_the_hand_has_reached = reach;
+        }
+    }
+
+    /// The furthest the hand has been, for the kernel that sizes the snap cone with it.
+    #[must_use]
+    pub const fn furthest_the_hand_has_reached(&self) -> f64 {
+        self.furthest_the_hand_has_reached
+    }
+
+    /// The same gesture with no arcs watched: the ground it has covered, and nothing else.
+    ///
+    /// What a pass hands on when it has ALREADY applied the winding and must not lend it twice —
+    /// the relabelled retry in
+    /// [`settle_again_the_other_way_round`](Sketch::settle_again_the_other_way_round). The two
+    /// facts part company here, which is the reason they are named separately rather than carried
+    /// as one lump: the winding is the drawing's and has been spent, while how far the hand has
+    /// been is the cursor's and is still just as true on the second reading as the first.
+    #[must_use]
+    fn on_its_own_ground(&self) -> Self {
+        Self {
+            arcs: Vec::new(),
+            furthest_the_hand_has_reached: self.furthest_the_hand_has_reached,
+        }
+    }
+
+    /// The arcs alone, for the winding pass that is the only thing which reads them.
+    fn arcs(&mut self) -> &mut [ArcTurnUnderAGesture] {
+        &mut self.arcs
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ArcTurnUnderAGesture {
     /// The arc being carried.

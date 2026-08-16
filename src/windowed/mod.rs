@@ -702,7 +702,7 @@ struct SketchVertexDrag {
     ///
     /// Every arc, not the held one: a slot's rails are carried by a hand that names only its
     /// centerline, and an arc that does not move cannot cross, so it costs a subtraction a frame.
-    arc_turns: Vec<document::sketch::ArcTurnUnderAGesture>,
+    gesture: document::sketch::GestureSoFar,
 }
 
 #[derive(Default)]

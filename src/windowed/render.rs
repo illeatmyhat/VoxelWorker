@@ -1177,7 +1177,7 @@ impl WindowedState {
         // The gesture's own memory of how far it has turned each arc, lent to the drawing for the
         // frame and taken back after. Which way round an arc is drawn is path-dependent, and the
         // preview is rebuilt from the pre-drag producer every frame, so the drawing cannot know it.
-        let mut carried_arcs = drag.arc_turns.clone();
+        let mut carried_arcs = drag.gesture.clone();
         let moved = match held {
             SketchGrab::Point(id) if began => preview
                 .sketch
@@ -1260,7 +1260,7 @@ impl WindowedState {
         };
         if let Some(drag) = self.sketch_drag.as_mut() {
             drag.began = true;
-            drag.arc_turns = carried_arcs;
+            drag.gesture = carried_arcs;
         }
         // A frame the drawing would not stand under is DROPPED, not the end of the gesture — and a
         // frame it REFUSES is dropped for the same reason and by the same words. The hand crossing
@@ -5078,7 +5078,7 @@ impl WindowedState {
             original_offset: node.transform.offset_voxels,
             original_min: self.profile_bbox_min(producer)?,
             began: false,
-            arc_turns: document::sketch::ArcTurnUnderAGesture::opening_over(&producer.sketch),
+            gesture: document::sketch::GestureSoFar::opening_over(&producer.sketch),
         })
     }
 

@@ -910,6 +910,7 @@ impl ProblemBuilder {
             splines: self.splines,
             constraints: Vec::new(),
             snap_reach: SnapReach::UNBOUNDED,
+            furthest_the_hand_has_reached: 0.0,
         };
         let constraints = self
             .constraints
@@ -945,6 +946,10 @@ pub struct Problem {
     /// gesture's, and it lives here because the drag is what reads it. A problem walked frame by
     /// frame is cloned from this one, so the ceiling travels with the walk.
     snap_reach: SnapReach,
+    /// The furthest the lead hand has stood from where it pressed, over the whole gesture so far.
+    /// Zero for a caller that keeps no path, which reads as the frame's own displacement — see
+    /// [`Problem::the_hand_having_reached`].
+    furthest_the_hand_has_reached: f64,
 }
 
 impl Problem {
@@ -5923,7 +5928,14 @@ impl Problem {
         let (held, now) = (lead.point, lead.to);
         let stood_at = |point: PointId| self.stood_of(point, was, positions);
         let stood = stood_at(held)?;
-        let travel = (now[0] - stood[0]).hypot(now[1] - stood[1]);
+        // How far the hand has been from its opening, which is what opened the cone — not how far
+        // it stands now. See [`Problem::the_hand_having_reached`]: a hand that has swept an arc
+        // end a whole turn is back where it pressed, and reading only this frame shuts the cone
+        // on it. The mark defaults to nothing, so a caller that keeps no path reads exactly the
+        // displacement it always did.
+        let travel = (now[0] - stood[0])
+            .hypot(now[1] - stood[1])
+            .max(self.furthest_the_hand_has_reached);
         if !travel.is_finite() || travel <= 0.0 {
             return None;
         }
@@ -6073,6 +6085,31 @@ impl Problem {
     #[must_use]
     pub const fn holding_a_snap_within(mut self, reach: SnapReach) -> Self {
         self.snap_reach = reach;
+        self
+    }
+
+    /// The same problem, told how far from its opening the lead hand has ALREADY been.
+    ///
+    /// The cone a snap is held in is opened by how far the hand has travelled, and a single frame
+    /// only knows where the hand stands. Those are the same number until the hand turns back, and
+    /// a hand sliding around a pivot turns back at every step of the second half: sweep an arc end
+    /// a whole turn and it arrives back where it pressed, so the displacement reads zero and the
+    /// cone shuts on a gesture that walked the whole circumference.
+    ///
+    /// A gesture that has been this far HAS been this far, so what a frame reports is a floor
+    /// rather than the whole reading. The caller keeps the mark because only the caller has the
+    /// path — the drawing is rebuilt from the press every frame and cannot remember one.
+    ///
+    /// The high-water of the DISPLACEMENT, not the length of the road: summing each frame's step
+    /// would let a hand held still ramp the cone open on tremor alone, which is the one thing the
+    /// ramp exists to prevent.
+    #[must_use]
+    pub fn the_hand_having_reached(mut self, furthest: f64) -> Self {
+        self.furthest_the_hand_has_reached = if furthest.is_finite() && furthest > 0.0 {
+            furthest
+        } else {
+            0.0
+        };
         self
     }
 

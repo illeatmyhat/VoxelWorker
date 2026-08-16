@@ -1828,7 +1828,7 @@ fn a_snapped_drag_reports_the_circle_it_kept() {
             SketchPoint::from_continuous(40.0, 6.0),
             ctx(16),
             SnapReach::UNBOUNDED,
-            &mut [],
+            &mut GestureSoFar::none(),
         )
         .expect("answered")
         .kept
@@ -1854,7 +1854,7 @@ fn a_snapped_drag_reports_the_circle_it_kept() {
             SketchPoint::from_continuous(46.0, 0.0),
             ctx(16),
             SnapReach::UNBOUNDED,
-            &mut [],
+            &mut GestureSoFar::none(),
         )
         .expect("answered");
     assert!(answered.moved);

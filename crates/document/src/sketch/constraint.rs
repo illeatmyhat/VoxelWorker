@@ -1439,6 +1439,13 @@ impl PreparedProblem {
         self
     }
 
+    /// The same prepared problem, told how far the lead hand has already been from its opening.
+    /// See [`parametric::sketch::Problem::the_hand_having_reached`].
+    pub(super) fn the_hand_having_reached(mut self, furthest: f64) -> Self {
+        self.problem = self.problem.the_hand_having_reached(furthest);
+        self
+    }
+
     /// Snap a drag's hands without solving.
     /// See [`parametric::sketch::Problem::snap_the_hands`].
     pub(super) fn snap_the_hands(

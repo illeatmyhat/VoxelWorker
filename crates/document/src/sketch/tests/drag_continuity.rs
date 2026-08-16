@@ -104,7 +104,7 @@ fn a_straight_slot_lengthens_when_its_end_cap_is_pulled() {
             SketchPoint::from_continuous(60.0, 0.0),
             ctx(16),
             SnapReach::UNBOUNDED,
-            &mut [],
+            &mut GestureSoFar::none(),
         )
         .expect("the drag lands");
 
@@ -160,7 +160,7 @@ fn a_scaffold_span_offers_no_quantity_to_hold() {
             SketchPoint::from_continuous(32.0, 6.0),
             ctx(16),
             SnapReach::UNBOUNDED,
-            &mut [],
+            &mut GestureSoFar::none(),
         )
         .expect("the drag lands");
     assert!(
@@ -304,7 +304,7 @@ fn an_arc_slots_rails_turn_with_the_spine_they_are_drawn_from() {
         let mut sketch = curved_slot();
         let hub = spine_end(&sketch, [0.0, 0.0]);
         let held = spine_end(&sketch, [0.0, 40.0]);
-        let mut turns = crate::sketch::ArcTurnUnderAGesture::opening_over(&sketch);
+        let mut turns = crate::sketch::GestureSoFar::opening_over(&sketch);
         let step = 15.0_f64;
         let mut drawn: Option<f64> = None;
         let mut stands = 0;
@@ -421,7 +421,7 @@ fn a_tangent_contact_is_judged_against_the_piece_the_frame_will_draw() {
         )
         .expect("a line already touching the arc's middle");
 
-    let mut turns = crate::sketch::ArcTurnUnderAGesture::opening_over(&sketch);
+    let mut turns = crate::sketch::GestureSoFar::opening_over(&sketch);
     let step = 15.0_f64;
     let mut drawn: Option<f64> = None;
     let mut stands = 0;
@@ -563,7 +563,7 @@ fn sweeping_a_slots_end_keeps_the_width_it_was_drawn_with() {
     for degrees in (20..=160).step_by(20) {
         let asked = -f64::from(degrees);
         let mut sketch = slot.clone();
-        let mut turns = crate::sketch::ArcTurnUnderAGesture::opening_over(&sketch);
+        let mut turns = crate::sketch::GestureSoFar::opening_over(&sketch);
         sketch
             .move_point_reporting_its_snap(
                 end,
@@ -654,7 +654,7 @@ fn a_bare_arcs_end_holds_its_radius_and_reports_it() {
                 SketchPoint::from_continuous(out, 6.0),
                 ctx(16),
                 SnapReach::UNBOUNDED,
-                &mut [],
+                &mut GestureSoFar::none(),
             )
             .expect("answered");
         assert!(
@@ -687,7 +687,7 @@ fn radius_under_a_ceiling(slot: &Sketch, end: EntityId, cursor: [f64; 2], reach:
             SketchPoint::from_continuous(cursor[0], cursor[1]),
             ctx(16),
             SnapReach::of_length(reach),
-            &mut [],
+            &mut GestureSoFar::none(),
         )
         .expect("answered");
     let at = sketch
@@ -754,7 +754,7 @@ fn a_ceiling_does_not_bring_the_spring_back() {
                     SketchPoint::from_continuous(cursor[0], cursor[1]),
                     ctx(16),
                     SnapReach::of_length(2.0),
-                    &mut [],
+                    &mut GestureSoFar::none(),
                 )
                 .expect("answered");
             sketch
@@ -812,7 +812,7 @@ fn the_ghost_names_the_circle_the_arc_is_on() {
                 SketchPoint::from_continuous(out, 6.0),
                 ctx(16),
                 SnapReach::UNBOUNDED,
-                &mut [],
+                &mut GestureSoFar::none(),
             )
             .expect("answered")
             .kept
@@ -895,7 +895,7 @@ fn an_arc_keeps_its_circle_around_a_whole_turn() {
                 SketchPoint::from_continuous(cursor[0], cursor[1]),
                 ctx(16),
                 SnapReach::UNBOUNDED,
-                &mut [],
+                &mut GestureSoFar::none(),
             )
             .expect("answered");
         let at = |id| {
@@ -1265,7 +1265,7 @@ fn the_snap_ring_is_inked_from_the_room_left_in_the_cone() {
                 SketchPoint::from_continuous(cursor[0], cursor[1]),
                 ctx(16),
                 SnapReach::UNBOUNDED,
-                &mut [],
+                &mut GestureSoFar::none(),
             )
             .expect("answered")
             .kept;
@@ -1526,7 +1526,7 @@ fn an_unsnapped_walk_is_smooth_in_every_direction() {
                 SketchPoint::from_continuous(cursor[0], cursor[1]),
                 ctx(16),
                 SnapReach::UNBOUNDED,
-                &mut [],
+                &mut GestureSoFar::none(),
             ) else {
                 continue;
             };
@@ -1576,7 +1576,7 @@ fn a_frame_the_drawing_refuses_leaves_it_exactly_where_it_stood() {
             .collect::<Vec<_>>()
     };
     let stood = standing(&base);
-    let mut turns = crate::sketch::ArcTurnUnderAGesture::opening_over(&base);
+    let mut turns = crate::sketch::GestureSoFar::opening_over(&base);
     let (mut refusals, mut answered_after_a_refusal) = (0_u32, false);
     for degrees in 1..=359_u32 {
         let turn = f64::from(degrees).to_radians();
@@ -1659,7 +1659,7 @@ fn a_hand_the_drawing_gives_up_on_is_offered_again_more_slowly() {
         ),
     ] {
         let held = spine_end(&base, grab_at);
-        let mut turns = crate::sketch::ArcTurnUnderAGesture::opening_over(&base);
+        let mut turns = crate::sketch::GestureSoFar::opening_over(&base);
         let (mut refused, mut run, mut longest) = (0_u32, 0_u32, 0_u32);
         for degrees in 1..=359_u32 {
             let turn = f64::from(degrees).to_radians();
@@ -1764,7 +1764,7 @@ fn a_sweep_holds_the_circle_it_is_sweeping_on() {
         }
         swept += 1;
         let opening = stood[1].atan2(stood[0]);
-        let mut turns = crate::sketch::ArcTurnUnderAGesture::opening_over(&base);
+        let mut turns = crate::sketch::GestureSoFar::opening_over(&base);
         let (mut dark, mut run, mut longest) = (0_u32, 0_u32, 0_u32);
         for degrees in 1..=359_u32 {
             let turn = opening + f64::from(degrees).to_radians();
@@ -1882,4 +1882,205 @@ fn a_hand_standing_on_its_pivot_has_no_turn_to_walk() {
     let about = [4.0, 4.0];
     assert!(super::super::a_step_of_a_turn(about, about, [9.0, 4.0], 0.5).is_none());
     assert!(super::super::a_step_of_a_turn(about, [9.0, 4.0], about, 0.5).is_none());
+}
+
+/// Sweep `grabbed` a whole turn about the origin, the way the shell does it: the drawing rebuilt
+/// from the opening every frame, the gesture's own memory carried forward across frames.
+fn ink_around_a_whole_turn(base: &Sketch, grabbed: EntityId, step_degrees: f64) -> Vec<(f64, f64)> {
+    let stood = base.point_in_plane(grabbed).expect("a placed point");
+    let radius = stood[0].hypot(stood[1]);
+    let opening = stood[1].atan2(stood[0]);
+    let mut turns = crate::sketch::GestureSoFar::opening_over(base);
+    let mut inked = Vec::new();
+    let steps = (360.0 / step_degrees).ceil() as u32;
+    for step in 1..=steps {
+        let degrees = f64::from(step) * step_degrees;
+        let turn = opening + degrees.to_radians();
+        let mut preview = base.clone();
+        let mut carried = turns.clone();
+        let at = SketchPoint::new(
+            (radius * turn.cos()).round() as i64,
+            (radius * turn.sin()).round() as i64,
+        );
+        if let Ok(answer) = preview.move_point_reporting_its_snap(
+            grabbed,
+            at,
+            ctx(16),
+            SnapReach::of_length(50.0),
+            &mut carried,
+        ) {
+            turns = carried;
+            inked.push((
+                degrees,
+                answer.kept.map_or(0.0, |kept| f64::from(kept.ghost_ink())),
+            ));
+        }
+    }
+    inked
+}
+
+#[test]
+fn a_hand_that_sweeps_the_whole_way_round_comes_home_still_holding_its_circle() {
+    // The snap cone is opened by how far the gesture has travelled, and a single frame can only
+    // report where the hand STANDS. Those are the same number until the hand turns back — and a
+    // hand sliding round a pivot turns back through the whole second half. Sweep an arc end a full
+    // turn and it arrives back at the press: the frame reads zero travel, the cone shuts, and the
+    // ghost goes out exactly where the author started. Their words: it fails "around the exact
+    // spot that the endpoint originally was, so around a 360 degree sweep".
+    //
+    // Seen red by neutering [`GestureSoFar::furthest_the_hand_has_reached`] at the kernel: the
+    // four ends below go dark at the return, ink 0.000 at 359.5 and 360.0 degrees.
+    let base = wide_curved_slot();
+    let ends: Vec<EntityId> = base
+        .points()
+        .iter()
+        .map(|point| point.id)
+        .filter(|id| {
+            base.point_in_plane(*id)
+                .is_some_and(|at| (90.0..=120.0).contains(&at[0].hypot(at[1])))
+        })
+        .collect();
+    assert!(
+        !ends.is_empty(),
+        "the fixture is supposed to have rail ends"
+    );
+    for grabbed in ends {
+        let inked = ink_around_a_whole_turn(&base, grabbed, 2.5);
+        let coming_home: Vec<(f64, f64)> = inked
+            .iter()
+            .copied()
+            .filter(|(degrees, _)| *degrees >= 340.0)
+            .collect();
+        assert!(
+            coming_home.len() >= 4,
+            "point {grabbed} never got round: {} frames past 340 degrees",
+            coming_home.len()
+        );
+        for (degrees, ink) in coming_home {
+            assert!(
+                ink > 0.5,
+                "point {grabbed} lost its circle at {degrees} degrees, ink {ink:.3}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_hand_that_has_not_gone_anywhere_marks_no_ground() {
+    // The travel ramp exists so a press does not snap on its own jitter, and making travel monotone
+    // must not spend that.
+    //
+    // This is the assertion that picks between the two ways of making it monotone. Summing each
+    // frame's step would have a still hand ramp its own cone open — forty frames of half a voxel is
+    // twenty units of "travel" from a hand that never went anywhere, and at a share of 0.75 that is
+    // a fifteen unit cone opened by tremor. The high-water of the DISPLACEMENT cannot: the hand has
+    // not BEEN anywhere, so however many frames it spends not going there, the mark stays the size
+    // of the tremor.
+    let base = wide_curved_slot();
+    let grabbed = spine_end(&base, [95.0, 0.0]);
+    let stood = base.point_in_plane(grabbed).expect("a placed point");
+    let mut turns = crate::sketch::GestureSoFar::opening_over(&base);
+    for frame in 0..40_u32 {
+        // A tremor rocking across ONE voxel boundary and back — the smallest movement the shell can
+        // even express, because it rounds the cursor before the drawing ever sees it, and therefore
+        // the smallest thing a hand resting on a mouse actually does.
+        let jitter = i64::from(frame % 2);
+        let mut preview = base.clone();
+        drop(preview.move_point_reporting_its_snap(
+            grabbed,
+            SketchPoint::new(stood[0].round() as i64 + jitter, stood[1].round() as i64),
+            ctx(16),
+            SnapReach::of_length(50.0),
+            &mut turns,
+        ));
+    }
+    let marked = turns.furthest_the_hand_has_reached();
+    assert!(
+        marked < 2.0,
+        "forty frames of tremor marked {marked} units of ground; a running total would have \
+         marked about twenty"
+    );
+}
+
+#[test]
+fn how_far_a_hand_has_walked_does_not_change_where_it_lets_go() {
+    // The one behavioural delta monotone travel buys: the cone no longer re-narrows when the hand
+    // comes back toward its press. The release has to survive that, or the author could never put a
+    // swept end down anywhere but on its own circle.
+    //
+    // Pinned as an identity rather than a threshold, because the threshold is the caller's ceiling
+    // and is not this change's to state: the SAME cursor on the SAME opening drawing must be
+    // answered the same way whether the gesture walked half a turn to get there or arrived in one
+    // frame. What lets go is how far the hand pulled ACROSS the circle, which no amount of walking
+    // along it can change.
+    let base = wide_curved_slot();
+    let grabbed = spine_end(&base, [95.0, 0.0]);
+    let stood = base.point_in_plane(grabbed).expect("a placed point");
+    let radius = stood[0].hypot(stood[1]);
+    let opening = stood[1].atan2(stood[0]);
+    let mut walked = crate::sketch::GestureSoFar::opening_over(&base);
+    for degrees in (10..=180).step_by(10) {
+        let turn = opening + f64::from(degrees).to_radians();
+        let mut preview = base.clone();
+        let mut carried = walked.clone();
+        if preview
+            .move_point_reporting_its_snap(
+                grabbed,
+                SketchPoint::new(
+                    (radius * turn.cos()).round() as i64,
+                    (radius * turn.sin()).round() as i64,
+                ),
+                ctx(16),
+                SnapReach::of_length(20.0),
+                &mut carried,
+            )
+            .is_ok()
+        {
+            walked = carried;
+        }
+    }
+    assert!(
+        walked.furthest_the_hand_has_reached() > 100.0,
+        "the sweep was supposed to cover ground"
+    );
+
+    // The same cursor, off the circle by three times the ceiling, asked of the same opening.
+    let turn = opening + 180.0_f64.to_radians();
+    let pulled_off = SketchPoint::new(
+        ((radius + 60.0) * turn.cos()).round() as i64,
+        ((radius + 60.0) * turn.sin()).round() as i64,
+    );
+    let answer_after = |mut memory: crate::sketch::GestureSoFar| {
+        let mut preview = base.clone();
+        preview
+            .move_point_reporting_its_snap(
+                grabbed,
+                pulled_off,
+                ctx(16),
+                SnapReach::of_length(20.0),
+                &mut memory,
+            )
+            .map(|answered| {
+                answered
+                    .kept
+                    .map(::parametric::sketch::KeptQuantity::ghost_ink)
+            })
+            .expect("a pull off the circle is not a refusal")
+    };
+    let (after_a_walk, straight_there) = (
+        answer_after(walked),
+        answer_after(crate::sketch::GestureSoFar::opening_over(&base)),
+    );
+    // To the solve's own tolerance rather than to the bit, because the two roads reach the same
+    // cursor through different numbers of solves. Measured, they agree to about 1e-11.
+    match (after_a_walk, straight_there) {
+        (None, None) => {}
+        (Some(walked_ink), Some(direct_ink)) => assert!(
+            f64::from(walked_ink - direct_ink).abs() < 1.0e-6,
+            "half a turn of walking moved the ink at the release from {direct_ink} to {walked_ink}"
+        ),
+        _ => panic!(
+            "half a turn of walking changed WHETHER the hand lets go: {after_a_walk:?} against              {straight_there:?}"
+        ),
+    }
 }
