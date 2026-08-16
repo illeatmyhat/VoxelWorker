@@ -1597,3 +1597,84 @@ fn a_frame_the_drawing_refuses_leaves_it_exactly_where_it_stood() {
          here from the end of the gesture"
     );
 }
+
+/// A hand the drawing gives up on is offered again, arriving a little at a time.
+///
+/// The author: "the arc circle snap has problems where it seems to fail to solve and gets stuck
+/// sometimes, making it look as if the drag is no longer happening even though it technically is."
+/// It was failing to solve, and it was not the snap: the refusals were IDENTICAL with the snap
+/// unbounded, limited, and switched off altogether. Instrumented over the sweep below, 538 refused
+/// frames came back `Stalled` or `ExhaustedIterations` and not one came back `Converged`, and
+/// twenty times the iteration budget did not move the count by a frame. The guess was the whole of
+/// it — see [`Sketch::walk_a_refused_drag`].
+///
+/// What the sweep refused, before and after:
+///
+/// | fixture | was | now |
+/// | --- | --- | --- |
+/// | curved slot spine end | 9 | 0 |
+/// | straight slot end | 165, longest run 150 | 19, longest run 8 |
+#[test]
+fn a_hand_the_drawing_gives_up_on_is_offered_again_more_slowly() {
+    for (name, base, grab_at, reach, most, longest_allowed) in [
+        (
+            "curved slot spine end",
+            curved_slot(),
+            [40.0, 0.0],
+            36.0,
+            0,
+            0,
+        ),
+        (
+            "straight slot end",
+            straight_slot(),
+            [36.0, 0.0],
+            36.0,
+            30,
+            15,
+        ),
+    ] {
+        let held = spine_end(&base, grab_at);
+        let mut turns = crate::sketch::ArcTurnUnderAGesture::opening_over(&base);
+        let (mut refused, mut run, mut longest) = (0_u32, 0_u32, 0_u32);
+        for degrees in 1..=359_u32 {
+            let turn = f64::from(degrees).to_radians();
+            let mut preview = base.clone();
+            let mut carried = turns.clone();
+            let to = SketchPoint::from_continuous(reach * turn.cos(), reach * turn.sin());
+            if preview
+                .move_point_reporting_its_snap(
+                    held,
+                    to,
+                    ctx(16),
+                    SnapReach::of_length(0.5),
+                    &mut carried,
+                )
+                .is_ok()
+            {
+                turns = carried;
+                run = 0;
+            } else {
+                refused += 1;
+                run += 1;
+                longest = longest.max(run);
+            }
+        }
+        // The count is bounded from ABOVE here and from below in
+        // `a_frame_the_drawing_refuses_leaves_it_exactly_where_it_stood`, which still needs a
+        // straight slot to refuse SOMETHING to have anything to say.
+        assert!(
+            refused <= most,
+            "{name} refused {refused} frames of a whole turn, over the {most} a walked retry \
+             should leave"
+        );
+        // A run is what the author actually sees: consecutive refused frames are a drag that has
+        // stopped following the hand. One frame dropped is invisible; a hundred and fifty is the
+        // report this test exists for.
+        assert!(
+            longest <= longest_allowed,
+            "{name} stopped following the hand for {longest} frames together, over the \
+             {longest_allowed} a walked retry should leave"
+        );
+    }
+}

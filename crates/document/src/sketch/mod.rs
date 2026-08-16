@@ -2842,9 +2842,18 @@ impl Sketch {
         if self.point_index(id).is_none() {
             return Ok(DragAnswer::stood(false));
         }
-        self.drag_or_leave_it_alone(|sketch| {
+        let held = carries.to_vec();
+        let once = self.drag_or_leave_it_alone(|sketch| {
             sketch.point_move_attempt(id, at, context, snap_reach, carries)
-        })
+        });
+        let Err(refused) = once else {
+            return once;
+        };
+        // The attempt declined, which leaves the drawing exactly where it stood — that is what
+        // `drag_or_leave_it_alone` is for — so the winding it was lent goes back too, and the same
+        // hand is offered again by a shorter road.
+        carries.clone_from_slice(&held);
+        self.walk_a_refused_drag(id, at, context, snap_reach, carries, refused)
     }
 
     /// Move the whole CURVE `curve` so that it passes under `at`, and settle around it. Reports
@@ -3424,6 +3433,104 @@ impl Sketch {
         self.conics = before_conics;
         self.sync_derived_points();
         result
+    }
+
+    /// How far a re-walked drag travels in one step, as a share of the drawing's own size, and the
+    /// most steps it will ever walk. A share rather than a length, so the same gesture on the same
+    /// shape drawn ten times larger walks the same number of steps.
+    const TRAVEL_PER_STEP: f64 = 0.07;
+    const MOST_STEPS_WHEN_REFUSED: u32 = 16;
+
+    /// Offer a refused hand again, arriving a little at a time.
+    ///
+    /// **A frame the drawing refuses is a frame whose solve never converged** — not a frame whose
+    /// answer came out badly. Swept a straight slot's end through a whole turn, 165 of 359 frames
+    /// came back `Stalled` or `ExhaustedIterations` and NOT ONE came back `Converged`; twenty times
+    /// the iteration budget did not move that count by a single frame. The guess was the whole of
+    /// it. A hand that has travelled half a turn hands the solve an answer half a turn away from
+    /// anything it knows, and it gives up rather than arrives.
+    ///
+    /// So the same hand is offered again in steps. Nothing else changes: each step is the ordinary
+    /// drag door, and the drawing it walks on is a copy, so a walk that does not arrive leaves
+    /// nothing behind and the caller still sees the refusal it would have seen.
+    ///
+    /// **This creates answers; it does not change them.** A frame the drawing already stood under
+    /// never reaches here, so no answer that exists today moves. That is what lets a walk pick a
+    /// different member of the family than one shot would have without contradicting the rule that
+    /// a drag is a function of where the hand is — on these frames there was no member to keep.
+    ///
+    /// And the member it picks is the better one. Over the same sweep the walked answers held the
+    /// slot's own structure — its spine is its rails plus a cap at each end — on all but 3 of 349
+    /// frames, where one shot broke it on 17 of 194.
+    fn walk_a_refused_drag(
+        &mut self,
+        id: EntityId,
+        at: SketchPoint,
+        context: parametric::EvaluationContext,
+        snap_reach: SnapReach,
+        carries: &mut [ArcTurnUnderAGesture],
+        refused: SketchEvaluationError,
+    ) -> Result<DragAnswer, SketchEvaluationError> {
+        let (Some(from), to) = (self.point_in_plane(id), at.in_plane()) else {
+            return Err(refused);
+        };
+        let steps = self.steps_a_refused_drag_walks(from, to);
+        if steps < 2 {
+            return Err(refused);
+        }
+        let mut walking = self.clone();
+        let mut walked = carries.to_vec();
+        let mut arrived = None;
+        for step in 1..=steps {
+            let share = f64::from(step) / f64::from(steps);
+            let via = SketchPoint::from_continuous(
+                (to[0] - from[0]).mul_add(share, from[0]),
+                (to[1] - from[1]).mul_add(share, from[1]),
+            );
+            let mut attempt = walking.clone();
+            let mut inner = walked.clone();
+            let got = attempt.drag_or_leave_it_alone(|sketch| {
+                sketch.point_move_attempt(id, via, context, snap_reach, &mut inner)
+            });
+            // A step the drawing will not stand under is passed over, not the end of the walk: the
+            // hand is still on its way somewhere, and only where it was going is being asked about.
+            if let Ok(answer) = got {
+                walking = attempt;
+                walked = inner;
+                arrived = (step == steps).then_some(answer);
+            }
+        }
+        let Some(answer) = arrived else {
+            return Err(refused);
+        };
+        *self = walking;
+        carries.clone_from_slice(&walked);
+        Ok(answer)
+    }
+
+    /// How many steps to walk a refused hand over, from how far it has to travel measured against
+    /// how big the drawing is. Fewer than two means there is nothing to gain by walking.
+    fn steps_a_refused_drag_walks(&self, from: [f64; 2], to: [f64; 2]) -> u32 {
+        let travel = (to[0] - from[0]).hypot(to[1] - from[1]);
+        if !travel.is_finite() {
+            return 0;
+        }
+        let (mut least, mut most) = ([f64::MAX; 2], [f64::MIN; 2]);
+        for point in &self.points {
+            let at = point.at.in_plane();
+            for axis in 0..2 {
+                least[axis] = least[axis].min(at[axis]);
+                most[axis] = most[axis].max(at[axis]);
+            }
+        }
+        let across = (most[0] - least[0]).hypot(most[1] - least[1]);
+        if !across.is_finite() || across <= 0.0 {
+            return 0;
+        }
+        let grain = across * Self::TRAVEL_PER_STEP;
+        (1..=Self::MOST_STEPS_WHEN_REFUSED)
+            .find(|steps| travel <= f64::from(*steps) * grain)
+            .unwrap_or(Self::MOST_STEPS_WHEN_REFUSED)
     }
 
     /// The move itself, before [`move_point`](Self::move_point) decides whether to keep it.
@@ -4210,14 +4317,26 @@ impl Sketch {
         let answered =
             relabelled.settle_under_the_hands(hands, was, context, snap_reach, &mut [])?;
         if answered.moved {
+            // ONLY where the drawing has nothing left to spend. A relabel reverses an arc's
+            // endpoint order, order is parity, and parity changes the route a solve takes — and a
+            // route is exactly what picks the member of an under-dimensioned drawing's family.
+            // Demanding that two routes land in the same place is therefore demanding the drawing
+            // be determined, and this used to demand it of every drawing: a curved slot swept a
+            // whole turn fires it, so a dev build panicked mid-drag on a gesture the release build
+            // performs correctly. With no freedom the family holds one member, identity IS
+            // membership, and the claim is worth making again.
             debug_assert!(
-                first.is_none_or(|first| first.placed().iter().all(|before| {
-                    relabelled.point_in_plane(before.id).is_none_or(|after| {
-                        let stood = before.at.in_plane();
-                        (after[0] - stood[0]).hypot(after[1] - stood[1]) < 1.0e-6
-                    })
-                })),
-                "re-solving a relabelled arc moved the drawing, so order is an input to the solve"
+                relabelled
+                    .degrees_of_freedom(context)
+                    .is_ok_and(|free| free > 0)
+                    || first.is_none_or(|first| first.placed().iter().all(|before| {
+                        relabelled.point_in_plane(before.id).is_none_or(|after| {
+                            let stood = before.at.in_plane();
+                            (after[0] - stood[0]).hypot(after[1] - stood[1]) < 1.0e-6
+                        })
+                    })),
+                "a drawing with no freedom left moved when its arc was relabelled, so order is an \
+                 input to a solve that had only one answer it could have found"
             );
             *self = relabelled;
             for carry in carries.iter_mut() {
