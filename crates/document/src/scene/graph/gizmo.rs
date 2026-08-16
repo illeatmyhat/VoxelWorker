@@ -16,6 +16,7 @@
 //! subtree's block-aligned AABB) and its extent.
 
 use super::*;
+use voxel_core::voxel::RecenterVoxels;
 
 impl Scene {
     /// The transform gizmo's placement for `node_id`, in the SAME recentered render
@@ -42,9 +43,10 @@ impl Scene {
         &self,
         node_id: NodeId,
         voxels_per_block: u32,
+        frame: RecenterVoxels,
     ) -> Option<([f32; 3], [f32; 3])> {
         let path = self.path_of(node_id)?;
-        self.gizmo_placement_at_path(&path, voxels_per_block)
+        self.gizmo_placement_at_path(&path, voxels_per_block, frame)
     }
 
     /// Body of [`gizmo_placement_for_id`](Self::gizmo_placement_for_id): the recentered pivot
@@ -53,6 +55,7 @@ impl Scene {
         &self,
         path: &NodePath,
         voxels_per_block: u32,
+        frame: RecenterVoxels,
     ) -> Option<([f32; 3], [f32; 3])> {
         // The gizmo PIVOT is the center of the node's PRODUCER-TRUE voxel AABB — the
         // exact frame the resolved voxels (and the composite recenter) live in. This
@@ -67,8 +70,9 @@ impl Scene {
         let density = voxels_per_block.max(1) as i64;
         let mut pivot = [0.0f32; 3];
         let mut extent = [0.0f32; 3];
-        // Unwrap the carried frame at the recentered pivot arithmetic.
-        let recenter = self.recenter_voxels_for_resolve(voxels_per_block).voxels();
+        // Unwrap the CARRIED frame at the recentered pivot arithmetic — taken from the caller,
+        // never minted here. See `Scene::sketch_handles` for what minting per pass costs.
+        let recenter = frame.voxels();
         for axis in 0..3 {
             // Producer-true voxel-AABB center minus the composite recenter — same
             // frame the resolved voxels sit in. `* 1` then `/ 2.0` last avoids a

@@ -41,6 +41,7 @@ use parametric::EvaluationContext;
 use std::num::NonZeroU32;
 use substrate::curve_intersection::PlanarCurve;
 use substrate::spatial::{LeafPlacement, ProducerLocalVoxelPoint, TrueWorldVoxelPoint};
+use voxel_core::voxel::RecenterVoxels;
 
 /// One straight profile edge ready for display.
 ///
@@ -228,7 +229,20 @@ impl Scene {
     /// deletable while the sketch is authored — entities, not a loop, are the truth.
     /// A totally EMPTY sketch returns handles with no vertices: the plane frame and inverse
     /// map still stand, which is what lets a drawing tool place the FIRST point.
-    pub fn sketch_handles(&self, node_id: NodeId, voxels_per_block: u32) -> Option<SketchHandles> {
+    ///
+    /// **`frame` is taken, never derived** (Law 5). The floating origin is the midpoint of the
+    /// composite extent, so growing any shape moves it — by half the growth — and every drawn
+    /// thing with it. The displayed voxels are built asynchronously and keep the frame they were
+    /// emitted in until they land, so a pass that mints its own frame off the live scene draws in
+    /// one origin while the solid beside it is still in another. Measured on a lone extruded
+    /// rectangle, growing only its width: the corner at plane coordinate `[0, 0]` sat at render
+    /// `[-20, -20, -8]` at width 40 and `[-640, -20, -8]` at width 1280, without ever moving.
+    pub fn sketch_handles(
+        &self,
+        node_id: NodeId,
+        voxels_per_block: u32,
+        frame: RecenterVoxels,
+    ) -> Option<SketchHandles> {
         let context = EvaluationContext::new(NonZeroU32::new(voxels_per_block)?);
         let node = self.node_by_id(node_id)?;
         if !node.enabled {
@@ -306,7 +320,7 @@ impl Scene {
             node.transform.offset_local_voxels,
         );
 
-        let recenter = self.recenter_voxels_for_resolve(voxels_per_block).voxels();
+        let recenter = frame.voxels();
         let recenter_vec = Vec3::new(recenter[0] as f32, recenter[1] as f32, recenter[2] as f32);
 
         // One continuous profile coordinate into the render frame — the map every handle and
@@ -504,7 +518,9 @@ mod tests {
         let sketch = Sketch::rectangle(PlaneAxis::Z, 4, 6);
         let (scene, id) = scene_with_sketch(sketch, 3, [0, 0, 0]);
 
-        let handles = scene.sketch_handles(id, DENSITY).expect("sketch handles");
+        let handles = scene
+            .sketch_handles(id, DENSITY, scene.recenter_voxels_for_resolve(DENSITY))
+            .expect("sketch handles");
         assert_eq!(handles.vertices.len(), 4, "one handle per rectangle corner");
 
         // Every handle must invert back to the profile coordinate it came from.
@@ -544,7 +560,9 @@ mod tests {
             )
             .expect("a quarter-turn arc slot");
         let (scene, id) = scene_with_sketch((*made.sketch).clone(), 3, [0, 0, 0]);
-        let handles = scene.sketch_handles(id, DENSITY).expect("sketch handles");
+        let handles = scene
+            .sketch_handles(id, DENSITY, scene.recenter_voxels_for_resolve(DENSITY))
+            .expect("sketch handles");
 
         assert_eq!(handles.derived.len(), handles.point_ids.len());
         for (index, point) in handles.point_ids.iter().enumerate() {
@@ -567,7 +585,9 @@ mod tests {
         // regardless of where the composite recenter puts the origin.
         let sketch = Sketch::rectangle(PlaneAxis::Z, 4, 6);
         let (scene, id) = scene_with_sketch(sketch, 3, [0, 0, 0]);
-        let handles = scene.sketch_handles(id, DENSITY).expect("sketch handles");
+        let handles = scene
+            .sketch_handles(id, DENSITY, scene.recenter_voxels_for_resolve(DENSITY))
+            .expect("sketch handles");
 
         let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
         for v in &handles.vertices {
@@ -598,7 +618,9 @@ mod tests {
         // would round to the nearest voxel (grid density = voxel density).
         let sketch = Sketch::rectangle(PlaneAxis::Z, 4, 6);
         let (scene, id) = scene_with_sketch(sketch, 3, [0, 0, 0]);
-        let handles = scene.sketch_handles(id, DENSITY).expect("sketch handles");
+        let handles = scene
+            .sketch_handles(id, DENSITY, scene.recenter_voxels_for_resolve(DENSITY))
+            .expect("sketch handles");
 
         // Nudge the first handle by (+0.4, −0.3) in the plane's in-plane world axes.
         let [in0, in1] = handles.in_plane_axes;
@@ -625,7 +647,7 @@ mod tests {
         let empty = Sketch::empty(PlaneAxis::Z);
         let (scene, id) = scene_with_sketch(empty, 3, [0, 0, 0]);
         let handles = scene
-            .sketch_handles(id, DENSITY)
+            .sketch_handles(id, DENSITY, scene.recenter_voxels_for_resolve(DENSITY))
             .expect("an empty sketch still carries its plane frame");
         assert!(handles.vertices.is_empty(), "no vertices to handle");
         let profile = handles.render_hit_to_profile(handles.plane_point);
@@ -642,7 +664,7 @@ mod tests {
         );
         let (scene, id) = scene_with_sketch(open, 3, [0, 0, 0]);
         let handles = scene
-            .sketch_handles(id, DENSITY)
+            .sketch_handles(id, DENSITY, scene.recenter_voxels_for_resolve(DENSITY))
             .expect("two-point sketch shows handles");
         assert_eq!(handles.vertices.len(), 2, "one handle per point entity");
     }
@@ -651,7 +673,9 @@ mod tests {
     fn handles_carry_a_circle_without_minting_a_perimeter_vertex() {
         let sketch = Sketch::circle(PlaneAxis::Z, SketchPoint::new(2, 3), 5);
         let (scene, id) = scene_with_sketch(sketch, 3, [0, 0, 0]);
-        let handles = scene.sketch_handles(id, DENSITY).expect("sketch handles");
+        let handles = scene
+            .sketch_handles(id, DENSITY, scene.recenter_voxels_for_resolve(DENSITY))
+            .expect("sketch handles");
 
         assert_eq!(
             handles.vertices.len(),
@@ -677,7 +701,9 @@ mod tests {
         // is `vertex_in_plane − recenter` on X/Y and `0 − recenter_z = −1` on Z.
         let sketch = Sketch::rectangle(PlaneAxis::Z, 4, 6);
         let (scene, id) = scene_with_sketch(sketch, 2, [0, 0, 0]);
-        let handles = scene.sketch_handles(id, DENSITY).expect("sketch handles");
+        let handles = scene
+            .sketch_handles(id, DENSITY, scene.recenter_voxels_for_resolve(DENSITY))
+            .expect("sketch handles");
 
         // profile order: (0,0), (4,0), (4,6), (0,6) → render X/Y = coord − [2,3], Z = −1.
         let expected = [
@@ -699,7 +725,7 @@ mod tests {
         // with the transform gizmo's pivot (the node AABB center in the same render frame),
         // which is the origin for a lone centered node.
         let (pivot, _extent) = scene
-            .gizmo_placement_for_id(id, DENSITY)
+            .gizmo_placement_for_id(id, DENSITY, scene.recenter_voxels_for_resolve(DENSITY))
             .expect("gizmo placement");
         let mut centroid = [0.0f32; 3];
         for vertex in &handles.vertices {
@@ -733,12 +759,16 @@ mod tests {
     fn a_point_reaching_past_the_fill_does_not_move_the_drawing() {
         let sketch = Sketch::rectangle(PlaneAxis::Z, 4, 6);
         let (scene, id) = scene_with_sketch(sketch.clone(), 3, [0, 0, 0]);
-        let before = scene.sketch_handles(id, DENSITY).expect("sketch handles");
+        let before = scene
+            .sketch_handles(id, DENSITY, scene.recenter_voxels_for_resolve(DENSITY))
+            .expect("sketch handles");
 
         let mut grown = sketch;
         grown.add_free_point(SketchPoint::new(-20, -20));
         let (scene, id) = scene_with_sketch(grown, 3, [0, 0, 0]);
-        let after = scene.sketch_handles(id, DENSITY).expect("sketch handles");
+        let after = scene
+            .sketch_handles(id, DENSITY, scene.recenter_voxels_for_resolve(DENSITY))
+            .expect("sketch handles");
 
         assert_eq!(after.vertices.len(), 5, "the placed point is drawn too");
         for (index, corner) in before.vertices.iter().enumerate() {
@@ -756,14 +786,18 @@ mod tests {
     fn a_line_drawn_past_the_fill_does_not_move_the_drawing() {
         let sketch = Sketch::rectangle(PlaneAxis::Z, 4, 6);
         let (scene, id) = scene_with_sketch(sketch.clone(), 3, [0, 0, 0]);
-        let before = scene.sketch_handles(id, DENSITY).expect("sketch handles");
+        let before = scene
+            .sketch_handles(id, DENSITY, scene.recenter_voxels_for_resolve(DENSITY))
+            .expect("sketch handles");
 
         let mut grown = sketch;
         let corner = grown.points()[0].id;
         let reached = grown.add_free_point(SketchPoint::new(-30, 12));
         grown.connect(corner, reached);
         let (scene, id) = scene_with_sketch(grown, 3, [0, 0, 0]);
-        let after = scene.sketch_handles(id, DENSITY).expect("sketch handles");
+        let after = scene
+            .sketch_handles(id, DENSITY, scene.recenter_voxels_for_resolve(DENSITY))
+            .expect("sketch handles");
 
         for (index, corner) in before.vertices.iter().enumerate() {
             assert_eq!(
@@ -781,7 +815,9 @@ mod tests {
         sketch.add_free_point(SketchPoint::new(-20, -20));
         let producer = SketchSolid::extrude(sketch, 3);
         let (scene, id) = scene_with_sketch((*producer.sketch).clone(), 3, [0, 0, 0]);
-        let handles = scene.sketch_handles(id, DENSITY).expect("sketch handles");
+        let handles = scene
+            .sketch_handles(id, DENSITY, scene.recenter_voxels_for_resolve(DENSITY))
+            .expect("sketch handles");
         // The profile origin maps to producer-local zero exactly when the two anchors agree.
         let anchor = producer.profile_bbox_min(
             crate::sketch::evaluation_context_from_density(DENSITY)
@@ -801,11 +837,70 @@ mod tests {
         // vertices must remain draggable.
         let sketch = Sketch::rectangle(PlaneAxis::Z, 4, 6);
         let (scene, id) = scene_with_sketch(sketch, 0, [0, 0, 0]);
-        let handles = scene.sketch_handles(id, DENSITY);
+        let handles = scene.sketch_handles(id, DENSITY, scene.recenter_voxels_for_resolve(DENSITY));
         assert!(
             handles.is_some(),
             "a zero-height sketch still shows draggable handles"
         );
         assert_eq!(handles.unwrap().vertices.len(), 4);
+    }
+
+    /// **The drawing stands where the FRAME says, and the frame is the caller's.**
+    ///
+    /// The reported symptom: grow a shape large enough and the sketch drifts away from the
+    /// voxels beside it until those voxels are redrawn. Nothing rescales the plane — the plane
+    /// is infinite and the drawing never moved. What moved is the render origin: it is the
+    /// midpoint of the composite extent, so growing a shape by `w` shifts it by `w/2`, and the
+    /// displayed solid is built asynchronously and keeps drawing in the frame it was emitted in
+    /// until it lands. A pass that mints its own frame off the live scene is therefore in a
+    /// different frame from the solid beside it for the whole of that window.
+    ///
+    /// This pins both halves of the fix. Growing the drawing does not move a corner **when the
+    /// frame is held**, and handing a different frame moves every corner by exactly the negated
+    /// frame delta — no more, no less, which is what makes reconciling at the pass a translation
+    /// rather than a rebuild.
+    #[test]
+    fn a_held_frame_holds_the_drawing_still_while_the_shape_grows() {
+        let corner_of = |width: i64, frame: voxel_core::voxel::RecenterVoxels| {
+            let sketch = Sketch::rectangle(PlaneAxis::Z, width, 6);
+            let (scene, id) = scene_with_sketch(sketch, 3, [0, 0, 0]);
+            let handles = scene
+                .sketch_handles(id, DENSITY, frame)
+                .expect("sketch handles");
+            handles.profile_to_render([0.0, 0.0])
+        };
+        // The frame as the gesture found it: the narrow rectangle's own.
+        let opening = {
+            let (scene, _) = scene_with_sketch(Sketch::rectangle(PlaneAxis::Z, 4, 6), 3, [0, 0, 0]);
+            scene.recenter_voxels_for_resolve(DENSITY)
+        };
+        let seated = corner_of(4, opening);
+        for width in [4, 40, 400, 4000] {
+            assert_eq!(
+                corner_of(width, opening),
+                seated,
+                "the corner at profile [0, 0] moved when the rectangle grew to {width} \
+                 wide, though the frame it is drawn in was held",
+            );
+        }
+
+        // And the pass IS steerable by the frame it is handed: shifting the frame shifts the
+        // whole drawing by the negation, which is the reconciliation a landed artifact needs.
+        let shifted = voxel_core::voxel::RecenterVoxels::new({
+            let mut voxels = opening.voxels();
+            voxels[0] += 37;
+            voxels[2] -= 11;
+            voxels
+        });
+        let moved = corner_of(4, shifted);
+        assert_eq!(
+            [
+                moved[0] - seated[0],
+                moved[1] - seated[1],
+                moved[2] - seated[2]
+            ],
+            [-37.0, 0.0, 11.0],
+            "a frame handed in moves the drawing by exactly its negation",
+        );
     }
 }

@@ -7,6 +7,12 @@
 
 use super::*;
 
+/// The frame these fixtures would have been drawn in. Display code takes its frame rather
+/// than deriving one (Law 5), so a test that calls a drawing pass directly has to name it.
+fn frame(scene: &Scene, voxels_per_block: u32) -> RecenterVoxels {
+    scene.recenter_voxels_for_resolve(voxels_per_block)
+}
+
 /// For a triangle wound CCW *as seen from outside*, the geometric face normal
 /// (edge0 × edge1) points in the SAME direction as the stored outward normal,
 /// so their dot product is positive. A negative dot means the winding is
@@ -257,7 +263,7 @@ fn scene_grid_boxes_gated_by_master_and_per_object() {
         scene.master_floor_grid = true;
 
         // Both per-object toggles OFF → no boxes regardless of masters.
-        let (lat, flr) = scene_grid_boxes(&scene, density);
+        let (lat, flr) = scene_grid_boxes(&scene, density, frame(&scene, density));
         assert!(
             lat.is_empty() && flr.is_empty(),
             "@d{density}: per-object OFF ⇒ no boxes"
@@ -265,7 +271,7 @@ fn scene_grid_boxes_gated_by_master_and_per_object() {
 
         // Enable block lattice on node A ONLY.
         scene.root_node_mut(0).grids.block_lattice = true;
-        let (lat, flr) = scene_grid_boxes(&scene, density);
+        let (lat, flr) = scene_grid_boxes(&scene, density, frame(&scene, density));
         assert_eq!(
             lat.len(),
             1,
@@ -275,7 +281,7 @@ fn scene_grid_boxes_gated_by_master_and_per_object() {
 
         // Master OFF cancels it even though the node's flag is on.
         scene.master_block_lattice = false;
-        let (lat, _flr) = scene_grid_boxes(&scene, density);
+        let (lat, _flr) = scene_grid_boxes(&scene, density, frame(&scene, density));
         assert!(
             lat.is_empty(),
             "@d{density}: master OFF ⇒ no lattice box (AND gating)"
@@ -284,7 +290,7 @@ fn scene_grid_boxes_gated_by_master_and_per_object() {
         // Floor: node B's flag on + master on → one floor box, no lattice.
         scene.master_floor_grid = true;
         scene.root_node_mut(1).grids.floor_grid = true;
-        let (lat, flr) = scene_grid_boxes(&scene, density);
+        let (lat, flr) = scene_grid_boxes(&scene, density, frame(&scene, density));
         assert!(lat.is_empty(), "@d{density}: lattice master still off");
         assert_eq!(flr.len(), 1, "@d{density}: one floor box from node B");
     }
@@ -333,7 +339,7 @@ fn points_visible_yields_batch_hidden_yields_none() {
     for density in [1u32, 15, 16] {
         // Z-up: the ground plane is XY (the 2nd flag of `origin_point_scene`).
         let mut scene = origin_point_scene(false, true, false, true);
-        let batch = points_line_batch(&scene, density, &cam);
+        let batch = points_line_batch(&scene, density, frame(&scene, density), &cam);
         assert!(
             !batch.is_empty(),
             "@d{density}: visible axes ⇒ non-empty batch"
@@ -341,7 +347,7 @@ fn points_visible_yields_batch_hidden_yields_none() {
         assert_eq!(batch.len() % 2, 0, "@d{density}: whole line segments");
 
         // The Origin's ground (XY, Z-up) plane is one analytic-grid instance.
-        let planes = enabled_grid_planes(&scene, density);
+        let planes = enabled_grid_planes(&scene, density, frame(&scene, density));
         assert_eq!(
             planes.len(),
             1,
@@ -349,13 +355,13 @@ fn points_visible_yields_batch_hidden_yields_none() {
         );
 
         scene.points[0].hidden = true;
-        let hidden = points_line_batch(&scene, density, &cam);
+        let hidden = points_line_batch(&scene, density, frame(&scene, density), &cam);
         assert!(
             hidden.is_empty(),
             "@d{density}: a hidden Point renders no axes"
         );
         assert!(
-            enabled_grid_planes(&scene, density).is_empty(),
+            enabled_grid_planes(&scene, density, frame(&scene, density)).is_empty(),
             "@d{density}: a hidden Point renders no grid plane",
         );
     }
@@ -370,33 +376,33 @@ fn points_plane_and_axis_toggles_gate() {
     let density = 16u32;
     let cam = camera::OrbitCamera::default();
     // Everything off → no axes, no planes.
-    let none = points_line_batch(
-        &origin_point_scene(false, false, false, false),
-        density,
-        &cam,
-    );
+    let nothing_on = origin_point_scene(false, false, false, false);
+    let none = points_line_batch(&nothing_on, density, frame(&nothing_on, density), &cam);
     assert!(none.is_empty(), "all axes off ⇒ empty axis batch");
     assert!(
-        enabled_grid_planes(&origin_point_scene(false, false, false, false), density).is_empty(),
+        enabled_grid_planes(&nothing_on, density, frame(&nothing_on, density)).is_empty(),
         "all planes off ⇒ no grid planes",
     );
 
     // Axes only → exactly 3 segments = 6 vertices, through the origin; no planes.
-    let axes_only = points_line_batch(
-        &origin_point_scene(false, false, false, true),
-        density,
-        &cam,
-    );
+    let axes_on = origin_point_scene(false, false, false, true);
+    let axes_only = points_line_batch(&axes_on, density, frame(&axes_on, density), &cam);
     assert_eq!(axes_only.len(), 6, "axes alone ⇒ three line segments");
     assert!(
-        enabled_grid_planes(&origin_point_scene(false, false, false, true), density).is_empty(),
+        enabled_grid_planes(&axes_on, density, frame(&axes_on, density)).is_empty(),
         "axes alone ⇒ no grid planes",
     );
 
     // Each enabled plane adds one grid instance; enabling more planes grows the
     // count. Z-up: the ground plane is XY (2nd flag).
-    let ground = enabled_grid_planes(&origin_point_scene(false, true, false, false), density);
-    let ground_front = enabled_grid_planes(&origin_point_scene(true, true, false, false), density);
+    let ground_only = origin_point_scene(false, true, false, false);
+    let ground_and_front = origin_point_scene(true, true, false, false);
+    let ground = enabled_grid_planes(&ground_only, density, frame(&ground_only, density));
+    let ground_front = enabled_grid_planes(
+        &ground_and_front,
+        density,
+        frame(&ground_and_front, density),
+    );
     assert_eq!(
         ground.len(),
         1,
@@ -420,11 +426,8 @@ fn points_axes_toggle_per_axis() {
         let is_green = |v: &LineVertex| v.color == green;
 
         // All three axes on (planes off) → exactly 3 segments = 6 vertices, one green.
-        let all = points_line_batch(
-            &origin_point_scene_axes(false, false, false, [true, true, true]),
-            density,
-            &cam,
-        );
+        let every_axis = origin_point_scene_axes(false, false, false, [true, true, true]);
+        let all = points_line_batch(&every_axis, density, frame(&every_axis, density), &cam);
         assert_eq!(all.len(), 6, "@d{density}: three axes ⇒ three segments");
         assert_eq!(
             all.iter().filter(|v| is_green(v)).count(),
@@ -433,11 +436,8 @@ fn points_axes_toggle_per_axis() {
         );
 
         // Turn Y off → 2 segments, NO green line.
-        let no_y = points_line_batch(
-            &origin_point_scene_axes(false, false, false, [true, false, true]),
-            density,
-            &cam,
-        );
+        let without_y = origin_point_scene_axes(false, false, false, [true, false, true]);
+        let no_y = points_line_batch(&without_y, density, frame(&without_y, density), &cam);
         assert_eq!(no_y.len(), 4, "@d{density}: Y off ⇒ two segments");
         assert!(
             !no_y.iter().any(is_green),
@@ -445,11 +445,8 @@ fn points_axes_toggle_per_axis() {
         );
 
         // Only Y on → exactly one (green) segment.
-        let only_y = points_line_batch(
-            &origin_point_scene_axes(false, false, false, [false, true, false]),
-            density,
-            &cam,
-        );
+        let y_alone = origin_point_scene_axes(false, false, false, [false, true, false]);
+        let only_y = points_line_batch(&y_alone, density, frame(&y_alone, density), &cam);
         assert_eq!(only_y.len(), 2, "@d{density}: only Y ⇒ one segment");
         assert!(
             only_y.iter().all(is_green),
@@ -467,7 +464,7 @@ fn grid_planes_carry_correct_orientation() {
     for density in [1u32, 15, 16] {
         // All three planes on at the Origin (recenter = 0 → origin at world 0).
         let scene = origin_point_scene(true, true, true, false);
-        let planes = enabled_grid_planes(&scene, density);
+        let planes = enabled_grid_planes(&scene, density, frame(&scene, density));
         assert_eq!(
             planes.len(),
             3,
@@ -535,7 +532,7 @@ fn points_offset_point_frame_sits_at_world_position() {
         ..Point::default()
     });
     // The offset Point's ground plane sits at that world position.
-    let planes = enabled_grid_planes(&scene, density as u32);
+    let planes = enabled_grid_planes(&scene, density as u32, frame(&scene, density as u32));
     assert_eq!(
         planes.len(),
         1,
@@ -546,7 +543,12 @@ fn points_offset_point_frame_sits_at_world_position() {
         [(10 * density) as f32, 0.0, (-4 * density) as f32],
         "the grid plane origin is at the Point's world position",
     );
-    let batch = points_line_batch(&scene, density as u32, &camera::OrbitCamera::default());
+    let batch = points_line_batch(
+        &scene,
+        density as u32,
+        frame(&scene, density as u32),
+        &camera::OrbitCamera::default(),
+    );
     assert_eq!(batch.len(), 6, "axes only ⇒ three segments");
     // The axes cross at the Point origin; every axis segment shares that center on
     // its two non-running coordinates. Recover the center as the midpoint of the X
@@ -588,6 +590,9 @@ fn grid_block_spacing_is_density() {
         );
         // And a plane is actually emitted to carry that spacing.
         let scene = origin_point_scene(true, false, false, false);
-        assert_eq!(enabled_grid_planes(&scene, density).len(), 1);
+        assert_eq!(
+            enabled_grid_planes(&scene, density, frame(&scene, density)).len(),
+            1
+        );
     }
 }

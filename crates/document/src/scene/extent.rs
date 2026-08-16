@@ -583,17 +583,20 @@ impl Scene {
     /// For a Group / Instance node the box is the union of all leaves under it.
     /// A size-less node (a VoxelBody-only / empty subtree, or a path that descends
     /// through a non-Group) returns `None` — there is no block lattice to draw.
+    ///
+    /// **`frame` is taken, never derived** (Law 5) — see [`Scene::sketch_handles`].
     pub fn node_block_lattice_box_recentered(
         &self,
         path: &NodePath,
         voxels_per_block: u32,
+        frame: RecenterVoxels,
     ) -> Option<([f32; 3], [f32; 3])> {
         let (min_corner, max_corner) = self.node_subtree_extent_blocks(path, voxels_per_block)?;
         let density = voxels_per_block.max(1) as i64;
         let mut min_box = [0.0f32; 3];
         let mut max_box = [0.0f32; 3];
         // Unwrap the carried frame at the recentered block-corner arithmetic.
-        let recenter = self.recenter_voxels_for_resolve(voxels_per_block).voxels();
+        let recenter = frame.voxels();
         for axis in 0..3 {
             // Whole-block corners → voxels (exact), then into the recentered frame.
             min_box[axis] = (min_corner[axis] * density - recenter[axis]) as f32;
@@ -739,10 +742,13 @@ impl Scene {
     /// scene's extent (a scene-wide clip). `None` when `target` is stale or hidden, or
     /// its subtree has no intrinsic extent (a lone VoxelBody) — the caller then
     /// applies no region clip.
+    ///
+    /// **`frame` is taken, never derived** (Law 5) — see [`Scene::sketch_handles`].
     pub fn selected_region_extent_recentered_voxels(
         &self,
         target: NodeId,
         voxels_per_block: u32,
+        frame: RecenterVoxels,
     ) -> Option<([i64; 3], [i64; 3])> {
         let (min_abs, max_abs) = if target == ROOT_NODE_ID {
             // The root part IS the whole scene (its subtree is every top-level node),
@@ -755,7 +761,7 @@ impl Scene {
         };
         // Rebase the absolute producer-true corners into the recentered frame: subtract
         // the composite recenter the resolve applies.
-        let recenter = self.recenter_voxels_for_resolve(voxels_per_block).voxels();
+        let recenter = frame.voxels();
         Some((
             [
                 min_abs[0] - recenter[0],

@@ -579,7 +579,9 @@ fn a_scene_with_marked_up_geometry() -> (document::scene::Scene, document::scene
 #[test]
 fn every_badge_the_shell_lays_out_lies_on_the_line_at_the_reporters_camera() {
     let (scene, id) = a_scene_with_marked_up_geometry();
-    let handles = scene.sketch_handles(id, 16).expect("handles");
+    let handles = scene
+        .sketch_handles(id, 16, scene.recenter_voxels_for_resolve(16))
+        .expect("handles");
     let document::scene::NodeContent::SketchTool { producer, .. } =
         &scene.node_by_id(id).expect("the node").content
     else {

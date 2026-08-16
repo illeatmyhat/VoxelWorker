@@ -1124,6 +1124,7 @@ impl WindowedState {
             self.panel_state.layer_range,
             scene_grid_z,
             self.panel_state.debug_face_orientation,
+            self.recenter_voxels,
         )
     }
 

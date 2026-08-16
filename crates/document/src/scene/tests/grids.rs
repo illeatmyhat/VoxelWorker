@@ -23,7 +23,11 @@ fn single_node_lattice_box(
     node.transform = NodeTransform::from_blocks(offset_blocks, density);
     let scene = with_minted_ids(Scene::from_nodes(vec![node]));
     scene
-        .node_block_lattice_box_recentered(&NodePath::root_index(0), density)
+        .node_block_lattice_box_recentered(
+            &NodePath::root_index(0),
+            density,
+            scene.recenter_voxels_for_resolve(density),
+        )
         .expect("a sized Box node has a lattice box")
 }
 
@@ -107,8 +111,13 @@ fn lattice_box_follows_whole_block_translate_at_each_density() {
             with_minted_ids(Scene::from_nodes(vec![moving, anchor]))
         };
         let box_of = |offset: [i64; 3]| {
-            make_scene(offset)
-                .node_block_lattice_box_recentered(&NodePath::root_index(0), density)
+            let scene = make_scene(offset);
+            scene
+                .node_block_lattice_box_recentered(
+                    &NodePath::root_index(0),
+                    density,
+                    scene.recenter_voxels_for_resolve(density),
+                )
                 .expect("moving node has a lattice box")
         };
         let before = box_of(base);
@@ -149,7 +158,11 @@ fn sizeless_node_has_no_lattice_box() {
             NodeContent::VoxelBody(VoxelBody::DebugClouds { seed: 0 }),
         ));
         assert_eq!(
-            scene.node_block_lattice_box_recentered(&NodePath::root_index(0), density),
+            scene.node_block_lattice_box_recentered(
+                &NodePath::root_index(0),
+                density,
+                scene.recenter_voxels_for_resolve(density),
+            ),
             None,
             "@ d{density}: a size-less node yields no lattice box"
         );
@@ -623,7 +636,7 @@ fn gizmo_placement_follows_its_node() {
 
         // A stale id → no gizmo.
         assert_eq!(
-            scene.gizmo_placement_for_id(NodeId(9999), vpb),
+            scene.gizmo_placement_for_id(NodeId(9999), vpb, scene.recenter_voxels_for_resolve(vpb)),
             None,
             "no selection hides the gizmo (vpb={vpb})"
         );
@@ -651,7 +664,7 @@ fn gizmo_placement_follows_its_node() {
                 .id_at_path(&NodePath::root_index(index))
                 .expect("top-level node resolves");
             let (pivot, extent) = scene
-                .gizmo_placement_for_id(node_id, vpb)
+                .gizmo_placement_for_id(node_id, vpb, scene.recenter_voxels_for_resolve(vpb))
                 .expect("the node shows the gizmo");
             assert_eq!(
                 pivot,
@@ -686,7 +699,7 @@ fn single_even_selected_node_gizmo_sits_at_origin() {
         node.transform = NodeTransform::from_blocks([123, -45, 67], vpb);
         let scene = with_minted_ids(Scene::from_nodes(vec![node]));
         let (pivot, _) = scene
-            .gizmo_placement_for_id(scene.roots[0], vpb)
+            .gizmo_placement_for_id(scene.roots[0], vpb, scene.recenter_voxels_for_resolve(vpb))
             .expect("gizmo shown");
         assert_eq!(
             pivot,
@@ -718,7 +731,7 @@ fn single_odd_selected_node_gizmo_is_at_most_half_voxel_off_origin() {
         node.transform = NodeTransform::from_blocks([123, -45, 67], vpb);
         let scene = with_minted_ids(Scene::from_nodes(vec![node]));
         let (pivot, _) = scene
-            .gizmo_placement_for_id(scene.roots[0], vpb)
+            .gizmo_placement_for_id(scene.roots[0], vpb, scene.recenter_voxels_for_resolve(vpb))
             .expect("gizmo shown");
         for (axis, &component) in pivot.iter().enumerate() {
             assert!(

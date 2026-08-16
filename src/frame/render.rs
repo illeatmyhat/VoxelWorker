@@ -103,6 +103,7 @@ pub fn upload_scene_scaffold(
     queue: &wgpu::Queue,
     scene: &Scene,
     density: u32,
+    recenter: RecenterVoxels,
     camera: &camera::OrbitCamera,
     scene_matrices: camera::SceneMatrices,
     overlay_view_projection: glam::Mat4,
@@ -113,23 +114,24 @@ pub fn upload_scene_scaffold(
     points_overlay: &mut PointsRenderer,
     infinite_grid: &mut InfiniteGridRenderer,
 ) {
-    scene_grid.rebuild_from_scene(device, queue, scene, density);
+    scene_grid.rebuild_from_scene(device, queue, scene, density, recenter);
     scene_grid.update_uniforms(queue, scene_matrices.view_projection);
     if !show_points {
         return;
     }
     // Depth-off overlay instance (the on-top / paint-order axes) — always drawn.
-    points_overlay.rebuild_from_scene(device, queue, scene, density, camera, false);
+    points_overlay.rebuild_from_scene(device, queue, scene, density, recenter, camera, false);
     points_overlay.update_uniforms(queue, overlay_view_projection);
     // Depth-tested instance for crisp near occlusion — only when NOT drawing axes on top.
     if !axes_through {
-        points.rebuild_from_scene(device, queue, scene, density, camera, true);
+        points.rebuild_from_scene(device, queue, scene, density, recenter, camera, true);
         points.update_uniforms(queue, scene_matrices.view_projection);
     }
     infinite_grid.rebuild_from_scene(
         queue,
         scene,
         density,
+        recenter,
         scene_matrices,
         camera.projection_mode,
     );

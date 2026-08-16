@@ -97,12 +97,12 @@ fn point_origin_voxels(point: &Point, recenter: RecenterVoxels, density: i64) ->
 pub(crate) fn points_line_batch(
     scene: &Scene,
     voxels_per_block: u32,
+    recenter: RecenterVoxels,
     camera: &camera::OrbitCamera,
 ) -> Vec<LineVertex> {
     let mut vertices = Vec::new();
     let step = voxels_per_block.max(1);
     let density = step as i64;
-    let recenter = scene.recenter_voxels_for_resolve(voxels_per_block);
     for point in &scene.points {
         if point.hidden {
             continue;
@@ -158,10 +158,13 @@ fn reference_plane_basis(plane: ReferencePlane) -> ([f32; 3], [f32; 3], [f32; 3]
 /// Hidden Points and disabled planes contribute nothing; the common case (the
 /// Origin Point's XY ground plane, Z-up) yields exactly one instance. Pure + GPU-free
 /// so the plane selection/orientation is unit-tested.
-pub fn enabled_grid_planes(scene: &Scene, voxels_per_block: u32) -> Vec<GridPlaneInstance> {
+pub fn enabled_grid_planes(
+    scene: &Scene,
+    voxels_per_block: u32,
+    recenter: RecenterVoxels,
+) -> Vec<GridPlaneInstance> {
     let step = voxels_per_block.max(1);
     let density = step as i64;
-    let recenter = scene.recenter_voxels_for_resolve(voxels_per_block);
     let mut planes = Vec::new();
     for point in &scene.points {
         if point.hidden {
@@ -274,17 +277,19 @@ impl PointsRenderer {
     /// #29 S5). Hidden Points and disabled axes contribute nothing; an all-off scene
     /// yields an empty batch (the draw becomes a no-op). The reference planes are
     /// drawn separately by [`InfiniteGridRenderer`].
+    #[allow(clippy::too_many_arguments)]
     pub fn rebuild_from_scene(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         scene: &Scene,
         voxels_per_block: u32,
+        recenter: RecenterVoxels,
         camera: &camera::OrbitCamera,
         depth_tested: bool,
     ) {
         self.depth_tested = depth_tested;
-        let vertices = points_line_batch(scene, voxels_per_block, camera);
+        let vertices = points_line_batch(scene, voxels_per_block, recenter, camera);
         self.vertex_count = upload_lines(
             device,
             queue,

@@ -196,6 +196,7 @@ impl InfiniteGridRenderer {
         queue: &wgpu::Queue,
         scene: &Scene,
         voxels_per_block: u32,
+        recenter: RecenterVoxels,
         scene_matrices: camera::SceneMatrices,
         projection_mode: camera::ProjectionMode,
     ) {
@@ -203,7 +204,7 @@ impl InfiniteGridRenderer {
             camera::ProjectionMode::Perspective => PERSPECTIVE_LOD_FADE_SCALE,
             camera::ProjectionMode::Orthographic => ORTHOGRAPHIC_LOD_FADE_SCALE,
         };
-        let planes = enabled_grid_planes(scene, voxels_per_block);
+        let planes = enabled_grid_planes(scene, voxels_per_block, recenter);
         let density = voxels_per_block.max(1) as f32;
         let ray_inverse_unprojection = scene_matrices.ray_unprojection.inverse();
         let line_color = srgb_hex_to_linear(POINT_PLANE_COLOR_HEX);

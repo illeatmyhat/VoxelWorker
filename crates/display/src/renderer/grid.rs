@@ -150,9 +150,10 @@ impl SceneGridRenderer {
         queue: &wgpu::Queue,
         scene: &Scene,
         voxels_per_block: u32,
+        recenter: RecenterVoxels,
     ) {
         let step = voxels_per_block.max(1);
-        let (lattice_boxes, floor_boxes) = scene_grid_boxes(scene, voxels_per_block);
+        let (lattice_boxes, floor_boxes) = scene_grid_boxes(scene, voxels_per_block, recenter);
         let mut lattice: Vec<LineVertex> = Vec::new();
         let mut floor: Vec<LineVertex> = Vec::new();
         for (min, max) in lattice_boxes {
@@ -231,6 +232,7 @@ impl SceneGridRenderer {
 pub(crate) fn scene_grid_boxes(
     scene: &Scene,
     voxels_per_block: u32,
+    recenter: RecenterVoxels,
 ) -> (Vec<([f32; 3], [f32; 3])>, Vec<([f32; 3], [f32; 3])>) {
     let mut lattice_boxes = Vec::new();
     let mut floor_boxes = Vec::new();
@@ -248,7 +250,8 @@ pub(crate) fn scene_grid_boxes(
         if !want_lattice && !want_floor {
             continue;
         }
-        let Some(node_box) = scene.node_block_lattice_box_recentered(&path, voxels_per_block)
+        let Some(node_box) =
+            scene.node_block_lattice_box_recentered(&path, voxels_per_block, recenter)
         else {
             continue;
         };

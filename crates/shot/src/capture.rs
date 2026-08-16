@@ -68,12 +68,13 @@ struct ASketchsOverlay {
 fn a_sketchs_overlay_at(
     panel_state: &PanelState,
     target: document::scene::NodeId,
+    frame: voxel_worker::RecenterVoxels,
     view_projection: glam::Mat4,
     viewport_px: [u32; 4],
     pixels_per_point: f32,
 ) -> Option<ASketchsOverlay> {
     let density = panel_state.geometry.voxels_per_block;
-    let handles = panel_state.scene.sketch_handles(target, density)?;
+    let handles = panel_state.scene.sketch_handles(target, density, frame)?;
     let node = panel_state.scene.node_by_id(target)?;
     let document::scene::NodeContent::SketchTool { producer, .. } = &node.content else {
         return None;
@@ -596,6 +597,9 @@ pub(crate) async fn run_capture(options: ShotOptions) {
     // The voxel-space grid dimensions actually resolved (the composite region for
     // a placed scene), used for the layer track and the uniforms / fog.
     let grid_dimensions = grid.dimensions;
+    // The frame this capture DRAWS in — the one the solid voxels above were resolved in.
+    // Every display pass below is handed it rather than deriving its own (Law 5).
+    let display_frame = voxel_worker::RecenterVoxels::new(grid.recenter_voxels);
     debug_assert_eq!(
         region_dimensions, grid_dimensions,
         "S6c-1: scene region dimensions must equal the assembled grid the consumers used"
@@ -940,6 +944,7 @@ pub(crate) async fn run_capture(options: ShotOptions) {
                 &panel_state.scene,
                 target,
                 options.geometry.voxels_per_block,
+                display_frame,
             )
         })
     } else {
@@ -987,6 +992,7 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         layer_range,
         render_grid_z,
         options.debug_face_orientation,
+        display_frame,
     );
     let band = clip.band;
     // The measured-diameter readout: the widest occupied run in the effective (scene-absolute)
@@ -1301,6 +1307,7 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         a_sketchs_overlay_at(
             &panel_state,
             target,
+            display_frame,
             probe_projection,
             probe.viewport_px,
             pixels_per_point,
@@ -1354,12 +1361,14 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         aspect_ratio,
         &panel_state.scene,
         options.geometry.voxels_per_block,
+        display_frame,
     );
     voxel_worker::frame::render::upload_scene_scaffold(
         &gpu.device,
         &gpu.queue,
         &panel_state.scene,
         options.geometry.voxels_per_block,
+        display_frame,
         &app_core.camera,
         scene_matrices,
         overlay_vp,

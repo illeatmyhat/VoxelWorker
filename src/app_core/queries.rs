@@ -4,6 +4,7 @@
 use display::renderer::{LayerBand, OnionFogParams, RegionClip, RegionRole};
 use document::scene::{NodeId, Scene};
 use ui::panel::{LayerRange, ViewMode};
+use voxel_core::voxel::RecenterVoxels;
 
 use super::AppCore;
 
@@ -107,10 +108,11 @@ impl AppCore {
         aspect_ratio: f32,
         scene: &Scene,
         density: u32,
+        frame: RecenterVoxels,
     ) -> glam::Mat4 {
         let camera = &self.camera;
         let mut radius = camera.view_extent_at_depth(camera.orbit_distance).max(1.0) * 2.0;
-        let recenter = scene.recenter_voxels_for_resolve(density).voxels();
+        let recenter = frame.voxels();
         let forward = -camera.direction();
         for point in &scene.points {
             if point.hidden || !(point.axis_x || point.axis_y || point.axis_z) {
@@ -148,8 +150,9 @@ impl AppCore {
         scene: &Scene,
         node_id: NodeId,
         density: u32,
+        frame: RecenterVoxels,
     ) -> Option<([f32; 3], [f32; 3])> {
-        scene.gizmo_placement_for_id(node_id, density)
+        scene.gizmo_placement_for_id(node_id, density, frame)
     }
 
     /// The region-scoped layer clip for a frame — the SINGLE place both the windowed shell
@@ -163,6 +166,7 @@ impl AppCore {
     /// offsets them by the object's base layer into scene-absolute band indices and derives
     /// the recentered-voxel region the band is confined to. Selecting the ROOT part gives the
     /// whole-scene region.
+    #[allow(clippy::too_many_arguments)]
     pub fn mesh_clip(
         scene: &Scene,
         selection: Option<NodeId>,
@@ -171,6 +175,7 @@ impl AppCore {
         layer_range: LayerRange,
         scene_grid_z: u32,
         debug_face_orientation: bool,
+        frame: RecenterVoxels,
     ) -> MeshClip {
         let finished = MeshClip {
             band: LayerBand::FULL,
@@ -183,9 +188,9 @@ impl AppCore {
         }
         // Onion-fog needs a selected object to scope the clip to. No selection / hidden /
         // empty subtree ⇒ finished; there is no implicit whole-scene clip.
-        let Some((rmin, rmax)) = selection
-            .and_then(|target| scene.selected_region_extent_recentered_voxels(target, density))
-        else {
+        let Some((rmin, rmax)) = selection.and_then(|target| {
+            scene.selected_region_extent_recentered_voxels(target, density, frame)
+        }) else {
             return finished;
         };
         // The mesher maps a recentered voxel-Z `v` to absolute layer `v + floor(dim_z/2)`.

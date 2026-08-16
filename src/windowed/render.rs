@@ -136,11 +136,7 @@ impl WindowedState {
         // where the user is looking.
         {
             let density = self.panel_state.geometry.voxels_per_block.max(1) as i64;
-            let recenter = self
-                .panel_state
-                .scene
-                .recenter_voxels_for_resolve(self.panel_state.geometry.voxels_per_block)
-                .voxels();
+            let recenter = self.recenter_voxels.voxels();
             let target = self.app_core.camera.target;
             self.panel_state.point_add_position_blocks = [
                 ((target.x.round() as i64) + recenter[0]).div_euclid(density),
@@ -303,6 +299,7 @@ impl WindowedState {
                 &self.panel_state.scene,
                 focus_id,
                 self.panel_state.geometry.voxels_per_block,
+                self.recenter_voxels,
             ) {
                 let (target, distance) =
                     OrbitCamera::focus_target_and_distance(glam::Vec3::from_array(pivot), extent);
@@ -732,6 +729,7 @@ impl WindowedState {
                     &self.panel_state.scene,
                     target,
                     self.panel_state.geometry.voxels_per_block,
+                    self.recenter_voxels,
                 )
             });
         // Per-object block lattice + floor grid (issue #29 S3): rebuild this frame's
@@ -747,12 +745,14 @@ impl WindowedState {
             aspect_ratio,
             &self.panel_state.scene,
             self.panel_state.geometry.voxels_per_block,
+            self.recenter_voxels,
         );
         crate::frame::render::upload_scene_scaffold(
             &self.gpu.device,
             &self.gpu.queue,
             &self.panel_state.scene,
             self.panel_state.geometry.voxels_per_block,
+            self.recenter_voxels,
             &self.app_core.camera,
             scene_matrices,
             overlay_vp,
@@ -875,10 +875,11 @@ impl WindowedState {
         // basis comes from the one forward map the vertex handles use, so the wash cannot land on a
         // different plane than the handles do.
         let sketch_region = self.panel_state.sketch_mode.and_then(|target| {
-            let handles = self
-                .panel_state
-                .scene
-                .sketch_handles(target, self.panel_state.geometry.voxels_per_block)?;
+            let handles = self.panel_state.scene.sketch_handles(
+                target,
+                self.panel_state.geometry.voxels_per_block,
+                self.recenter_voxels,
+            )?;
             let node = self.panel_state.scene.node_by_id(target)?;
             let document::scene::NodeContent::SketchTool { producer, .. } = &node.content else {
                 return None;
@@ -1104,11 +1105,11 @@ impl WindowedState {
         // Recompute the handles from the CURRENT scene (not last frame's cache): a mid-drag
         // move can shift the composite recenter / profile bbox, and the forward projection and
         // the inverse plane-hit map must share ONE frame or the vertex jitters.
-        let Some(handles) = self
-            .panel_state
-            .scene
-            .sketch_handles(target, self.panel_state.geometry.voxels_per_block)
-        else {
+        let Some(handles) = self.panel_state.scene.sketch_handles(
+            target,
+            self.panel_state.geometry.voxels_per_block,
+            self.recenter_voxels,
+        ) else {
             return IntentEffect::none();
         };
 
@@ -1945,10 +1946,11 @@ impl WindowedState {
     ) -> Option<document::sketch::SketchSolid> {
         let target = self.panel_state.sketch_mode?;
         let seg_id = self.sketch_segment_at(cursor_x, cursor_y)?;
-        let handles = self
-            .panel_state
-            .scene
-            .sketch_handles(target, self.panel_state.geometry.voxels_per_block)?;
+        let handles = self.panel_state.scene.sketch_handles(
+            target,
+            self.panel_state.geometry.voxels_per_block,
+            self.recenter_voxels,
+        )?;
         let coord = self.cursor_to_profile_coord(
             cursor_x,
             cursor_y,
@@ -2412,10 +2414,11 @@ impl WindowedState {
         cursor_y: f64,
     ) -> Option<document::sketch::SketchPoint> {
         let target = self.panel_state.sketch_mode?;
-        let handles = self
-            .panel_state
-            .scene
-            .sketch_handles(target, self.panel_state.geometry.voxels_per_block)?;
+        let handles = self.panel_state.scene.sketch_handles(
+            target,
+            self.panel_state.geometry.voxels_per_block,
+            self.recenter_voxels,
+        )?;
         let coord = self.cursor_to_profile_coord(
             cursor_x,
             cursor_y,
@@ -2434,10 +2437,11 @@ impl WindowedState {
     /// choice stores this only in the live gesture; snapping it would change the chosen branch.
     fn sketch_unsnapped_profile_coord(&self, cursor_x: f64, cursor_y: f64) -> Option<[f64; 2]> {
         let target = self.panel_state.sketch_mode?;
-        let handles = self
-            .panel_state
-            .scene
-            .sketch_handles(target, self.panel_state.geometry.voxels_per_block)?;
+        let handles = self.panel_state.scene.sketch_handles(
+            target,
+            self.panel_state.geometry.voxels_per_block,
+            self.recenter_voxels,
+        )?;
         self.cursor_to_profile_coord(
             cursor_x,
             cursor_y,
@@ -4082,7 +4086,9 @@ impl WindowedState {
         let density = self.panel_state.geometry.voxels_per_block;
         let (Some(context), Some(handles)) = (
             self.sketch_evaluation_context(),
-            self.panel_state.scene.sketch_handles(target, density),
+            self.panel_state
+                .scene
+                .sketch_handles(target, density, self.recenter_voxels),
         ) else {
             return;
         };
@@ -4567,11 +4573,11 @@ impl WindowedState {
         // No handles is no sketch plane, and therefore no badges. Not the flat page: a mark laid
         // out on the glass because its own plane could not be struck is the eighth report's
         // species, and the dimension pass beside this one has always declined instead.
-        let Some(handles) = self
-            .panel_state
-            .scene
-            .sketch_handles(target, self.panel_state.geometry.voxels_per_block)
-        else {
+        let Some(handles) = self.panel_state.scene.sketch_handles(
+            target,
+            self.panel_state.geometry.voxels_per_block,
+            self.recenter_voxels,
+        ) else {
             return;
         };
         // **The plane's projection, FORWARD only** — the same door the sketch curves go through,
@@ -5183,11 +5189,11 @@ impl WindowedState {
             self.sketch_menu_face = None;
             return;
         };
-        let Some(handles) = self
-            .panel_state
-            .scene
-            .sketch_handles(target, self.panel_state.geometry.voxels_per_block)
-        else {
+        let Some(handles) = self.panel_state.scene.sketch_handles(
+            target,
+            self.panel_state.geometry.voxels_per_block,
+            self.recenter_voxels,
+        ) else {
             self.reset_sketch_gestures();
             self.sketch_chamfer_pending = None;
             self.sketch_offset_pending = None;

@@ -598,7 +598,9 @@ mod tests {
         shape_the_hand: impl FnOnce(&mut SketchHand, Pos2, document::sketch::EntityId),
     ) -> ui::gizmos::HandleState {
         let (scene, node, point) = a_sketch_with_one_free_point();
-        let handles = scene.sketch_handles(node, 16).expect("a sketch node");
+        let handles = scene
+            .sketch_handles(node, 16, scene.recenter_voxels_for_resolve(16))
+            .expect("a sketch node");
         let document::scene::NodeContent::SketchTool { producer, .. } =
             &scene.node_by_id(node).expect("just built").content
         else {
@@ -682,7 +684,9 @@ mod tests {
             },
         )]);
         let node = scene.roots[0];
-        let handles = scene.sketch_handles(node, 16).expect("a sketch node");
+        let handles = scene
+            .sketch_handles(node, 16, scene.recenter_voxels_for_resolve(16))
+            .expect("a sketch node");
         let document::scene::NodeContent::SketchTool { producer, .. } =
             &scene.node_by_id(node).expect("just built").content
         else {
@@ -735,7 +739,9 @@ mod tests {
             },
         )]);
         let node = scene.roots[0];
-        let handles = scene.sketch_handles(node, 16).expect("a sketch node");
+        let handles = scene
+            .sketch_handles(node, 16, scene.recenter_voxels_for_resolve(16))
+            .expect("a sketch node");
         let document::scene::NodeContent::SketchTool { producer, .. } =
             &scene.node_by_id(node).expect("just built").content
         else {
