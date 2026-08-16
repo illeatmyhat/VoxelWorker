@@ -1630,6 +1630,14 @@ fn a_frame_the_drawing_refuses_leaves_it_exactly_where_it_stood() {
 /// | --- | --- | --- |
 /// | curved slot spine end | 9 | 0 |
 /// | straight slot end | 165, longest run 150 | 19, longest run 8 |
+///
+/// The RUN is the bound that matters and fifteen is what it protects: a quarter of a second at
+/// sixty frames, which is the shortest stall an author reads as the drag having let go rather
+/// than as the drawing being slow. It is not a headroom allowance. Reading an arc's radius off
+/// both ends rather than one moved the run from eight to twelve without changing the count much
+/// — 19 to 17 — because a different road to the same manifold reshuffles which frames land
+/// where. That is the species that will creep it: two more such and the bound is green with
+/// nothing left. Re-measure the quarter second before raising it, and raise it as a decision.
 #[test]
 fn a_hand_the_drawing_gives_up_on_is_offered_again_more_slowly() {
     for (name, base, grab_at, reach, most, longest_allowed) in [
