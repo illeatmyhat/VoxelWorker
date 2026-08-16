@@ -1148,15 +1148,31 @@ fn holds_at(base: &Sketch, grabbed: EntityId, travel: f64, degrees: f64) -> bool
 /// zoomed out and a biting one zoomed in, and the author would have to relearn it at every zoom.
 ///
 /// Measured across a fourfold scale, at five ceilings spanning the whole slope from "does nothing"
-/// to "gives the radius up entirely". Agreement is a few parts in a million, which is the solve's
-/// own convergence rather than anything about scale — the loosest ceiling reaches three parts and
-/// the tightest agrees to one part in two thousand million.
+/// to "gives the radius up entirely". Agreement is parts in a million, which is which member of an
+/// under-dimensioned family each scale lands on rather than anything about scale itself.
 ///
 /// The bound is a RATIO because the claim is one: an absolute epsilon on a length is itself a
 /// statement about scale, and the answers here are lengths near forty. What the residue is not is
 /// a tolerance anybody could tighten — dropping `SATISFACTION_TOLERANCE` by four orders of
 /// magnitude leaves every figure below bit-identical, so it is the step budget landing at a
 /// slightly different place along the same path, not an unconverged solve.
+///
+/// The residue GREW when an arc's radius started being read off both of its ends rather than the
+/// one called `from` (see the arc arm of `curve_geometry`), because a tangency's rows now touch
+/// four more coordinates and a solve takes a different road to the same manifold. Measured, worst
+/// spread over answer:
+///
+/// | ceiling | one end | both ends |
+/// | --- | --- | --- |
+/// | 1.5 | 2.8e-6 | 1.4e-5 |
+/// | 2.0 | 1.9e-7 | 2.8e-7 |
+/// | 2.5 | 1.2e-8 | 7.3e-7 |
+/// | 3.0 | 8.2e-9 | 9.5e-9 |
+/// | 4.0 | 5.0e-10 | 5.0e-10 |
+///
+/// Fourteen parts in a million on a length of forty is six ten-thousandths of a voxel, and the
+/// claim the test exists to make — that the ceiling means the same thing at every zoom — is still
+/// carried to five figures. The knob check above was re-run against the right-hand column.
 ///
 /// The one place it is only approximate is the SHELL's conversion, not the kernel's arithmetic:
 /// under perspective on a tilted plane, drawing-units-per-pixel varies across the screen, and the
@@ -1180,7 +1196,7 @@ fn a_ceiling_in_screen_points_means_the_same_at_every_zoom() {
             .flat_map(|first| answers.iter().map(move |second| (first - second).abs()))
             .fold(0.0_f64, f64::max);
         assert!(
-            widest < 1.0e-5 * answers[0],
+            widest < 2.0e-5 * answers[0],
             "a ceiling of {reach} answered {answers:?} across a fourfold zoom"
         );
     }
@@ -1677,4 +1693,106 @@ fn a_hand_the_drawing_gives_up_on_is_offered_again_more_slowly() {
              {longest_allowed} a walked retry should leave"
         );
     }
+}
+
+/// The author's own arc slot, to scale: a spine at 95 about the hub with rails 22 either side,
+/// swept 141 degrees. Both the radius and the width matter — the quarter-turn slot at 40 that
+/// every other test here sweeps never loses its ghost at all, and never crosses hard enough to.
+fn wide_curved_slot() -> Sketch {
+    let sweep = 141.2_f64.to_radians();
+    SketchSolid::extrude(Sketch::empty(PlaneAxis::Z), 4)
+        .with_center_arc_slot(
+            SketchPoint::new(0, 0),
+            SketchPoint::new(95, 0),
+            SketchPoint::new(
+                (95.0 * sweep.cos()).round() as i64,
+                (95.0 * sweep.sin()).round() as i64,
+            ),
+            ::parametric::sketch::ArcTurn::CounterClockwise,
+            SketchPoint::new(117, 0),
+            ctx(16),
+        )
+        .expect("a wide curved slot")
+        .sketch
+        .as_ref()
+        .clone()
+}
+
+/// A sweep keeps hold of the circle it is sweeping on, all the way round.
+///
+/// The author, on the shape above: "it can't find a solution despite the cursor being right on top
+/// of the arc circle's ghost." It could not, and the reason was a LABEL. Reversing an arc's
+/// endpoint order is what a wind does (ADR 0041) and it is supposed to change nothing but which
+/// way round the arc is drawn — but the kernel read an arc's radius off its `from` end alone, so
+/// the reversed drawing asked a different question. Instrumented over this sweep: the first route
+/// converged in two iterations at 5.1e-12 and the relabelled route exhausted a hundred at 14.1,
+/// with the same hands, the same seven points and the same five relations. The caller read that as
+/// a broken tangency, refused the frame, and the retry arrived without the snap.
+///
+/// What the sweep lost, before and after:
+///
+/// | handle | was | now |
+/// | --- | --- | --- |
+/// | first spine end | 12 frames, all consecutive | 1 |
+/// | second spine end | 56 frames, longest run 39 | 1 |
+///
+/// The cursor is rounded to whole voxels the way the shell rounds it, because that is the drag the
+/// author is performing and the rounding is what leaves a radius to hold in the first place.
+#[test]
+fn a_sweep_holds_the_circle_it_is_sweeping_on() {
+    let base = wide_curved_slot();
+    let mut swept = 0_u32;
+    for held in base
+        .points()
+        .iter()
+        .map(|point| point.id)
+        .collect::<Vec<_>>()
+    {
+        let stood = base.point_in_plane(held).expect("a placed point");
+        let radius = stood[0].hypot(stood[1]);
+        // The hub itself sweeps nothing, and dragging it is a different gesture.
+        if radius <= 1.0 {
+            continue;
+        }
+        swept += 1;
+        let opening = stood[1].atan2(stood[0]);
+        let mut turns = crate::sketch::ArcTurnUnderAGesture::opening_over(&base);
+        let (mut dark, mut run, mut longest) = (0_u32, 0_u32, 0_u32);
+        for degrees in 1..=359_u32 {
+            let turn = opening + f64::from(degrees).to_radians();
+            let mut preview = base.clone();
+            let mut carried = turns.clone();
+            let held_it = preview
+                .move_point_reporting_its_snap(
+                    held,
+                    SketchPoint::new(
+                        (radius * turn.cos()).round() as i64,
+                        (radius * turn.sin()).round() as i64,
+                    ),
+                    ctx(16),
+                    SnapReach::of_length(20.0),
+                    &mut carried,
+                )
+                .is_ok_and(|answered| answered.kept.is_some());
+            if held_it {
+                turns = carried;
+                run = 0;
+            } else {
+                dark += 1;
+                run += 1;
+                longest = longest.max(run);
+            }
+        }
+        // A single frame either side of a crossing is the discrete step itself and the author
+        // cannot see it. A run is what the report was about: the ghost goes out and stays out.
+        assert!(
+            longest <= 2,
+            "the sweep of {held:?} lost its circle for {longest} frames together ({dark} of 359 \
+             dark), so the ghost goes out and stays out where the drawing winds"
+        );
+    }
+    assert!(
+        swept >= 6,
+        "only {swept} handles of the slot were swept, so the fixture is not the shape this is about"
+    );
 }

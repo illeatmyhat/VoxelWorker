@@ -2873,6 +2873,66 @@ mod tests {
         }
     }
 
+    /// Which end of an arc is called `from` is a LABEL, and a label does not change the equations.
+    ///
+    /// A wind reverses endpoint order (ADR 0041) and is supposed to change only which way round
+    /// the arc is drawn. It did not: an arc's radius was read off its `from` end alone, so the
+    /// reversed drawing asked a different question of every tangency touching it. On the author's
+    /// own arc slot the same hands over the same seven points converged in two iterations at
+    /// 5.1e-12 one way round and exhausted a hundred at 14.1 the other, and the sweep dropped its
+    /// snap ghost for thirteen frames together.
+    ///
+    /// The ends here are deliberately UNEQUAL — reach 10 against reach 14 about the same center.
+    /// That is the state the invariant protects and the only state it can be tested in: equal
+    /// radius is a ROW the solve is answering, so a converged arc satisfies this vacuously while
+    /// every arc mid-pass does not. Their MEAN is 12, so the tangency reads a circle of 12 either
+    /// way round; read off one end it reads 10 one way and 14 the other, and the row moves by four.
+    ///
+    /// Only the arc's own equal-radius row may differ, and only by sign: it says `from` less `to`,
+    /// which is the one place endpoint order is the point.
+    #[test]
+    fn reversing_an_arcs_ends_leaves_the_equations_where_they_stood() {
+        let rows_when = |reversed: bool| {
+            let mut builder = ProblemBuilder::new();
+            let center = builder.add_point([0.0, 0.0]);
+            let near = builder.add_point([10.0, 0.0]);
+            let far = builder.add_point([0.0, 14.0]);
+            let arc = if reversed {
+                builder.add_arc(center, far, near)
+            } else {
+                builder.add_arc(center, near, far)
+            };
+            // Placed so that neither one-end reading is right: the mean of 12 leaves one unit of
+            // residual, the near end three and the far end minus one. Reading a norm would have
+            // missed a reading that only flips sign.
+            let ring = circle(&mut builder, [31.0, 0.0], 18.0);
+            builder.add_constraint(Relation::Tangent {
+                first: SketchCurve::Arc(arc),
+                second: SketchCurve::Circle(ring),
+                branch: TangentBranch::External,
+            });
+            let problem = builder.finish().unwrap();
+            let scalars = problem.scalar_coordinates();
+            let positions: Vec<[f64; 2]> = problem.points.iter().map(|point| point.at).collect();
+            let system = Residuals::new(&problem, &scalars, Rigidity::Ignored).unwrap();
+            let mut rows = vec![f64::NAN; system.residual_count()];
+            system.residuals(&system.guess(&positions), &mut rows);
+            rows
+        };
+        let (stood, reversed) = (rows_when(false), rows_when(true));
+        assert_eq!(
+            stood.len(),
+            reversed.len(),
+            "reversing an arc changed how many rows the drawing has"
+        );
+        let magnitudes = |rows: &[f64]| rows.iter().map(|row| row.abs()).collect::<Vec<_>>();
+        assert_eq!(
+            magnitudes(&stood),
+            magnitudes(&reversed),
+            "reversing the arc moved the equations: {stood:?} against {reversed:?}"
+        );
+    }
+
     #[test]
     fn tangent_has_one_row_and_keeps_the_segment_direction_for_line_side() {
         let mut builder = ProblemBuilder::new();
@@ -4253,9 +4313,30 @@ fn curve_geometry(
         },
         ResolvedCurve::Arc(arc) => {
             let (center, from, to) = (at(arc.center), at(arc.from), at(arc.to));
+            let reach = |end: [f64; 2]| (end[0] - center[0]).hypot(end[1] - center[1]);
             CurveGeometry::Circular(CircularCurve {
                 center,
-                radius: ((from[0] - center[0]).powi(2) + (from[1] - center[1]).powi(2)).sqrt(),
+                // Read off BOTH ends, because which end is called `from` is a label.
+                //
+                // Equal radius is a ROW the solve is answering, not a property the drawing
+                // arrives holding: mid-pass the two ends stand different distances from the
+                // center, and taking the first one names a different circle than taking the
+                // second. Nothing says which, so a tangency against this arc quietly changed
+                // its equations whenever the arc's endpoint order changed — and endpoint order
+                // is exactly what a WIND reverses (ADR 0041). Measured on the author's own arc
+                // slot: the same hands, the same seven points, the same five relations, and one
+                // route converged in two iterations at 5.1e-12 while the relabelled route
+                // exhausted a hundred at 14.1, having lost two rows of rank on the way. The
+                // caller then read that rejection as a broken tangency and refused the frame, so
+                // a sweep across the crossing dropped its snap for thirteen frames together.
+                //
+                // The mean is the reading the rest of the kernel already uses —
+                // [`Problem::arc_radius_seed`] — and it is exact wherever the arc is consistent,
+                // which every answer the solve accepts is.
+                radius: f64::midpoint(reach(from), reach(to)),
+                // The DOMAIN is order-dependent on purpose: an arc is the counter-clockwise
+                // sweep from `from` to `to`, so reversing it names the complementary sweep. Only
+                // the circle underneath has to be a label away from itself.
                 arc: Some(ArcDomain {
                     from,
                     to,
@@ -6473,10 +6554,17 @@ impl Problem {
         loosened: &[SketchCurve],
         opening: &[[f64; 2]],
     ) -> Vec<(ParameterId, f64)> {
+        // Both ends, because which one is called `from` is a label — see the arc arm of
+        // [`curve_geometry`], where reading one of them let a wind change the equations. The
+        // opening is a converged answer, so the two agree to the solve's own tolerance and this
+        // was expected to say nothing; measured, it says nothing.
         let drawn = |arc: &ArcCenter| {
             let hub = opening.get(arc.center.index)?;
-            let end = opening.get(arc.from.index)?;
-            Some((end[0] - hub[0]).hypot(end[1] - hub[1]))
+            let reach = |end: &[f64; 2]| (end[0] - hub[0]).hypot(end[1] - hub[1]);
+            Some(f64::midpoint(
+                reach(opening.get(arc.from.index)?),
+                reach(opening.get(arc.to.index)?),
+            ))
         };
         let mut authored: Vec<PointId> = Vec::new();
         for curve in loosened {
@@ -6565,10 +6653,17 @@ impl Problem {
         // have already dragged the drawing about and the column has followed them — on the slot
         // that prompted this the far cap's went 7.3271 to 0.6141 before the drawing was ever asked.
         // The radius the author drew is the only one worth keeping, and `opening` is where it is.
+        // Both ends, because which one is called `from` is a label — see the arc arm of
+        // [`curve_geometry`], where reading one of them let a wind change the equations. The
+        // opening is a converged answer, so the two agree to the solve's own tolerance and this
+        // was expected to say nothing; measured, it says nothing.
         let drawn = |arc: &ArcCenter| {
             let hub = opening.get(arc.center.index)?;
-            let end = opening.get(arc.from.index)?;
-            Some((end[0] - hub[0]).hypot(end[1] - hub[1]))
+            let reach = |end: &[f64; 2]| (end[0] - hub[0]).hypot(end[1] - hub[1]);
+            Some(f64::midpoint(
+                reach(opening.get(arc.from.index)?),
+                reach(opening.get(arc.to.index)?),
+            ))
         };
         // A segment carried entire keeps the length it was drawn. Unlike the arc there is no
         // gesture on the other side of this: a segment dragged by its BODY slides sideways, both
