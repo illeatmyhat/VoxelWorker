@@ -2084,3 +2084,128 @@ fn how_far_a_hand_has_walked_does_not_change_where_it_lets_go() {
         ),
     }
 }
+
+#[test]
+fn probe_the_two_stubborn_angles() {
+    let base = wide_curved_slot();
+    for (grabbed, near) in [(6_u32, 219.0_f64), (11, 141.0)] {
+        let stood = base.point_in_plane(grabbed).expect("placed");
+        let radius = stood[0].hypot(stood[1]);
+        let opening = stood[1].atan2(stood[0]);
+        let mut turns = crate::sketch::GestureSoFar::opening_over(&base);
+        let mut below_ceiling = 0_u32;
+        let mut frames = 0_u32;
+        for half in 1..=800_u32 {
+            let degrees = f64::from(half) / 2.0;
+            let turn = opening + degrees.to_radians();
+            let mut preview = base.clone();
+            let mut carried = turns.clone();
+            let at = SketchPoint::new(
+                (radius * turn.cos()).round() as i64,
+                (radius * turn.sin()).round() as i64,
+            );
+            let got = preview.move_point_reporting_its_snap(
+                grabbed,
+                at,
+                ctx(16),
+                SnapReach::of_length(50.0),
+                &mut carried,
+            );
+            frames += 1;
+            if 0.75 * carried.furthest_the_hand_has_reached() < 50.0 {
+                below_ceiling += 1;
+            }
+            match got {
+                Err(refused) => {
+                    if (near - 4.0..=near + 4.0).contains(&degrees) {
+                        println!("  {grabbed} @{degrees:6.1} REFUSED {refused:?}");
+                    }
+                }
+                Ok(answer) => {
+                    turns = carried;
+                    let ink = answer.kept.map_or(-1.0, |kept| f64::from(kept.ghost_ink()));
+                    if (near - 4.0..=near + 4.0).contains(&degrees) {
+                        // What the drawing looks like at this frame, read off the preview.
+                        let hub = preview.point_in_plane(3).map_or(f64::NAN, |h| {
+                            let me = preview.point_in_plane(grabbed).unwrap_or([f64::NAN; 2]);
+                            (me[0] - h[0]).hypot(me[1] - h[1])
+                        });
+                        let cursor = at.in_plane();
+                        let want = preview
+                            .point_in_plane(3)
+                            .map_or(f64::NAN, |h| (cursor[0] - h[0]).hypot(cursor[1] - h[1]));
+                        println!(
+                            "  {grabbed} @{degrees:6.1} moved {} ink {ink:6.3} landed_reach \
+                             {hub:8.4} cursor_reach {want:8.4}",
+                            answer.moved
+                        );
+                    }
+                }
+            }
+        }
+        println!(
+            "point {grabbed}: {below_ceiling} of {frames} frames had the cone below its ceiling"
+        );
+    }
+}
+
+#[test]
+fn a_frame_the_drawing_will_not_stand_under_still_says_what_the_hand_was_holding() {
+    // A snap is a reading of WHERE THE CURSOR IS against the drawing as it stands. Whether the
+    // drawing can then be moved there is a different question with its own answer, and fusing the
+    // two means every way a frame can fail to move also blanks the ghost.
+    //
+    // Measured on the synthetic slot: sweeping a cap centre a whole turn, the frame at 219.0
+    // degrees puts the cursor at radius 95.0000 against an arc of radius 95.0000 — exact — and the
+    // move is declined because applying it would take an arc off its own circle. Declining the move
+    // is right. The author's cursor is still sitting on the ring, so the ring is still true, and
+    // before this the one frame where the radius was EXACT was the frame that lost its ghost.
+    //
+    // The neighbours either side, five thousandths of a voxel off, were perfect throughout. That is
+    // what says this is a structural fault and not a tolerance: a radius check cannot sensibly fail
+    // only when the radius is exactly right.
+    let base = wide_curved_slot();
+    let mut refusals = 0_u32;
+    for grabbed in [6_u32, 11] {
+        let stood = base.point_in_plane(grabbed).expect("a placed cap centre");
+        let radius = stood[0].hypot(stood[1]);
+        let opening = stood[1].atan2(stood[0]);
+        let mut turns = crate::sketch::GestureSoFar::opening_over(&base);
+        for half in 1..=800_u32 {
+            let degrees = f64::from(half) / 2.0;
+            let turn = opening + degrees.to_radians();
+            let mut preview = base.clone();
+            let mut carried = turns.clone();
+            let Ok(answered) = preview.move_point_reporting_its_snap(
+                grabbed,
+                SketchPoint::new(
+                    (radius * turn.cos()).round() as i64,
+                    (radius * turn.sin()).round() as i64,
+                ),
+                ctx(16),
+                SnapReach::of_length(50.0),
+                &mut carried,
+            ) else {
+                continue;
+            };
+            turns = carried;
+            if answered.moved {
+                continue;
+            }
+            // The hand is on the ring by construction — it is being walked around it.
+            refusals += 1;
+            let ink = answered
+                .kept
+                .map_or(0.0, |kept| f64::from(kept.ghost_ink()));
+            assert!(
+                ink > 0.5,
+                "point {grabbed} at {degrees} degrees: the drawing declined the move and took the \
+                 ghost with it, ink {ink:.3}"
+            );
+        }
+    }
+    assert!(
+        refusals >= 2,
+        "only {refusals} frames were declined, so this proves nothing"
+    );
+}

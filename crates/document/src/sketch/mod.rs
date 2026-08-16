@@ -327,6 +327,18 @@ impl DragAnswer {
     const fn stood(moved: bool) -> Self {
         Self { moved, kept: None }
     }
+
+    /// The drawing stood where it was, and this is what the hand was standing ON while it did.
+    ///
+    /// A refusal to MOVE is not a refusal to SEE. The quantity is read against the drawing as it
+    /// stood, before any solve, so whether the drawing can be carried to the cursor has no bearing
+    /// on whether the cursor is on a circle the drawing offers. Fusing the two put the ghost out on
+    /// the one frame where the radius was EXACTLY right — measured on the author's slot at 219.0
+    /// degrees, cursor at radius 95.0000 against an arc of 95.0000, with both neighbouring frames
+    /// five thousandths of a voxel off and perfect.
+    const fn seen(kept: Option<KeptQuantity>) -> Self {
+        Self { moved: false, kept }
+    }
 }
 
 /// One point a drag asserts, on the document's own ids, and what it is doing there.
@@ -4571,7 +4583,7 @@ impl Sketch {
         }
         validate_prepared_tangent_contacts(&prepared, &settled.solution)?;
         if !accepted {
-            return Ok(DragAnswer::stood(false));
+            return Ok(DragAnswer::seen(settled.kept));
         }
         let plan = prepared
             .plan_apply(&self.points, &self.circles, &settled.solution)
@@ -4584,7 +4596,7 @@ impl Sketch {
         if !drawn.iter().all(|id| self.arc_draws_a_circle(*id)) {
             self.points = stood.0;
             self.circles = stood.1;
-            return Ok(DragAnswer::stood(false));
+            return Ok(DragAnswer::seen(settled.kept));
         }
         // The frame stands, so the carry comes up to it. Last, and only here: every path above
         // that leaves the drawing where it was leaves the carry there too.
