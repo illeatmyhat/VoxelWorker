@@ -1804,3 +1804,82 @@ fn a_sweep_holds_the_circle_it_is_sweeping_on() {
         "only {swept} handles of the slot were swept, so the fixture is not the shape this is about"
     );
 }
+
+#[test]
+fn the_road_a_refused_drag_walks_stays_on_the_circle_the_hand_is_sliding_on() {
+    // A refused drag is offered again in substeps. Where the hand is turning about a pivot the
+    // snap chose, those substeps have to follow the CIRCLE, because the straight road between
+    // two points of a circle cuts inside it — and the deeper the turn, the further inside.
+    //
+    // At a half turn the chord passes through the pivot itself, so the way in stands at radius
+    // zero: the hand is nowhere near the quantity it was keeping, no substep can snap, and the
+    // whole walk is refused. That is the band the author reported, where the ghost went out
+    // with the cursor sitting on it.
+    let about = [7.0, -3.0];
+    let radius = 95.0_f64;
+    let on_the_circle = |degrees: f64| {
+        let turn: f64 = degrees.to_radians();
+        [
+            radius.mul_add(turn.cos(), about[0]),
+            radius.mul_add(turn.sin(), about[1]),
+        ]
+    };
+    let reach = |at: [f64; 2]| (at[0] - about[0]).hypot(at[1] - about[1]);
+
+    for opening in [0.0, 37.0, 118.0, 269.0] {
+        for sweep in [1.0, 30.0, 90.0, 179.0, 180.0, 181.0] {
+            let from = on_the_circle(opening);
+            let to = on_the_circle(opening + sweep);
+            for step in 1..=8_u32 {
+                let share = f64::from(step) / 8.0;
+                let stepped = super::super::a_step_of_a_turn(about, from, to, share)
+                    .expect("two placed ends and a pivot draw a turn");
+                assert!(
+                    (reach(stepped) - radius).abs() < 1.0e-9,
+                    "opening {opening}, sweep {sweep}, step {step}: the road left the circle at \
+                     radius {}",
+                    reach(stepped)
+                );
+            }
+        }
+    }
+
+    // What the straight road did instead, at the sweep that hurt: its way in stands AT the
+    // pivot, 95 units off the circle the hand never left.
+    let (from, to) = (on_the_circle(0.0), on_the_circle(180.0));
+    let chord_half = [f64::midpoint(from[0], to[0]), f64::midpoint(from[1], to[1])];
+    assert!(
+        reach(chord_half) < 1.0e-9,
+        "a half turn's chord is supposed to run through the pivot"
+    );
+}
+
+#[test]
+fn a_turn_between_two_different_reaches_carries_the_radius_across() {
+    // The two ends need not agree — a hand arriving at a different reach is still turning. The
+    // road walks the radius across as evenly as it walks the angle, so it never bulges outside
+    // the wider of the two nor dips inside the narrower.
+    let about = [0.0, 0.0];
+    let from = [10.0, 0.0];
+    let to = [-3.0, 20.0];
+    let (near, far) = (10.0_f64, (3.0_f64).hypot(20.0));
+    for step in 0..=10_u32 {
+        let share = f64::from(step) / 10.0;
+        let stepped =
+            super::super::a_step_of_a_turn(about, from, to, share).expect("two placed ends");
+        let reach = stepped[0].hypot(stepped[1]);
+        assert!(
+            reach >= near - 1.0e-9 && reach <= far + 1.0e-9,
+            "step {step} stood at {reach}, outside {near} to {far}"
+        );
+    }
+}
+
+#[test]
+fn a_hand_standing_on_its_pivot_has_no_turn_to_walk() {
+    // No angle can be read off a zero-length arm, so the caller is told to use the straight
+    // road rather than handed a fabricated one.
+    let about = [4.0, 4.0];
+    assert!(super::super::a_step_of_a_turn(about, about, [9.0, 4.0], 0.5).is_none());
+    assert!(super::super::a_step_of_a_turn(about, [9.0, 4.0], about, 0.5).is_none());
+}

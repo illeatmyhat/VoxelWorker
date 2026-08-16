@@ -3478,14 +3478,35 @@ impl Sketch {
         if steps < 2 {
             return Err(refused);
         }
+        // The road follows the circle the hand is sliding on, where there is one.
+        //
+        // A straight road CUTS ACROSS it. Half a turn puts the chord through the pivot itself, so
+        // every step of the way in stands nearer the center than the hand ever was — measured on
+        // the author's own slot, a band at 178 to 182 degrees where the cursor sat 0.008 off its
+        // ghost and the ring went out anyway. No step on that road can hold a radius, so the walk
+        // arrives having dropped the very thing it was walking to preserve, and the author reads
+        // it exactly right: "it loses the arc circle snap".
+        //
+        // The pivot is ASKED OF THE KERNEL rather than worked out again here. Which quantity a
+        // hand is on is the snap's own question and it has an answer for it; a second opinion
+        // living at this layer is a second definition, and the two would drift.
+        let turning_about = self
+            .quantity_a_drag_would_keep(id, at, context, snap_reach)
+            .map(|kept| kept.about);
         let mut walking = self.clone();
         let mut walked = carries.to_vec();
         let mut arrived = None;
         for step in 1..=steps {
             let share = f64::from(step) / f64::from(steps);
-            let via = SketchPoint::from_continuous(
-                (to[0] - from[0]).mul_add(share, from[0]),
-                (to[1] - from[1]).mul_add(share, from[1]),
+            let along = turning_about.and_then(|about| a_step_of_a_turn(about, from, to, share));
+            let via = along.map_or_else(
+                || {
+                    SketchPoint::from_continuous(
+                        (to[0] - from[0]).mul_add(share, from[0]),
+                        (to[1] - from[1]).mul_add(share, from[1]),
+                    )
+                },
+                |[x, y]| SketchPoint::from_continuous(x, y),
             );
             let mut attempt = walking.clone();
             let mut inner = walked.clone();
@@ -3506,6 +3527,43 @@ impl Sketch {
         *self = walking;
         carries.clone_from_slice(&walked);
         Ok(answer)
+    }
+
+    /// What quantity a drag of `id` toward `at` would be keeping, asked of the kernel that decides
+    /// it.
+    ///
+    /// No solve runs. A snap is a reading of the drawing's GEOMETRY and the kernel has a door for
+    /// exactly that reading — the same door the no-relations path already goes through — so this
+    /// is the snap's own answer about its own pivot rather than a second one taken here.
+    ///
+    /// Asked of the drawing as the gesture FOUND it, which is what `self` holds on the refused
+    /// path: the attempt that declined put everything back before returning.
+    fn quantity_a_drag_would_keep(
+        &self,
+        id: EntityId,
+        at: SketchPoint,
+        context: parametric::EvaluationContext,
+        snap_reach: SnapReach,
+    ) -> Option<KeptQuantity> {
+        let hands = self.hands_moving_with(id, at);
+        let was: Vec<(EntityId, [f64; 2])> = self
+            .points
+            .iter()
+            .map(|point| (point.id, point.at.in_plane()))
+            .collect();
+        let held: Vec<EntityId> = hands.iter().map(|hand| hand.point).collect();
+        let reach = self.what_a_drag_of_these_can_reach(&held);
+        let standing: Vec<Constraint> = self
+            .constraints
+            .iter()
+            .filter(|constraint| self.constraint_stands_within(constraint, &reach))
+            .copied()
+            .collect();
+        constraint::prepare_scoped(self, &standing, Some(context), Some(&reach))
+            .ok()?
+            .holding_a_snap_within(snap_reach)
+            .snap_the_hands(&hands, &was)
+            .map(|(_, kept)| kept)
     }
 
     /// How many steps to walk a refused hand over, from how far it has to travel measured against
@@ -7165,6 +7223,41 @@ fn drawn_sweep_of(center: [f64; 2], first: [f64; 2], second: [f64; 2]) -> Option
         first,
         second,
     )
+}
+
+/// Where a hand turning `about` stands `share` of the way from `from` to `to`.
+///
+/// The angle and the radius are both carried across, so a hand that opened on a circle and is
+/// arriving on one stays within the wider of the two deviations the whole way — every step is at
+/// least as near its quantity as the arrival is, which is the property a straight road gives up.
+/// Holding the radius instead would buy nothing that bound does not already give, and would make
+/// the last step absorb the whole radial travel at once: the same discontinuity, moved to the end.
+///
+/// The SHORT way round, which is a reading and not a declaration — ADR 0041 says a wind is
+/// authored by the path. It is exact everywhere except at half a turn, where the two roads are the
+/// same length and the tie goes counter-clockwise; the hand that went the other way gets a road it
+/// did not take to a place it did ask for.
+///
+/// `None` where the hand or its target stands ON the pivot, which names no turn.
+fn a_step_of_a_turn(about: [f64; 2], from: [f64; 2], to: [f64; 2], share: f64) -> Option<[f64; 2]> {
+    let arm = |at: [f64; 2]| [at[0] - about[0], at[1] - about[1]];
+    let (opening, arrival) = (arm(from), arm(to));
+    let (near, far) = (opening[0].hypot(opening[1]), arrival[0].hypot(arrival[1]));
+    // A normal reach, which rules out the zero that names no angle and the unplaced coordinate
+    // that would carry one through, in the one question.
+    if !(near.is_normal() && far.is_normal()) {
+        return None;
+    }
+    let turn = opening[0]
+        .mul_add(arrival[1], -(opening[1] * arrival[0]))
+        .atan2(opening[0].mul_add(arrival[0], opening[1] * arrival[1]));
+    let angle = turn.mul_add(share, opening[1].atan2(opening[0]));
+    let radius = (far - near).mul_add(share, near);
+    let stepped = [
+        radius.mul_add(angle.cos(), about[0]),
+        radius.mul_add(angle.sin(), about[1]),
+    ];
+    stepped.iter().all(|at| at.is_finite()).then_some(stepped)
 }
 
 /// Whether three placed points draw an arc an author could see and grab.
