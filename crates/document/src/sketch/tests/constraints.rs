@@ -4329,6 +4329,16 @@ fn a_point_held_to_a_spline_rides_it_when_the_spline_is_redrawn() {
 /// The unit of loosening is the biconnected block the hand stands in, so the whole loop gives way
 /// at once. What this test watches is the OPPOSITE corner: it is the one the hand never touches
 /// and the one a translation would take along.
+///
+/// **The AXIS-ALIGNED cursors are the ones that caught a real report**, and they are why this also
+/// watches the snap ghost. A rectangle's horizontals and verticals hold the dragged corner exactly
+/// tangential to the circle about its neighbour, so a snap that keeps a segment's length reads the
+/// author as sweeping about that neighbour and never lets go — the escape a free gesture gets by
+/// leaving the locus quadratically cannot happen when the constraints forbid leaving it. On the
+/// author's own drawing the corner missed the cursor by up to 2.42 and a ring appeared about the
+/// neighbouring corner, reported as "arc radius snapping with no arc to snap on". The three
+/// oblique cursors below never triggered it, which is why the test was green while the app was
+/// not.
 #[test]
 fn dragging_a_rectangles_corner_resizes_it_rather_than_moving_it() {
     let drawn = SketchSolid::extrude(Sketch::empty(PlaneAxis::Z), 4)
@@ -4350,15 +4360,32 @@ fn dragging_a_rectangles_corner_resizes_it_rather_than_moving_it() {
     };
     let grabbed = corner_at(&drawn, [0.0, 0.0]);
     let opposite = corner_at(&drawn, [20.0, 10.0]);
-    for cursor in [[-10.0, -6.0], [5.0, 3.0], [-4.0, 7.0_f64]] {
+    for cursor in [
+        [-10.0, -6.0],
+        [5.0, 3.0],
+        [-4.0, 7.0],
+        [-10.0, 0.0],
+        [0.0, -6.0_f64],
+    ] {
         let mut sketch = drawn.clone();
-        assert!(sketch
-            .move_point(
+        let answered = sketch
+            .move_point_reporting_its_snap(
                 grabbed,
                 SketchPoint::from_continuous(cursor[0], cursor[1]),
                 ctx(16),
+                SnapReach::UNBOUNDED,
+                &mut GestureSoFar::none(),
             )
-            .expect("the corner drag is answered"));
+            .expect("the corner drag is answered");
+        assert!(answered.moved);
+        // There is no round curve here, so there is no circle for the hand to slide along and
+        // nothing to draw one from. A ring about a neighbouring corner is the report.
+        assert!(
+            answered.kept.is_none(),
+            "dragging a corner to {cursor:?} kept a quantity about {:?}, and this drawing has no \
+             curve that draws a circle",
+            answered.kept.map(|kept| kept.about)
+        );
         let stayed = position(&sketch, opposite);
         assert!(
             (stayed[0] - 20.0).hypot(stayed[1] - 10.0) < 1.0e-6,

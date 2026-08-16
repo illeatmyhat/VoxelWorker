@@ -445,9 +445,6 @@ struct Point {
 struct Segment {
     from: PointId,
     to: PointId,
-    /// Construction geometry: solved like any other curve, but it names no quantity a drag could
-    /// be asked to keep. See [`Problem::quantities_a_hand_could_keep`].
-    scaffolding: bool,
 }
 
 /// One arc: two ends and the point they turn about, all three placed (ADR 0038).
@@ -564,29 +561,15 @@ impl ProblemBuilder {
         id
     }
 
+    /// Construction geometry goes through here too. A scaffold once had its own door, so that its
+    /// span could be withheld from the snap; no span is offered to the snap any more, by anything,
+    /// and the two doors led to the same place in every other respect.
     pub fn add_segment(&mut self, from: PointId, to: PointId) -> SegmentId {
-        self.push_segment(from, to, false)
-    }
-
-    /// A segment that exists to place other geometry rather than to be part of the drawing.
-    ///
-    /// It solves identically. The only difference is that it offers no quantity to a snap, because
-    /// a scaffold's length is a consequence of what it scaffolds rather than something the author
-    /// set out to hold.
-    pub fn add_scaffolding_segment(&mut self, from: PointId, to: PointId) -> SegmentId {
-        self.push_segment(from, to, true)
-    }
-
-    fn push_segment(&mut self, from: PointId, to: PointId, scaffolding: bool) -> SegmentId {
         let id = SegmentId {
             owner: self.owner,
             index: self.segments.len(),
         };
-        self.segments.push(Segment {
-            from,
-            to,
-            scaffolding,
-        });
+        self.segments.push(Segment { from, to });
         id
     }
 
@@ -5729,8 +5712,8 @@ impl Problem {
         )
     }
 
-    /// The rim of the falloff for a hand keeping the SPAN it stands at the end of, as a share of
-    /// how far the hand travelled.
+    /// The rim of the falloff for a hand keeping the RADIUS it stands at, as a share of how far
+    /// the hand travelled.
     ///
     /// Read as an angle it is a cone about the direction that keeps the quantity, so a hand moving
     /// nearly ALONG it is understood to be moving along it. Nothing switches AT the rim — see
@@ -5742,47 +5725,30 @@ impl Problem {
     /// circle of radius `R` leaves it quadratically — about `travel² / 2R` — while the cone grows
     /// only linearly in travel. So a hand that FOLLOWS the locus is held however far it goes, and a
     /// hand that strikes out in a straight line is let go the further it commits. Measured on a
-    /// span of 40 (`the_two_snap_cones_are_the_angles_they_are_measured_to_be`):
+    /// radius of 40 (`a_radius_is_held_within_the_angle_it_is_measured_to_be`):
     ///
-    /// | travel | held exactly within | pulled at all within |
-    /// | --- | --- | --- |
-    /// | 2 | 7.2° | 13.0° |
-    /// | 6 | 4.4° | 10.3° |
-    /// | 15 | — | 4.2° |
-    /// | 30 | — | — |
-    ///
-    /// That is narrow, and deliberately so only up to a point: 0.25 is CONSERVATIVE rather than
-    /// forced. Sweeping it against the whole suite, 0.40 is the largest value that keeps every
-    /// test green, 0.45 breaks `mirror_regenerates_after_source_moves_and_adds_no_authored_geometry`
-    /// and 0.60 additionally breaks the two length-authoring guards below. So there is room here
-    /// and nothing measured has claimed it — see the note in
-    /// [ADR 0044](../../../../docs/adr/0044-an-end-of-a-round-curve-holds-its-radius.md).
-    const SNAP_CONE_KEEPING_A_SPAN: f64 = 0.25;
-
-    /// The same rim for a hand keeping the RADIUS it stands at, which is three times as wide.
-    ///
-    /// The two are not the same question, because the drawing does not author them the same way.
-    /// A segment's length IS what dragging its end is for, so an end has to give the length up
-    /// readily or the gesture has no other door — `an_achievable_drag_lands_exactly_on_the_cursor`
-    /// and `a_level_segment_stays_level_when_an_end_is_dragged` both say so, and both fail if a
-    /// span is held this hard. An arc's radius has its own door: dragging the arc's BODY applies a
-    /// signed offset along each end's own outward direction, which is a change of radius and
-    /// nothing else. So an end of a round curve is free to hold its radius hard, and should,
-    /// because the only thing left for that gesture to mean is a SWEEP.
+    /// | travel | held exactly within |
+    /// | --- | --- |
+    /// | 2 | 25.5° |
+    /// | 10 | 20.5° |
+    /// | 30 | 8.7° |
     ///
     /// Holding it is worth more than it looks. Held exactly, the whole rigid set moves by one
     /// similarity and the drawing never has to be reconciled, so the free sweep stops being spent
     /// at random: measured on a curved slot, the far cap's wander across a cursor step of 0.005
     /// went from 2.7 to 2.8e-25.
     ///
-    /// Measured against the span above, on the same radius of 40 and the same grabbed point, this
-    /// is the difference between a snap that survives a real gesture and one that does not:
-    ///
-    /// | travel | radius held exactly within | span held exactly within |
-    /// | --- | --- | --- |
-    /// | 2 | 25.5° | 7.2° |
-    /// | 10 | 20.5° | 1.6° |
-    /// | 30 | 8.7° | — |
+    /// **A segment's length once had a cone of its own, and should not have.** It was a third of
+    /// this one, on the argument that a length has to be given up readily because dragging an end
+    /// is how a length is authored. But the argument concedes the case: a hand pulled onto a
+    /// circle no curve draws is a hand pulled onto geometry that is not in the drawing, and the
+    /// narrow cone only made it rare. On a rectangle it was not even rare. The horizontals and
+    /// verticals hold a dragged corner exactly tangential to the circle about its neighbour, so
+    /// the quadratic escape above never happens and the span engaged on every axis-aligned drag —
+    /// the corner missed the cursor by up to 2.42 on the author's own drawing, and the ring drawn
+    /// about the neighbouring corner is what
+    /// `dragging_a_rectangles_corner_resizes_it_rather_than_moving_it` now watches for. Deleting
+    /// the candidate cost one test, which existed to measure the constant.
     const SNAP_CONE_KEEPING_A_RADIUS: f64 = 0.75;
 
     /// The share of the cone over which the quantity holds EXACTLY, before it starts letting go.
@@ -5870,12 +5836,11 @@ impl Problem {
 
     /// Pull the LEAD hand onto a quantity its own curve already had, when it moves along one.
     ///
-    /// Every curve names a distance — a segment its length, an arc its radius — and a preference
-    /// asks for that distance back. But a hand is an assertion and a preference is not, so when the
-    /// cursor sits off the circle that distance draws, the two cannot both be met and the hand
-    /// wins: the drawing translates under it instead of the curve sweeping around a center that
-    /// stays. No amount of preference fixes that, because translating satisfies every row exactly
-    /// and nothing outranks an answer at zero residual.
+    /// A round curve names a radius and a preference asks for it back. But a hand is an assertion
+    /// and a preference is not, so when the cursor sits off the circle that radius draws, the two
+    /// cannot both be met and the hand wins: the drawing translates under it instead of the curve
+    /// sweeping around a center that stays. No amount of preference fixes that, because
+    /// translating satisfies every row exactly and nothing outranks an answer at zero residual.
     ///
     /// So the disagreement is settled before the solve rather than inside it. Snapping the cursor
     /// ONTO the circle makes the sweep an exact answer too, and a cheaper one, and the solve then
@@ -5884,49 +5849,37 @@ impl Problem {
     /// across. A single frame of a drag is small, so a sweep re-snaps every frame and the quantity
     /// survives the whole gesture, while a deliberate pull leaves the cone at once.
     ///
-    /// The rule is the same for every curve, so a slot is nothing but its parts: at a rail's cap
-    /// the point belongs to both an arc and a segment, and the cone picks between them by which
-    /// one the hand is actually moving along.
     /// Every quantity the drawing offers a hand standing at `held`: the point it is measured
     /// from, and the cone that KIND of quantity is held in.
     ///
-    /// A curve ending where the hand stands offers the circle it would keep. Which cone comes with
-    /// it is a question about the authoring grammar rather than the geometry — see
-    /// [`Problem::SNAP_CONE_KEEPING_A_RADIUS`] for why a radius is held three times harder than a
-    /// span.
+    /// **Only a curve that DRAWS the circle offers it.** A round curve's end already slides along
+    /// its own radius, so keeping it is keeping something the author can see. The circle about a
+    /// segment's far end is drawn by nothing: it is a locus this function would be inventing, and
+    /// a hand pulled onto an invented locus is a hand pulled onto geometry that is not there. See
+    /// [`Problem::SNAP_CONE_KEEPING_A_RADIUS`] for what the span candidate cost while it existed.
     fn quantities_a_hand_could_keep(&self, held: PointId) -> Vec<(PointId, f64)> {
         let together = self.standing_together(held);
         let ends_here = |point: PointId| together.contains(&point);
-        let far = |from: PointId, to: PointId| ends_here(from).then_some(to);
-        self.segments
+        self.arc_centers
             .iter()
-            .filter(|segment| !segment.scaffolding)
-            .filter_map(|segment| {
-                far(segment.from, segment.to).or_else(|| far(segment.to, segment.from))
-            })
-            .map(|pivot| (pivot, Self::SNAP_CONE_KEEPING_A_SPAN))
-            .chain(
-                self.arc_centers
-                    .iter()
-                    .filter_map(|arc| {
-                        (ends_here(arc.from) || ends_here(arc.to)).then_some(arc.center)
-                    })
-                    .map(|pivot| (pivot, Self::SNAP_CONE_KEEPING_A_RADIUS)),
-            )
+            .filter_map(|arc| (ends_here(arc.from) || ends_here(arc.to)).then_some(arc.center))
+            .map(|pivot| (pivot, Self::SNAP_CONE_KEEPING_A_RADIUS))
             .collect()
     }
 
+    /// `opening` is the drawing as the GESTURE found it, not as a walk has left it: everything a
+    /// quantity is measured from that is not itself under a hand is read out of it.
     fn snapped(
         &self,
         hands: &[Hand],
         was: &[(PointId, [f64; 2])],
-        positions: &[[f64; 2]],
+        opening: &[[f64; 2]],
     ) -> Option<Snap> {
         // The quantity being kept is the LEAD's, because the lead is the point the author has hold
         // of. A carried hand rides whatever the lead does, and a pin is not moving at all.
         let (_, lead) = Hand::lead_of(hands)?;
         let (held, now) = (lead.point, lead.to);
-        let stood_at = |point: PointId| self.stood_of(point, was, positions);
+        let stood_at = |point: PointId| self.stood_of(point, was, opening);
         let stood = stood_at(held)?;
         // How far the hand has been from its opening, which is what opened the cone — not how far
         // it stands now. See [`Problem::the_hand_having_reached`]: a hand that has swept an arc
@@ -6388,7 +6341,15 @@ impl Problem {
         // nothing gets wider. Asked of the roles and not of the numbers, this survives the snap
         // and does not need a stillness tolerance to decide that a settled pin is still a pin.
         let reshaping = hands.iter().any(|hand| hand.role == HandRole::Pin);
-        let snap = self.snapped(hands, was, positions);
+        // The OPENING, not the drawing the walk has got to. `was` names only the hands, so every
+        // other point a quantity is measured from — a pivot, an arc's center — falls through to
+        // this slice, and handing it the walked positions re-measures the quantity against an
+        // answer the previous substep already snapped. It ratchets: on a rectangle corner the span
+        // it was meant to be keeping grew 72.5185 -> 74.5786 over sixteen substeps, and the ring
+        // was drawn about a corner that had slid nineteen units. The walk states this law four
+        // lines above where it hands `origin` to every step, and this read was the one place that
+        // was not obeying it.
+        let snap = self.snapped(hands, was, opening);
         let kept = snap.as_ref().map(|snap| snap.kept);
         let hands = snap.as_ref().map_or(hands, |snap| snap.hands.as_slice());
         // The hand is written into the guess as well as asserted, so the pass starts from the

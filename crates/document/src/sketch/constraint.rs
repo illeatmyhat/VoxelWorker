@@ -19,8 +19,8 @@
 )]
 
 use super::{
-    Arc, Circle, CircleRadius, EntityId, EntityRole, Hand, Point, Segment, Sketch, SketchLength,
-    SketchPoint, Spline,
+    Arc, Circle, CircleRadius, EntityId, Hand, Point, Segment, Sketch, SketchLength, SketchPoint,
+    Spline,
 };
 use parametric::sketch::{
     station_length, ArcId, BuildError, CircleId, ConstraintId, ParameterId, PointId, Problem,
@@ -2016,11 +2016,10 @@ fn prepare_within(
         let (Some(from), Some(to)) = (point(segment.from), point(segment.to)) else {
             return Err(PrepareError::InvalidDocumentGeometry);
         };
-        let local = match segment.role {
-            EntityRole::Real => builder.add_segment(from, to),
-            EntityRole::Construction => builder.add_scaffolding_segment(from, to),
-        };
-        segments.push((segment.id, local));
+        // Construction geometry solves identically and is built identically. The role used to
+        // split here so that a scaffold's span could be withheld from the snap; nothing offers a
+        // span to the snap now.
+        segments.push((segment.id, builder.add_segment(from, to)));
     }
     let mut arcs: Vec<&Arc> = sketch.arcs.iter().collect();
     arcs.sort_by_key(|arc| arc.id);
@@ -2034,8 +2033,8 @@ fn prepare_within(
         else {
             return Err(PrepareError::InvalidDocumentGeometry);
         };
-        // An arc's RADIUS survives travel around it, so a scaffolding arc still offers one —
-        // see `Problem::add_scaffolding_segment` for why only spans are withheld.
+        // A construction arc still offers its radius: a radius survives travel around it, and the
+        // circle it draws is on screen whether the arc is drawing the part or placing it.
         local_arcs.push((arc.id, builder.add_arc(center, from, to)));
     }
 

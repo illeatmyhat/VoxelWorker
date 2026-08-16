@@ -228,3 +228,102 @@ hands on it; the measurement is recorded so the choice is a minute's work rather
 Guarded by `the_two_snap_cones_are_the_angles_they_are_measured_to_be`, whose bounds are loose on
 purpose — it exists so a change to either share cannot pass unnoticed, not to claim these are the
 right angles.
+
+## Amendment, 2026-08-16 — only a curve that draws the circle offers it
+
+**`SNAP_CONE_KEEPING_A_SPAN` is deleted, and with it the whole span candidate.** The row above that
+gives a segment's end a cone of 0.25 is reversed. A hand standing at a segment's end is now offered
+nothing; only a round curve's end offers anything, and the surviving constant is renamed to say so
+in the singular.
+
+The reason is the one this record already gave for the ordering, followed to its end. A cone was
+justified by "the author is moving ALONG the quantity", and along WHAT is the question. An arc's
+end slides along the circle its own arc draws: the locus is on the screen, the author can see it,
+and holding it is holding something the drawing has. A segment draws a line. The circle about its
+far end is drawn by nothing, exists nowhere in the drawing, and a hand pulled onto it is a hand
+pulled onto geometry that is not there. [ADR 0040](0040-a-drag-snaps-to-the-quantity-it-moves-along.md)
+says the hand snaps onto the circle its CURVE draws; the span candidate was manufacturing a circle
+no curve drew.
+
+**What forced it was a rectangle.** The author: *"I'm seeing arc radius snapping trigger even when
+there is no arc or circle to snap on. For example, in the repro dump there is a rectangle. Selecting
+one of its points causes it to treat another point on the rectangle as an arc with a radius."*
+
+The amendment above argued the span cone self-extinguishes: past a travel of about 15 there is no
+angle that holds a length exactly, because a straight gesture leaves the locus quadratically. That
+argument assumes the gesture is free. A rectangle's horizontals and verticals hold a dragged corner
+*exactly* tangential to the circle about its neighbour, so `across` never grows at all and the cone
+that lets go of every free gesture engages permanently. On the author's own drawing, dragging a
+corner 20 units in each of 24 directions:
+
+| direction | corner missed the cursor by | ring drawn about |
+| --- | --- | --- |
+| 0°, 180° | 2.42, 2.39 | the corner above it |
+| 90°, 270° | 1.72, 1.71 | the corner beside it |
+| the other 20 | 0.00000 | nothing |
+
+The four that miss are the four that run along an edge. So the branch was not rare on the most
+common shape in the application, and where it fired it fought the very constraints that made it
+fire — the miss is the solve reconciling the snap against Horizontal and Vertical.
+
+**The suite never defended it, in either direction.** With the branch switched off, 588 of 589
+document tests pass; the one failure is
+`the_two_snap_cones_are_the_angles_they_are_measured_to_be`, which exists to measure the constants
+against each other. Every other test named around the span — `an_achievable_drag_lands_exactly_on_the_cursor`,
+`a_level_segment_stays_level_when_an_end_is_dragged`, the mirror test in the 0.45 row above —
+constrains the cone from ABOVE. Nothing anywhere asserted that a span snap should ever fire, and
+the "Still not done" note admitted no benefit had ever been measured for one.
+
+The reversal is a two-line change with a longer tail:
+
+- `Problem::quantities_a_hand_could_keep` offers arc centers only.
+- `the_two_snap_cones_are_the_angles_they_are_measured_to_be` becomes
+  `a_radius_is_held_within_the_angle_it_is_measured_to_be`, and the span becomes its CONTROL: a
+  segment of the same length, grabbed at the same place, keeping the same circle as a locus, must
+  NOT hold — at travels 2, 10 and 30, struck straight along the locus, which is the friendliest
+  gesture there is.
+- `Segment::scaffolding` and `Problem::add_scaffolding_segment` are deleted. They existed only to
+  withhold a scaffold's span from this snap — an earlier report of the same fault, one size
+  smaller, answered by narrowing the branch instead of removing it. `a_scaffold_span_offers_no_quantity_to_hold`
+  survives as a guard and now says why.
+- `dragging_a_rectangles_corner_resizes_it_rather_than_moving_it` gains two axis-aligned cursors and
+  an assertion that no quantity is kept. Its three oblique cursors never triggered the branch, which
+  is why the test was green while the application was not.
+
+The gesture a span-keep might have served — rotating a fixed-length link about its far end — is
+served by authoring a length dimension, after which the length is a hard row and no snap is
+involved.
+
+## Amendment, 2026-08-16 — a pivot is read from the opening, again
+
+The section above titled "The ghost named a circle the arc was never on" recorded this fault and
+fixed it once: a pivot is not a hand, `was` carries only hands, so `Problem::stood_of` fell through
+to where the pivot stands NOW. That fix landed at the caller that prepares a drag. It did not hold,
+because a WALKED drag re-enters the kernel once per substep with the drawing the walk has reached.
+
+`Problem::drag_together` states the law four lines above where it hands `origin` to every step:
+*"Every step measures from where the GESTURE started, not from where the last step landed… A step
+that measures from the last one snaps to whatever that step settled at, so the quantity it is meant
+to be keeping drifts a little each time."* The hand obeyed it. The pivot did not.
+
+It ratchets. Dragging a rectangle corner 20 units, over the sixteen substeps of one gesture:
+
+| substep | pivot read at | the span being kept |
+| --- | --- | --- |
+| 1 | −90.053 | 72.5185 |
+| 2 | −88.800 | 72.5458 |
+| 8 | −80.017 | 73.1943 |
+| 16 | −71.218 | **74.5786** |
+
+The ring was drawn about a corner that had slid nineteen units, at a radius nobody authored.
+
+`drag_one_frame` already receives `opening` — "the drawing as the gesture FOUND it" — for exactly
+this purpose, and the preference pass beside it already reads spans and radii out of it. The snap
+kernel was the one read that did not. It now takes `opening` in place of the walked positions, and
+its third parameter is named for what it is.
+
+This survives the deletion above, because an arc's center is a pivot and is measured through the
+same fallback. Measured on the same rectangle before the span candidate was removed, the fix alone
+made the ghost name a real corner at a stable radius — and made the branch fire on MORE directions
+rather than fewer, because an honest quantity engages where a ratcheting one had drifted out of its
+own cone. A correctness fix is not a behaviour fix; both were needed.

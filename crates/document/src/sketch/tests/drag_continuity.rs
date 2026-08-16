@@ -128,16 +128,19 @@ fn a_straight_slot_lengthens_when_its_end_cap_is_pulled() {
     );
 }
 
-/// A scaffold's SPAN is not a quantity a drag can be asked to keep.
+/// A slot's spine offers no quantity to hold, and neither would any other segment.
 ///
 /// A slot's spine is construction geometry, and for a straight slot its span IS the slot's length.
 /// Offering it to the snap put a ghost circle on a cap center and held the length while the author
 /// was trying to change it — reported as "the arc circle ghost also happens even though this
 /// endpoint is the center-point of the arc, which should never happen".
 ///
-/// A scaffold ARC keeps its radius, which is why the filter is on spans alone: travelling around a
-/// center never changes a radius, so a curved slot's curvature survives a gesture that lengthens
-/// it. See `Problem::add_scaffolding_segment` in the parametric crate.
+/// That was answered by withholding a SCAFFOLD's span, which was the same mistake one size
+/// smaller: the circle about any segment's far end is drawn by nothing, scaffold or not, and the
+/// next report was a rectangle. No span is offered now — see
+/// `Problem::quantities_a_hand_could_keep`. A round curve is untouched by either decision, because
+/// travelling around a center never changes a radius, so a curved slot's curvature still survives
+/// a gesture that lengthens it.
 #[test]
 fn a_scaffold_span_offers_no_quantity_to_hold() {
     let slot = SketchSolid::extrude(Sketch::empty(PlaneAxis::Z), 4)
@@ -1063,24 +1066,30 @@ fn sweeping_answer(base: &Sketch, held: EntityId, cursor: [f64; 2]) -> (Vec<f64>
     )
 }
 
-/// The two snap cones, in the degrees they actually come to.
+/// The radius cone, in the degrees it actually comes to — and the span that has none.
 ///
-/// `SNAP_CONE_KEEPING_A_SPAN` and `SNAP_CONE_KEEPING_A_RADIUS` are shares of how far the hand
-/// travelled, which says nothing on its own about what a gesture may look like and still be read as
-/// moving ALONG the quantity. This measures that, so the two numbers stop being opaque.
+/// `SNAP_CONE_KEEPING_A_RADIUS` is a share of how far the hand travelled, which says nothing on its
+/// own about what a gesture may look like and still be read as moving ALONG the quantity. This
+/// measures that, so the number stops being opaque.
 ///
 /// The angles shrink as the gesture lengthens, and that is not a defect: `across` is measured to
 /// the LOCUS, and a straight line tangent to a circle of radius R leaves it by about `travel²/2R`
 /// while the cone grows only linearly. A hand that follows the locus is held however far it goes;
 /// a hand that strikes out straight is let go the further it commits.
 ///
-/// The bounds here are loose on purpose — they are a guard against the shares being changed without
+/// The bounds here are loose on purpose — they are a guard against the share being changed without
 /// anyone noticing what it did, not a claim that these are the right angles.
+///
+/// **The segment is the control, and it must NOT hold.** A segment of the same length, grabbed at
+/// the same place, keeps a locus that is the same circle of radius 40 — so the two are asked
+/// exactly the same question and only one of them may answer it. The circle about an arc's hub is
+/// drawn by the arc; the circle about a segment's far end is drawn by nothing, and a hand pulled
+/// onto it is a hand pulled onto geometry that is not in the drawing.
 #[test]
-fn the_two_snap_cones_are_the_angles_they_are_measured_to_be() {
+fn a_radius_is_held_within_the_angle_it_is_measured_to_be() {
     // A span of 40 from a pinned tail, and an arc of radius 40 about a hub. Both are grabbed at
-    // [40, 0] and both keep a locus that is the circle of radius 40, so the two shares are being
-    // asked exactly the same question.
+    // [40, 0] and both keep a locus that is the circle of radius 40, so the two are being asked
+    // exactly the same question.
     let mut span = Sketch::empty(PlaneAxis::Z);
     let tail = span.add_free_point(SketchPoint::new(0, 0));
     let span_end = span.add_free_point(SketchPoint::new(40, 0));
@@ -1100,23 +1109,18 @@ fn the_two_snap_cones_are_the_angles_they_are_measured_to_be() {
     arc.connect_arc(arc_end, arc_far, AngleMeasurement::from_degrees(90))
         .expect("a quarter arc");
 
-    // (travel, the angle the span must still hold, the angle the radius must still hold)
-    for (travel, span_holds, radius_holds) in [(2.0, 6.0, 24.0), (10.0, 1.0, 19.0)] {
-        assert!(
-            holds_at(&span, span_end, travel, span_holds),
-            "a span stopped holding by {span_holds} degrees on a travel of {travel}"
-        );
+    for (travel, radius_holds) in [(2.0, 24.0), (10.0, 19.0), (30.0, 8.0)] {
         assert!(
             holds_at(&arc, arc_end, travel, radius_holds),
             "a radius stopped holding by {radius_holds} degrees on a travel of {travel}"
         );
+        // Straight along the locus is the friendliest gesture there is, and the span still does
+        // not hold: nothing is offering it.
+        assert!(
+            !holds_at(&span, span_end, travel, 0.0),
+            "a span was kept on a travel of {travel}, and no curve draws that circle"
+        );
     }
-    // The ordering is the decision, not the numbers: a radius is held harder than a span because
-    // the drawing authors a radius by another gesture entirely.
-    assert!(
-        holds_at(&arc, arc_end, 30.0, 8.0) && !holds_at(&span, span_end, 30.0, 1.0),
-        "a radius must outlast a span on a long gesture"
-    );
 }
 
 /// Whether the grabbed end still lands EXACTLY on the circle of radius 40 after a straight gesture
