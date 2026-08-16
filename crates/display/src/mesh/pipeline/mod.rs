@@ -74,6 +74,28 @@ impl CuboidChunkBuffers {
     }
 }
 
+/// A camera built for `current_frame`, re-expressed so it can draw vertices that were baked in
+/// `baked_frame`.
+///
+/// The two frames differ by a pure translation, so this is a concat and nothing else: no vertex
+/// moves, no buffer is rewritten, and the shader never learns that anything happened. Written out
+/// as its own function because the DIRECTION is the whole content and a sign error here draws a
+/// scene that looks plausible and stands in the wrong place.
+///
+/// When the frames agree — the steady state, and every golden — the matrix is returned untouched
+/// rather than multiplied by an identity, so the parity is bit-level rather than close enough.
+pub(crate) fn camera_walked_into_the_baked_frame(
+    view_projection: glam::Mat4,
+    baked_frame: RecenterVoxels,
+    current_frame: RecenterVoxels,
+) -> glam::Mat4 {
+    let walk = baked_frame.a_point_of_this_frame_seen_from(current_frame);
+    if walk == glam::Vec3::ZERO {
+        return view_projection;
+    }
+    view_projection * glam::Mat4::from_translation(walk)
+}
+
 /// All GPU resources for drawing the cuboid mesh — the understudy render path and
 /// pixel oracle (the brick raymarch is the primary display). One buffer set per chunk.
 pub struct CuboidMeshRenderer {
@@ -136,11 +158,27 @@ pub struct CuboidMeshRenderer {
     /// reclip (the layer scrubber) can re-mesh DIRECTLY from the two-layer store — no dense
     /// source grids. Empty on the dense path; populated only by
     /// [`new_from_two_layer_chunks`](Self::new_from_two_layer_chunks).
-    /// `recenter`/`density` are the frame + density the two-layer mesher needs to re-emit in
-    /// the SAME world frame on every band change.
+    /// `density` is what the two-layer mesher needs to re-emit on a band change; the frame it
+    /// re-emits in is [`baked_frame`](Self::baked_frame), which is not a two-layer fact.
     source_two_layer_chunks: Vec<([i32; 3], Arc<evaluation::two_layer_store::TwoLayerChunk>)>,
-    source_two_layer_recenter: RecenterVoxels,
     source_two_layer_density: u32,
+    /// **The frame the resident vertices are expressed in.** Render position = true world
+    /// voxel − this.
+    ///
+    /// It travels with the buffers because the buffers are the only thing that knows it: the
+    /// scene's floating origin is the midpoint of the composite extent, so it moves the moment
+    /// any shape grows, while these vertices go on standing where they were emitted until a
+    /// rebuild lands. Three readers, all of them the same question asked differently — the band
+    /// re-emit (which must re-emit in the frame the rest of the buffers are in), the overlay's
+    /// true-world offset, and the camera reconciliation in
+    /// [`update_uniforms`](Self::update_uniforms) (which walks the camera into this frame rather
+    /// than asking the vertices to move).
+    ///
+    /// Every constructor sets it through [`assemble`](Self::assemble), so there is no path that
+    /// leaves it unstated. It once defaulted to `[0, 0, 0]` on the dense builders, which was not
+    /// a harmless placeholder: the overlay read it and put the block lattice a whole recenter
+    /// away from the world lattice.
+    baked_frame: RecenterVoxels,
     /// The whole composite grid's voxel dims (the band clip maps an absolute layer to
     /// the global region-local Z; only the Z half is used).
     source_grid_dimensions: [u32; 3],
@@ -197,11 +235,19 @@ impl CuboidMeshRenderer {
         color_format: wgpu::TextureFormat,
         grid: &VoxelGrid,
         voxels_per_block: u32,
+        baked_frame: RecenterVoxels,
     ) -> Self {
         let buckets = bucket_grid_into_chunk_grids(grid, voxels_per_block);
         let chunk_refs: Vec<([i32; 3], &VoxelGrid)> =
             buckets.iter().map(|(coord, g)| (*coord, g)).collect();
-        Self::new_from_chunks(device, queue, color_format, &chunk_refs, grid.dimensions)
+        Self::new_from_chunks(
+            device,
+            queue,
+            color_format,
+            &chunk_refs,
+            grid.dimensions,
+            baked_frame,
+        )
     }
 
     /// Build the cuboid renderer DIRECTLY from the resolve cache's per-chunk grids.
@@ -216,6 +262,7 @@ impl CuboidMeshRenderer {
         color_format: wgpu::TextureFormat,
         chunk_grids: &[([i32; 3], &VoxelGrid)],
         grid_dimensions: [u32; 3],
+        baked_frame: RecenterVoxels,
     ) -> Self {
         profiling::scope!("cuboid_mesh_build");
         let source_chunk_grids: Vec<([i32; 3], VoxelGrid)> = chunk_grids
@@ -231,6 +278,7 @@ impl CuboidMeshRenderer {
             chunk_meshes,
             source_chunk_grids,
             grid_dimensions,
+            baked_frame,
         )
     }
 
@@ -307,11 +355,12 @@ impl CuboidMeshRenderer {
             chunk_meshes,
             Vec::new(),
             grid_dimensions,
+            recenter_voxels,
         );
-        // Retain the two-layer chunks + frame so `rebuild_for_band` re-meshes the band
-        // slab from the store — the layer scrubber on the two-layer path.
+        // Retain the two-layer chunks so `rebuild_for_band` re-meshes the band slab from the
+        // store — the layer scrubber on the two-layer path. The frame went in through
+        // `assemble`, where every path has to state it.
         renderer.source_two_layer_chunks = chunks.to_vec();
-        renderer.source_two_layer_recenter = recenter_voxels;
         renderer.source_two_layer_density = voxels_per_block.max(1);
         // The mesh was built AT `band` + `region`, so record them — a same-key
         // `update_uniforms` is then a no-op instead of a full re-mesh. A later band
@@ -335,6 +384,7 @@ impl CuboidMeshRenderer {
         chunk_meshes: Vec<CuboidChunkMesh>,
         source_chunk_grids: Vec<([i32; 3], VoxelGrid)>,
         grid_dimensions: [u32; 3],
+        baked_frame: RecenterVoxels,
     ) -> Self {
         let total_box_count = chunk_meshes.iter().map(|m| m.box_count).sum();
         let chunk_buffers = upload_chunk_meshes(device, &chunk_meshes);
@@ -686,8 +736,8 @@ impl CuboidMeshRenderer {
             // The dense builders retain no two-layer chunks; `new_from_two_layer_chunks`
             // overrides these after `assemble` so its band reclip re-meshes from the store.
             source_two_layer_chunks: Vec::new(),
-            source_two_layer_recenter: RecenterVoxels::new([0; 3]),
             source_two_layer_density: 1,
+            baked_frame,
             source_grid_dimensions: grid_dimensions,
             total_box_count,
             current_band: LayerBand::FULL,
@@ -828,7 +878,7 @@ impl CuboidMeshRenderer {
     ) {
         profiling::scope!("cuboid_mesh_incremental_two_layer");
         self.source_grid_dimensions = grid_dimensions;
-        self.source_two_layer_recenter = recenter_voxels;
+        self.baked_frame = recenter_voxels;
         self.source_two_layer_density = voxels_per_block.max(1);
 
         // The renderer's KNOWN set is its retained two-layer chunks' coords (includes
@@ -977,7 +1027,7 @@ impl CuboidMeshRenderer {
             return Some(build_two_layer_chunk_meshes(
                 &self.source_two_layer_chunks,
                 self.source_grid_dimensions,
-                self.source_two_layer_recenter,
+                self.baked_frame,
                 self.source_two_layer_density,
                 band,
                 region,
@@ -1100,7 +1150,7 @@ impl CuboidMeshRenderer {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         view_projection: glam::Mat4,
-        grid_dimensions: [u32; 3],
+        current_frame: RecenterVoxels,
         voxels_per_block: u32,
         grid_overlay_enabled: bool,
         bound: Option<MaterialChoice>,
@@ -1108,6 +1158,22 @@ impl CuboidMeshRenderer {
         region: Option<RegionClip>,
         debug_face_mode: bool,
     ) {
+        // **The pass draws wholly in the frame its vertices were baked in.** The scene's
+        // floating origin is the midpoint of the composite extent, so growing a shape moves it
+        // — and these buffers are built asynchronously and go on standing in the frame they
+        // were emitted in until the next build lands. For that window the camera is somewhere
+        // the vertices are not.
+        //
+        // Nothing here moves a vertex. The camera walks to them: the two frames differ by a
+        // pure integer translation, taken in i64 before it is ever an `f32`, and folded into
+        // the projection. Every other world-space term in this uniform is read from what the
+        // buffers recorded (`baked_frame`, `source_grid_dimensions`) for the same reason — a
+        // pass that mixed the two would put its shading keys and its block lattice in one
+        // frame and its positions in another. A zero delta leaves the matrix bit-identical,
+        // which is the steady state and every golden.
+        let view_projection =
+            camera_walked_into_the_baked_frame(view_projection, self.baked_frame, current_frame);
+        let grid_dimensions = self.source_grid_dimensions;
         // Layer-range band clip + region scoping: re-mesh clipped to the band inside the region (real cap faces at the band /
         // region edges) when either changed. Debug-faces mode bypasses BOTH (the check
         // sees the whole model), so force the full band + no region while it is on.
@@ -1185,7 +1251,7 @@ impl CuboidMeshRenderer {
             // `world_position + grid_half_extent` as if it were true-world; `recenter` is the
             // resolve's carried frame.
             overlay_world_offset: self
-                .source_two_layer_recenter
+                .baked_frame
                 .render_absolute_to_true_world_offset(grid_half_extent),
             _overlay_pad: 0.0,
         };

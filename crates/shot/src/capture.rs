@@ -812,6 +812,7 @@ pub(crate) async fn run_capture(options: ShotOptions) {
             COLOR_TARGET_FORMAT,
             &VoxelGrid::new(grid_dimensions),
             options.geometry.voxels_per_block,
+            display_frame,
         )
     } else if !options.dense && scene.has_chunkable_extent(options.geometry.voxels_per_block) {
         // Mesh THROUGH the two-layer path — now the DEFAULT (the live-app
@@ -858,6 +859,7 @@ pub(crate) async fn run_capture(options: ShotOptions) {
             COLOR_TARGET_FORMAT,
             &render_chunks,
             grid_dimensions,
+            display_frame,
         );
         drop(render_chunks);
         renderer
@@ -870,6 +872,7 @@ pub(crate) async fn run_capture(options: ShotOptions) {
             COLOR_TARGET_FORMAT,
             &grid,
             options.geometry.voxels_per_block,
+            display_frame,
         )
     };
     // The boolean-operand ghost — every Subtract/Intersect operand
@@ -1441,6 +1444,7 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         scene_matrices,
         prepared.viewport_px,
         grid_dimensions,
+        display_frame,
         options.geometry.voxels_per_block,
         band,
         clip.region,

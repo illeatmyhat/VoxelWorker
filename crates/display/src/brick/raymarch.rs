@@ -1199,14 +1199,32 @@ impl BrickRaymarchRenderer {
         self.record_count
     }
 
+    /// The frame the installed field was baked in.
+    ///
+    /// **A draw must not source its camera frame from here.** The camera's frame is the shell's,
+    /// and the whole point of `current_frame` on [`march_frame`](Self::march_frame) is that the
+    /// two are allowed to differ while a rebuild is in flight. This exists for the parity
+    /// harnesses, which install a field and immediately draw it, and so genuinely mean "the
+    /// steady state, where the two agree".
+    pub fn frame_the_installed_field_was_baked_in(&self) -> RecenterVoxels {
+        self.recenter_voxels
+    }
+
     /// Compute this frame's march frame (the uniform values) WITHOUT uploading —
     /// the shared math behind [`update_uniforms`](Self::update_uniforms) and the
     /// CPU reference march.
+    /// `current_frame` is the frame the CAMERA is in, and it is the caller's to state — not
+    /// `self.recenter_voxels`, which is the frame of whatever field happens to be installed. The
+    /// two part company whenever the floating origin moves and the next field has not landed
+    /// yet, and the brick payload is absolute (its bounds are absolute block coords, its shading
+    /// key is recovered through `shading_to_absolute`), so a field baked under an older origin
+    /// marches correctly the moment this term names the camera's frame rather than its own.
     pub fn march_frame(
         &self,
         scene_matrices: camera::SceneMatrices,
         viewport_px: [u32; 4],
         grid_dimensions: [u32; 3],
+        current_frame: RecenterVoxels,
         band: LayerBand,
         region: Option<RegionClip>,
         ghost_confine: bool,
@@ -1221,7 +1239,7 @@ impl BrickRaymarchRenderer {
         ];
         // absolute voxel = shading-absolute p + S, with S = recenter − half. Unwrap the
         // carried frame to its raw triple exactly here — the one uniform-packing consumption.
-        let recenter = self.recenter_voxels.voxels();
+        let recenter = current_frame.voxels();
         let shading_to_absolute = [
             recenter[0] - half[0],
             recenter[1] - half[1],
@@ -1363,6 +1381,7 @@ impl BrickRaymarchRenderer {
         scene_matrices: camera::SceneMatrices,
         viewport_px: [u32; 4],
         grid_dimensions: [u32; 3],
+        current_frame: RecenterVoxels,
         band: LayerBand,
         region: Option<RegionClip>,
         grid_overlay_master: bool,
@@ -1374,6 +1393,7 @@ impl BrickRaymarchRenderer {
             scene_matrices,
             viewport_px,
             grid_dimensions,
+            current_frame,
             band,
             region,
             false,
@@ -1525,6 +1545,7 @@ impl BrickRaymarchRenderer {
         scene_matrices: camera::SceneMatrices,
         viewport_px: [u32; 4],
         grid_dimensions: [u32; 3],
+        current_frame: RecenterVoxels,
         band: LayerBand,
         region: Option<RegionClip>,
     ) {
@@ -1550,6 +1571,7 @@ impl BrickRaymarchRenderer {
                 scene_matrices,
                 viewport_px,
                 grid_dimensions,
+                current_frame,
                 slab,
                 region,
                 true,
@@ -1574,6 +1596,7 @@ impl BrickRaymarchRenderer {
                 scene_matrices,
                 viewport_px,
                 grid_dimensions,
+                current_frame,
                 slab,
                 region,
                 true,

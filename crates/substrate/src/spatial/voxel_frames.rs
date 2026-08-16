@@ -59,6 +59,30 @@ impl RecenterVoxels {
         self.0
     }
 
+    /// The translation that carries a point expressed in THIS frame into `viewer`'s frame: a
+    /// point `p` recorded here stands at `p + this_offset` for someone measuring in `viewer`.
+    /// Equal to `self − viewer`, and exactly `ZERO` when the two frames agree.
+    ///
+    /// The frames differ by a pure translation, so a consumer holding data baked in one frame and
+    /// a camera built for another has a choice of which side to move. Moving the camera is the
+    /// cheap side: it is one matrix concat against however many vertices, and it leaves the data
+    /// untouched — which matters when the data is a GPU buffer somebody else is still filling.
+    /// The subtraction is taken in `i64` before either term is an `f32`, so a far scene loses
+    /// nothing to the downcast that its own coordinates would not have lost anyway.
+    #[must_use]
+    pub fn a_point_of_this_frame_seen_from(self, viewer: Self) -> Vec3 {
+        let here = self.voxels();
+        let there = viewer.voxels();
+        Vec3::from_array(std::array::from_fn(|axis| {
+            i64_to_f32(
+                here.get(axis)
+                    .copied()
+                    .unwrap_or_default()
+                    .wrapping_sub(there.get(axis).copied().unwrap_or_default()),
+            )
+        }))
+    }
+
     /// The per-axis `f32` offset the on-face grid overlay adds to a shader's RENDER-local
     /// `voxel_absolute_position` (`= world_position + grid_half_extent`) to recover the TRUE world
     /// voxel frame: `true_world = render_absolute + (recenter − grid_half_extent)` (see
@@ -243,6 +267,38 @@ mod tests {
         assert_eq!(
             recenter.render_absolute_to_true_world_offset(half),
             [64.0 - 8.0, 0.0 - 8.0, -16.0 - 8.0]
+        );
+    }
+
+    /// A point baked in one frame, walked into another, lands where that other frame would have
+    /// put it in the first place — for a world coordinate far enough out that the walk is the
+    /// whole difference between drawing it and misdrawing it.
+    ///
+    /// This is the arithmetic under a display pass whose buffers were emitted before the
+    /// floating origin last moved. Agreeing frames give exactly `ZERO`, which is what lets the
+    /// consumer skip the matrix concat and stay bit-identical in the steady state.
+    #[test]
+    fn a_point_walked_between_frames_lands_where_the_other_frame_puts_it() {
+        let baked = RecenterVoxels::new([640, -20, 8]);
+        let current = RecenterVoxels::new([1280, -20, -12]);
+        let world = Vec3::new(5000.0, 300.0, -70.0);
+
+        let in_baked = TrueWorldVoxelPoint::from_voxels(world)
+            .to_recentered(baked)
+            .voxels();
+        let in_current = TrueWorldVoxelPoint::from_voxels(world)
+            .to_recentered(current)
+            .voxels();
+        assert_ne!(in_baked, in_current, "the two frames must actually differ");
+        assert_eq!(
+            in_baked + baked.a_point_of_this_frame_seen_from(current),
+            in_current,
+        );
+
+        assert_eq!(
+            baked.a_point_of_this_frame_seen_from(baked),
+            Vec3::ZERO,
+            "a frame seen from itself asks for no walk at all",
         );
     }
 }

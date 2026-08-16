@@ -123,6 +123,7 @@ fn brick_raymarch_matches_exact_at_grazing_rim() {
         scene_matrices,
         viewport_px,
         grid_dimensions,
+        renderer.frame_the_installed_field_was_baked_in(),
         band,
         None,
         false,

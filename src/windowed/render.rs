@@ -705,6 +705,7 @@ impl WindowedState {
             scene_matrices,
             prepared.viewport_px,
             grid_dimensions,
+            self.recenter_voxels,
             voxels_per_block,
             band,
             region,
