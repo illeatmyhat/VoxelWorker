@@ -16,6 +16,7 @@
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
+use substrate::spatial::TrueWorldVoxelPoint;
 use voxel_worker::{
     GeometryParams, GpuContext, MaterialChoice, Scene, ShapeKind, TwoLayerChunk, TwoLayerStore,
     Worker,
@@ -42,6 +43,25 @@ use voxel_worker::{
 pub fn shared_gpu() -> &'static GpuContext {
     static SHARED: OnceLock<GpuContext> = OnceLock::new();
     SHARED.get_or_init(|| pollster::block_on(GpuContext::new(None)))
+}
+
+/// Where a parity harness should aim its camera: the composite's center, named in TRUE-WORLD
+/// voxels and crossed into the render frame at the last step.
+///
+/// A harness that writes `Vec3::ZERO` has named the render ORIGIN, not the scene. Those agree
+/// under the current policy and only under it — the moment the origin stops sitting on the
+/// composite's center, every such camera re-poses, the rays land on different surfaces, and a
+/// pose-exact case (a grazing rim, a silhouette pixel) reddens for a reason that has nothing to
+/// do with the divergence it was written to catch. Reading the center and converting through the
+/// frame keeps the pose on the geometry; it is the same `Vec3::ZERO` today, bit for bit, so
+/// nothing about the images these harnesses compare changes by adopting it.
+pub fn composite_center_in_frame(scene: &Scene, voxels_per_block: u32) -> glam::Vec3 {
+    let center = scene.placed_composite_center_voxels(voxels_per_block);
+    #[allow(clippy::as_conversions, clippy::cast_precision_loss)]
+    let center = glam::Vec3::from_array(center.map(|axis| axis as f32));
+    TrueWorldVoxelPoint::from_voxels(center)
+        .to_recentered(scene.recenter_voxels_for_resolve(voxels_per_block))
+        .voxels()
 }
 
 /// How long a NON-blocking `dispatch` is allowed to take before we call it "blocking". The

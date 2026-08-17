@@ -839,7 +839,14 @@ impl Scene {
     /// grid from absolute per-chunk pieces, so the assembled output is bit-identical.
     /// `[0, 0, 0]` for a scene with no intrinsic-size leaf.
     ///
-    /// Derived from the **producer-true voxel frame** ([`placed_extent_voxels`]) —
+    /// **The policy, not the geometry.** The value is
+    /// [`placed_composite_center_voxels`](Self::placed_composite_center_voxels) — the current
+    /// policy is to sit the origin on the composite's center — but the two are asked for
+    /// different reasons, and only this one is the frame the resolved grid stands in. A caller
+    /// aiming at the geometry reads the center; a caller expressing a value in the render frame
+    /// reads this.
+    ///
+    /// That center comes from the **producer-true voxel frame** ([`placed_extent_voxels`]) —
     /// the exact span the producers center-emit — NOT the block-floored frame. This
     /// makes the composite center coincide with the producers' own centers for ALL
     /// `size·d` parities (including odd size at density 1), so no per-leaf lattice
@@ -852,11 +859,30 @@ impl Scene {
     /// frame, so downstream never re-wraps a raw triple. Consumers that still speak
     /// `[i64; 3]` unwrap with [`RecenterVoxels::voxels`] at their boundary.
     pub fn recenter_voxels_for_resolve(&self, voxels_per_block: u32) -> RecenterVoxels {
-        let voxels = match self.placed_extent_voxels(voxels_per_block) {
+        RecenterVoxels::new(self.placed_composite_center_voxels(voxels_per_block))
+    }
+
+    /// The composite's center in **true-world voxels** — a fact about where the geometry
+    /// stands, not about where the render origin was put.
+    ///
+    /// Today the origin policy is "sit on this point", so
+    /// [`recenter_voxels_for_resolve`](Self::recenter_voxels_for_resolve) returns exactly this
+    /// and the two are indistinguishable. They are separate functions anyway because they
+    /// answer different questions, and a caller that wants to aim at the GEOMETRY — a parity
+    /// harness placing a camera, say — must not spell that as `Vec3::ZERO`. Naming the origin
+    /// where the scene was meant re-poses the caller the moment the policy stops agreeing, and
+    /// a pose-exact case then reddens for a reason that has nothing to do with what it tests.
+    /// Read this, then cross into the render frame with
+    /// [`TrueWorldVoxelPoint::to_recentered`](substrate::spatial::TrueWorldVoxelPoint::to_recentered).
+    ///
+    /// `[0, 0, 0]` for a scene with no intrinsic-size leaf, which has no composite to center.
+    #[must_use]
+    pub fn placed_composite_center_voxels(&self, voxels_per_block: u32) -> [i64; 3] {
+        match self.placed_extent_voxels(voxels_per_block) {
             // FLOOR division (`div_euclid`), NOT truncation: for an odd composite span
             // `(min + max)` is odd, and `/` rounds toward zero — which biases a
             // negative-X composite the OPPOSITE way from a positive-X one, breaking
-            // +X/−X symmetry. `div_euclid(2)` always rounds toward −∞, so the recenter
+            // +X/−X symmetry. `div_euclid(2)` always rounds toward −∞, so the center
             // direction is consistent regardless of where the composite sits.
             Some((min_corner, max_corner)) => [
                 (min_corner[0] + max_corner[0]).div_euclid(2),
@@ -864,8 +890,7 @@ impl Scene {
                 (min_corner[2] + max_corner[2]).div_euclid(2),
             ],
             None => [0i64; 3],
-        };
-        RecenterVoxels::new(voxels)
+        }
     }
 
     /// The full composite extent in voxels — the size the whole-region grids

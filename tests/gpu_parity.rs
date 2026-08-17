@@ -842,7 +842,7 @@ fn brick_raymarch_hit_set_matches_exact_evaluator() {
         // The headless camera framing the composite at the origin — the same rig the
         // shell/`shot` source `view_projection` from (a fixed iso view).
         let mut app_core = AppCore::new(OrbitCamera::default());
-        app_core.camera.target = glam::Vec3::ZERO;
+        app_core.camera.target = common::composite_center_in_frame(&case.scene, vpb);
         app_core.camera.orbit_distance = OrbitCamera::auto_framed_distance(grid_dimensions);
         let aspect_ratio = width as f32 / height as f32;
         let scene_matrices = app_core.scene_matrices(aspect_ratio, grid_dimensions);
@@ -1055,7 +1055,7 @@ fn brick_loaded_material_hit_samples_mesh_rule_texel() {
     let grid_dimensions = case.scene.placed_region_dimensions(vpb);
 
     let mut app_core = AppCore::new(OrbitCamera::default());
-    app_core.camera.target = glam::Vec3::ZERO;
+    app_core.camera.target = common::composite_center_in_frame(&case.scene, vpb);
     app_core.camera.orbit_distance = OrbitCamera::auto_framed_distance(grid_dimensions);
     let scene_matrices = app_core.scene_matrices(width as f32 / height as f32, grid_dimensions);
     let viewport_px = [0u32, 0, width, height];
@@ -1249,7 +1249,7 @@ fn brick_surface_elision_hit_set_unchanged() {
         let pyramid = ClipmapPyramid::from_chunks(&two_layer_chunks);
 
         let mut app_core = AppCore::new(OrbitCamera::default());
-        app_core.camera.target = glam::Vec3::ZERO;
+        app_core.camera.target = common::composite_center_in_frame(&case.scene, vpb);
         app_core.camera.orbit_distance = OrbitCamera::auto_framed_distance(grid_dimensions);
         let aspect_ratio = width as f32 / height as f32;
         let scene_matrices = app_core.scene_matrices(aspect_ratio, grid_dimensions);
@@ -1376,7 +1376,7 @@ fn brick_surface_elision_band_clip_renders_interior() {
         let pyramid = ClipmapPyramid::from_chunks(&two_layer_chunks);
 
         let mut app_core = AppCore::new(OrbitCamera::default());
-        app_core.camera.target = glam::Vec3::ZERO;
+        app_core.camera.target = common::composite_center_in_frame(&case.scene, vpb);
         app_core.camera.orbit_distance = OrbitCamera::auto_framed_distance(grid_dimensions);
         let aspect_ratio = width as f32 / height as f32;
         let scene_matrices = app_core.scene_matrices(aspect_ratio, grid_dimensions);
@@ -1533,7 +1533,7 @@ fn brick_raymarch_incremental_patch_matches_wholesale_install() {
 
     // The headless camera framing B at the origin (the same rig the other brick tests use).
     let mut app_core = AppCore::new(OrbitCamera::default());
-    app_core.camera.target = glam::Vec3::ZERO;
+    app_core.camera.target = common::composite_center_in_frame(&scene_b, vpb);
     app_core.camera.orbit_distance = OrbitCamera::auto_framed_distance(grid_dimensions);
     let aspect_ratio = width as f32 / height as f32;
     let scene_matrices = app_core.scene_matrices(aspect_ratio, grid_dimensions);
@@ -1751,7 +1751,7 @@ fn brick_raymarch_incremental_carve_exposes_interior_across_chunk_boundary() {
     let grid_dimensions = scene_carved.placed_region_dimensions(vpb);
 
     let mut app_core = AppCore::new(OrbitCamera::default());
-    app_core.camera.target = glam::Vec3::ZERO;
+    app_core.camera.target = common::composite_center_in_frame(&scene_carved, vpb);
     app_core.camera.orbit_distance = OrbitCamera::auto_framed_distance(grid_dimensions);
     let aspect_ratio = width as f32 / height as f32;
     let scene_matrices = app_core.scene_matrices(aspect_ratio, grid_dimensions);
@@ -1866,7 +1866,7 @@ fn brick_raymarch_residency_miss_renders_coarse_form() {
         let grid_dimensions = case.scene.placed_region_dimensions(vpb);
 
         let mut app_core = AppCore::new(OrbitCamera::default());
-        app_core.camera.target = glam::Vec3::ZERO;
+        app_core.camera.target = common::composite_center_in_frame(&case.scene, vpb);
         app_core.camera.orbit_distance = OrbitCamera::auto_framed_distance(grid_dimensions);
         let aspect_ratio = width as f32 / height as f32;
         let scene_matrices = app_core.scene_matrices(aspect_ratio, grid_dimensions);
@@ -2016,7 +2016,7 @@ fn brick_raymarch_pyramid_on_equals_off() {
         let grid_dimensions = case.scene.placed_region_dimensions(vpb);
 
         let mut app_core = AppCore::new(OrbitCamera::default());
-        app_core.camera.target = glam::Vec3::ZERO;
+        app_core.camera.target = common::composite_center_in_frame(&case.scene, vpb);
         app_core.camera.orbit_distance = OrbitCamera::auto_framed_distance(grid_dimensions);
         let aspect_ratio = width as f32 / height as f32;
         let scene_matrices = app_core.scene_matrices(aspect_ratio, grid_dimensions);
@@ -2195,7 +2195,7 @@ fn clipmap_scattered_scene_skips_empty_space() {
     ];
 
     let mut app_core = AppCore::new(OrbitCamera::default());
-    app_core.camera.target = glam::Vec3::ZERO;
+    app_core.camera.target = common::composite_center_in_frame(&scene, vpb);
     app_core.camera.orbit_distance = OrbitCamera::auto_framed_distance(grid_dimensions);
     let scene_matrices = app_core.scene_matrices(width as f32 / height as f32, grid_dimensions);
 
@@ -2364,7 +2364,7 @@ fn onion_ghost_marches_only_the_onion_slabs() {
     };
 
     let mut app_core = AppCore::new(OrbitCamera::default());
-    app_core.camera.target = glam::Vec3::ZERO;
+    app_core.camera.target = common::composite_center_in_frame(&case.scene, vpb);
     app_core.camera.orbit_distance = OrbitCamera::auto_framed_distance(grid_dimensions);
     let aspect_ratio = width as f32 / height as f32;
     let scene_matrices = app_core.scene_matrices(aspect_ratio, grid_dimensions);
@@ -2547,7 +2547,7 @@ fn onion_region_confines_the_band_to_the_selected_aabb() {
     };
 
     let mut app_core = AppCore::new(OrbitCamera::default());
-    app_core.camera.target = glam::Vec3::ZERO;
+    app_core.camera.target = common::composite_center_in_frame(&case.scene, vpb);
     app_core.camera.orbit_distance = OrbitCamera::auto_framed_distance(grid_dimensions);
     let aspect_ratio = width as f32 / height as f32;
     let scene_matrices = app_core.scene_matrices(aspect_ratio, grid_dimensions);

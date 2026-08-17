@@ -96,7 +96,7 @@ fn brick_raymarch_matches_exact_at_grazing_rim() {
     // GRAZING ortho view (the repro pose family): phi≈1.47 (near-horizontal), so the
     // upper wall + top rim are seen edge-on — where the artifact lives.
     let mut app_core = AppCore::new(OrbitCamera::default());
-    app_core.camera.target = glam::Vec3::ZERO;
+    app_core.camera.target = common::composite_center_in_frame(&scene, vpb);
     app_core.camera.orbit_theta = 5.9963;
     app_core.camera.orbit_phi = 1.47;
     app_core.camera.projection_mode = ProjectionMode::Orthographic;
