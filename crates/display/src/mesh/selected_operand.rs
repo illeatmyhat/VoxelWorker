@@ -86,6 +86,9 @@ pub struct SelectedOperandGhostRenderer {
     /// into the per-frame uniforms (the vertex stage's corner-anchoring scalars).
     grid_dimensions: [u32; 3],
     voxels_per_block: u32,
+    /// The frame the ghost vertices are expressed in — recorded because this pass rebuilds on
+    /// SELECTION change while the floating origin moves on GEOMETRY change.
+    baked_frame: RecenterVoxels,
 }
 
 impl SelectedOperandGhostRenderer {
@@ -212,6 +215,7 @@ impl SelectedOperandGhostRenderer {
             bodies: Vec::new(),
             grid_dimensions: [0; 3],
             voxels_per_block: 1,
+            baked_frame: RecenterVoxels::new([0; 3]),
         }
     }
 
@@ -239,6 +243,7 @@ impl SelectedOperandGhostRenderer {
         recenter: RecenterVoxels,
         voxels_per_block: u32,
     ) {
+        self.baked_frame = recenter;
         self.bodies.clear();
         self.grid_dimensions = grid_dimensions;
         self.voxels_per_block = voxels_per_block.max(1);
@@ -299,7 +304,18 @@ impl SelectedOperandGhostRenderer {
 
     /// Upload the per-frame camera matrix + per-pass tints into every body's quiet/loud
     /// uniform buffers. Cheap (two small writes per body); the meshes are untouched.
-    pub fn update_uniforms(&self, queue: &wgpu::Queue, view_projection: glam::Mat4) {
+    pub fn update_uniforms(
+        &self,
+        queue: &wgpu::Queue,
+        view_projection: glam::Mat4,
+        current_frame: RecenterVoxels,
+    ) {
+        // The ghost draws wholly in the frame it was baked in, like every other pass.
+        let view_projection = crate::mesh::pipeline::camera_walked_into_the_baked_frame(
+            view_projection,
+            self.baked_frame,
+            current_frame,
+        );
         for body in &self.bodies {
             let quiet = flat_ghost_uniforms(
                 view_projection,

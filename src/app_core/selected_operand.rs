@@ -326,12 +326,22 @@ impl AppCore {
     /// (the operand body's extent) via the stateless two-layer evaluator — a selection
     /// change never re-resolves the whole scene, and no dense whole-region grid is ever
     /// assembled (the user law).
+    ///
+    /// **`frame` is taken, never derived** (Law 5). The ghost bakes its vertices in it and
+    /// records it, so the pass that draws them can walk its camera there while the next rebuild
+    /// is still in flight.
     pub fn boolean_operand_ghost(
         scene: &Scene,
         target: NodeId,
         density: u32,
+        frame: RecenterVoxels,
     ) -> Option<SelectedOperandGhost> {
-        evaluate_operand_ghost_slices(scene, scene.boolean_operand_body_slices(target), density)
+        evaluate_operand_ghost_slices(
+            scene,
+            scene.boolean_operand_body_slices(target),
+            density,
+            frame,
+        )
     }
 
     /// Derive the selection-cel bodies for `targets` (viewport selection feedback, all
@@ -342,10 +352,13 @@ impl AppCore {
     /// alpha). The root part, stale ids and disabled nodes derive nothing
     /// ([`Scene::node_body_slice`]). Same cost bound as the operand ghost: each body is
     /// evaluated over its OWN covering chunks only.
+    ///
+    /// **`frame` is taken, never derived** (Law 5) — see [`AppCore::boolean_operand_ghost`].
     pub fn selected_body_cel(
         scene: &Scene,
         targets: &[NodeId],
         density: u32,
+        frame: RecenterVoxels,
     ) -> Option<SelectedBodyCel> {
         let picked: std::collections::BTreeSet<NodeId> = targets.iter().copied().collect();
         let has_picked_ancestor = |id: NodeId| {
@@ -384,7 +397,7 @@ impl AppCore {
             density,
             &mut edge_segments_true_world,
         );
-        let recenter = scene.recenter_voxels_for_resolve(density);
+        let recenter = frame;
         let recenter_f32 = recenter.voxels().map(|axis| axis as f32);
         let edge_segments = edge_segments_true_world
             .into_iter()
@@ -410,6 +423,7 @@ fn evaluate_operand_ghost_slices(
     scene: &Scene,
     slices: Vec<(CombineOp, Scene)>,
     density: u32,
+    frame: RecenterVoxels,
 ) -> Option<SelectedOperandGhost> {
     if slices.is_empty() {
         return None;
@@ -433,7 +447,7 @@ fn evaluate_operand_ghost_slices(
     Some(SelectedOperandGhost {
         bodies,
         grid_dimensions: scene.placed_region_dimensions(density),
-        recenter: scene.recenter_voxels_for_resolve(density),
+        recenter: frame,
         density,
     })
 }
@@ -487,7 +501,13 @@ mod tests {
     #[test]
     fn stale_target_derives_no_ghost() {
         let scene = host_and_cutter_scene();
-        assert!(AppCore::boolean_operand_ghost(&scene, NodeId(9999), DENSITY).is_none());
+        assert!(AppCore::boolean_operand_ghost(
+            &scene,
+            NodeId(9999),
+            DENSITY,
+            scene.recenter_voxels_for_resolve(DENSITY)
+        )
+        .is_none());
     }
 
     /// A boolean operand ghosts in its operation style; a Union selection has no boolean
@@ -495,13 +515,24 @@ mod tests {
     #[test]
     fn styles_follow_the_selected_operation() {
         let scene = host_and_cutter_scene();
-        let ghost =
-            AppCore::boolean_operand_ghost(&scene, scene.roots[1], DENSITY).expect("cutter ghosts");
+        let ghost = AppCore::boolean_operand_ghost(
+            &scene,
+            scene.roots[1],
+            DENSITY,
+            scene.recenter_voxels_for_resolve(DENSITY),
+        )
+        .expect("cutter ghosts");
         assert_eq!(ghost.bodies.len(), 1);
         assert_eq!(ghost.bodies[0].style, OperandGhostStyle::Subtract);
 
         // The Union host is a non-boolean leaf: nothing to reveal.
-        assert!(AppCore::boolean_operand_ghost(&scene, scene.roots[0], DENSITY).is_none());
+        assert!(AppCore::boolean_operand_ghost(
+            &scene,
+            scene.roots[0],
+            DENSITY,
+            scene.recenter_voxels_for_resolve(DENSITY)
+        )
+        .is_none());
     }
 
     /// Re-derivation on selection change resolves ONLY the selected operand's covering
@@ -516,8 +547,13 @@ mod tests {
         scene.voxels_per_block = DENSITY;
         scene.ensure_node_ids();
 
-        let ghost =
-            AppCore::boolean_operand_ghost(&scene, scene.roots[1], DENSITY).expect("cutter ghosts");
+        let ghost = AppCore::boolean_operand_ghost(
+            &scene,
+            scene.roots[1],
+            DENSITY,
+            scene.recenter_voxels_for_resolve(DENSITY),
+        )
+        .expect("cutter ghosts");
         assert_eq!(
             ghost.bodies[0].chunks.len(),
             1,
@@ -540,8 +576,13 @@ mod tests {
     #[test]
     fn buried_cutter_still_derives_its_body() {
         let scene = host_and_cutter_scene();
-        let ghost =
-            AppCore::boolean_operand_ghost(&scene, scene.roots[1], DENSITY).expect("cutter ghosts");
+        let ghost = AppCore::boolean_operand_ghost(
+            &scene,
+            scene.roots[1],
+            DENSITY,
+            scene.recenter_voxels_for_resolve(DENSITY),
+        )
+        .expect("cutter ghosts");
         let stored: u64 = ghost.bodies[0]
             .chunks
             .iter()
@@ -559,8 +600,13 @@ mod tests {
     #[test]
     fn cel_derives_a_body_per_selected_node() {
         let scene = host_and_cutter_scene();
-        let cel = AppCore::selected_body_cel(&scene, &[scene.roots[0], scene.roots[1]], DENSITY)
-            .expect("both nodes derive bodies");
+        let cel = AppCore::selected_body_cel(
+            &scene,
+            &[scene.roots[0], scene.roots[1]],
+            DENSITY,
+            scene.recenter_voxels_for_resolve(DENSITY),
+        )
+        .expect("both nodes derive bodies");
         assert_eq!(cel.bodies.len(), 2);
         for chunks in &cel.bodies {
             let stored: u64 = chunks
@@ -582,11 +628,29 @@ mod tests {
     #[test]
     fn cel_skips_root_stale_and_disabled_targets() {
         let mut scene = host_and_cutter_scene();
-        assert!(AppCore::selected_body_cel(&scene, &[ROOT_NODE_ID], DENSITY).is_none());
-        assert!(AppCore::selected_body_cel(&scene, &[NodeId(9999)], DENSITY).is_none());
+        assert!(AppCore::selected_body_cel(
+            &scene,
+            &[ROOT_NODE_ID],
+            DENSITY,
+            scene.recenter_voxels_for_resolve(DENSITY)
+        )
+        .is_none());
+        assert!(AppCore::selected_body_cel(
+            &scene,
+            &[NodeId(9999)],
+            DENSITY,
+            scene.recenter_voxels_for_resolve(DENSITY)
+        )
+        .is_none());
         let host = scene.roots[0];
         scene.arena.get_mut(&host).unwrap().enabled = false;
-        assert!(AppCore::selected_body_cel(&scene, &[host], DENSITY).is_none());
+        assert!(AppCore::selected_body_cel(
+            &scene,
+            &[host],
+            DENSITY,
+            scene.recenter_voxels_for_resolve(DENSITY)
+        )
+        .is_none());
     }
 
     /// Analytic edge catalog: a box lists its 12 straight edges on
@@ -644,8 +708,13 @@ mod tests {
     #[test]
     fn cel_edge_segments_land_in_the_render_frame() {
         let scene = host_and_cutter_scene();
-        let cel = AppCore::selected_body_cel(&scene, &[scene.roots[0]], DENSITY)
-            .expect("host derives a body");
+        let cel = AppCore::selected_body_cel(
+            &scene,
+            &[scene.roots[0]],
+            DENSITY,
+            scene.recenter_voxels_for_resolve(DENSITY),
+        )
+        .expect("host derives a body");
         assert_eq!(cel.edge_segments.len(), 24, "12 edges, 2 endpoints each");
         let recenter = cel.recenter.voxels();
         for point in &cel.edge_segments {
@@ -677,7 +746,13 @@ mod tests {
         let node = scene.arena.get_mut(&target).unwrap();
         node.transform = node.transform.clone().with_rotation(quarter_turn);
 
-        let cel = AppCore::selected_body_cel(&scene, &[target], DENSITY).expect("derives a body");
+        let cel = AppCore::selected_body_cel(
+            &scene,
+            &[target],
+            DENSITY,
+            scene.recenter_voxels_for_resolve(DENSITY),
+        )
+        .expect("derives a body");
         let recenter = cel.recenter.voxels();
         let mut max = [f32::MIN; 3];
         let mut min = [f32::MAX; 3];
@@ -720,7 +795,13 @@ mod tests {
         scene.ensure_node_ids();
 
         let target = scene.roots[0];
-        let cel = AppCore::selected_body_cel(&scene, &[target], DENSITY).expect("instance body");
+        let cel = AppCore::selected_body_cel(
+            &scene,
+            &[target],
+            DENSITY,
+            scene.recenter_voxels_for_resolve(DENSITY),
+        )
+        .expect("instance body");
         assert_eq!(
             cel.edge_segments.len(),
             24,
@@ -766,8 +847,13 @@ mod tests {
         scene.set_definition_fixture(DefId(3), true);
         scene.ensure_node_ids();
 
-        let cel = AppCore::selected_body_cel(&scene, &[scene.roots[0], scene.roots[1]], DENSITY)
-            .expect("both instances derive bodies");
+        let cel = AppCore::selected_body_cel(
+            &scene,
+            &[scene.roots[0], scene.roots[1]],
+            DENSITY,
+            scene.recenter_voxels_for_resolve(DENSITY),
+        )
+        .expect("both instances derive bodies");
         assert_eq!(
             cel.edge_segments.len(),
             96,
@@ -810,8 +896,13 @@ mod tests {
         scene.voxels_per_block = DENSITY;
         scene.ensure_node_ids();
 
-        let cel = AppCore::selected_body_cel(&scene, &[scene.roots[0]], DENSITY)
-            .expect("sketch solid derives a body");
+        let cel = AppCore::selected_body_cel(
+            &scene,
+            &[scene.roots[0]],
+            DENSITY,
+            scene.recenter_voxels_for_resolve(DENSITY),
+        )
+        .expect("sketch solid derives a body");
         assert_eq!(cel.edge_segments.len(), 36);
         let recenter = cel.recenter.voxels();
         for point in &cel.edge_segments {
@@ -832,8 +923,13 @@ mod tests {
         ]);
         scene.voxels_per_block = DENSITY;
         scene.ensure_node_ids();
-        let ghost = AppCore::boolean_operand_ghost(&scene, ROOT_NODE_ID, DENSITY)
-            .expect("both cutters ghost");
+        let ghost = AppCore::boolean_operand_ghost(
+            &scene,
+            ROOT_NODE_ID,
+            DENSITY,
+            scene.recenter_voxels_for_resolve(DENSITY),
+        )
+        .expect("both cutters ghost");
         assert_eq!(ghost.bodies.len(), 2);
         assert!(ghost
             .bodies

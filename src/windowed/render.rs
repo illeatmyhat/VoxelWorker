@@ -562,6 +562,7 @@ impl WindowedState {
                     &self.panel_state.scene,
                     &cel_nodes,
                     self.panel_state.geometry.voxels_per_block,
+                    self.recenter_voxels,
                 );
                 self.selected_cel_nodes = cel_nodes;
                 match cel {
@@ -594,6 +595,7 @@ impl WindowedState {
                         &self.panel_state.scene,
                         target,
                         self.panel_state.geometry.voxels_per_block,
+                        self.recenter_voxels,
                     )
                 });
             match ghost {
@@ -939,6 +941,7 @@ impl WindowedState {
             &self.app_core.camera,
             aspect_ratio,
             view_projection,
+            self.recenter_voxels,
             scene_matrices.ndc_depth,
             gizmo_placement,
             &self.transform_gizmo_renderer,

@@ -890,6 +890,7 @@ pub(crate) async fn run_capture(options: ShotOptions) {
                 &panel_state.scene,
                 target,
                 options.geometry.voxels_per_block,
+                display_frame,
             )
         }) {
             selected_operand_ghost_renderer.rebuild(
@@ -914,6 +915,7 @@ pub(crate) async fn run_capture(options: ShotOptions) {
             &panel_state.scene,
             &cel_nodes,
             options.geometry.voxels_per_block,
+            display_frame,
         ) {
             selection_outline_renderer.rebuild(
                 &gpu.device,
@@ -1417,6 +1419,7 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         &app_core.camera,
         aspect_ratio,
         view_projection,
+        display_frame,
         scene_matrices.ndc_depth,
         gizmo_placement,
         &transform_gizmo_renderer,

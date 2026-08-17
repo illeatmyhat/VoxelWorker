@@ -114,6 +114,10 @@ pub struct SelectionOutlineRenderer {
     /// into the per-frame uniforms (the vertex stage's corner-anchoring scalars).
     grid_dimensions: [u32; 3],
     voxels_per_block: u32,
+    /// The frame the hull vertices and the edge segments are expressed in — recorded because
+    /// this pass rebuilds on SELECTION change while the floating origin moves on GEOMETRY
+    /// change, so between the two it is the only thing that knows where these buffers stand.
+    baked_frame: RecenterVoxels,
 }
 
 impl SelectionOutlineRenderer {
@@ -372,6 +376,7 @@ impl SelectionOutlineRenderer {
             edge_vertex_count: 0,
             grid_dimensions: [0; 3],
             voxels_per_block: 1,
+            baked_frame: RecenterVoxels::new([0; 3]),
         }
     }
 
@@ -457,6 +462,7 @@ impl SelectionOutlineRenderer {
         recenter: RecenterVoxels,
         voxels_per_block: u32,
     ) {
+        self.baked_frame = recenter;
         self.chunk_buffers.clear();
         self.edge_vertex_count = edge_segments.len() as u32;
         self.edge_vertex_buffer = (!edge_segments.is_empty()).then(|| {
@@ -492,12 +498,23 @@ impl SelectionOutlineRenderer {
     /// scene pass's own matrix ([`camera::SceneMatrices::view_projection`]) — the
     /// wash compares the two hardware depths directly, so the G-buffer has to record
     /// the identical projection; `ndc_depth` is that same frame's mapping.
+    ///
+    /// The camera is then walked into the frame these hulls were baked in, as every pass does.
+    /// That does not break the depth comparison it is built on: the walk is a translation
+    /// between two ways of naming the same world point, so a point the scene pass draws at some
+    /// depth is drawn at that same depth here even when the two passes were baked apart.
     pub fn update_uniforms(
         &self,
         queue: &wgpu::Queue,
         view_projection: glam::Mat4,
+        current_frame: RecenterVoxels,
         ndc_depth: camera::NdcDepthMapping,
     ) {
+        let view_projection = crate::mesh::pipeline::camera_walked_into_the_baked_frame(
+            view_projection,
+            self.baked_frame,
+            current_frame,
+        );
         // The G-buffer runs `cuboid.wgsl`'s vertex stage alone, which reads only the
         // camera + corner-anchoring scalars from this block; the ghost fields are inert.
         let gbuffer_uniforms = flat_ghost_uniforms(
