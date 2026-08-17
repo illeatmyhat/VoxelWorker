@@ -1207,20 +1207,16 @@ impl BrickRaymarchRenderer {
         ghost_confine: bool,
     ) -> BrickMarchFrame {
         let edge = self.brick_edge_voxels.max(1) as i64;
-        // Corner-anchoring: the cuboid path recovers the shading-absolute frame
-        // with the FLOORED half (integer-valued), so mirror it exactly.
+        // absolute voxel = shading-absolute p + S, with S the cage's low corner — the cuboid
+        // path corner-anchors the same way, and the one derivation is what keeps them mirrors.
+        let shading_to_absolute =
+            RegionLowCorner::of_origin_centered_region(current_frame, grid_dimensions).voxels();
+        // The cage's own half-extent, in its render-local INDEX role (`world_position + half`) —
+        // not a frame term, so it is not re-derived from the low corner above.
         let half = [
             (grid_dimensions[0] / 2) as i64,
             (grid_dimensions[1] / 2) as i64,
             (grid_dimensions[2] / 2) as i64,
-        ];
-        // absolute voxel = shading-absolute p + S, with S = recenter − half. Unwrap the
-        // carried frame to its raw triple exactly here — the one uniform-packing consumption.
-        let recenter = current_frame.voxels();
-        let shading_to_absolute = [
-            recenter[0] - half[0],
-            recenter[1] - half[1],
-            recenter[2] - half[2],
         ];
         let mut lattice_shift = [0i32; 3];
         let mut voxel_bias = [0i32; 3];

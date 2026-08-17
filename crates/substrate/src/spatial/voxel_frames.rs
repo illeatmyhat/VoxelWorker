@@ -82,31 +82,96 @@ impl RecenterVoxels {
             )
         }))
     }
+}
 
-    /// The per-axis `f32` offset the on-face grid overlay adds to a shader's RENDER-local
-    /// `voxel_absolute_position` (`= world_position + grid_half_extent`) to recover the TRUE world
-    /// voxel frame: `true_world = render_absolute + (recenter − grid_half_extent)` (see
-    /// `shaders/cuboid.wgsl`'s `overlay_world_offset`). This is the ONE audited place the
-    /// `recenter − grid_half_extent` subtraction happens — so no call site can treat
-    /// `world_position + grid_half_extent` (a render-local index) as if it were the true-world
-    /// coordinate, and a [`GridHalfExtent`] can never be swapped for a `RecenterVoxels` here.
+/// The TRUE-WORLD voxel coordinate of a region's LOW CORNER — the point a region-scoped
+/// consumer's 0-based index space counts from (`index = true_world − low_corner`).
+///
+/// This is one quantity that five call sites used to spell for themselves, in two disguises. The
+/// plain one is `recenter − floor(dim/2)`. The other cancels the recenter away entirely: a
+/// consumer holding a RENDER-frame position writes `index = world_render + floor(dim/2)`, because
+///
+/// ```text
+/// index = true_world − low = (world_render + recenter) − (recenter − floor(dim/2))
+/// ```
+///
+/// Nobody who wrote that made a mistake. They used an identity, and the identity holds because
+/// the origin policy puts the render origin at the region's midpoint. It is the policy that
+/// guarantees it, and the policy is what a floating origin eventually has to change.
+#[repr(transparent)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct RegionLowCorner([i64; 3]);
+
+impl RegionLowCorner {
+    /// Carry a known low corner — the constructor for a low corner that arrives already
+    /// established as a fact about the geometry (`Scene::placed_composite_low_corner_voxels`).
     #[must_use]
-    pub fn render_absolute_to_true_world_offset(
-        self,
-        grid_half_extent: GridHalfExtent,
-    ) -> [f32; 3] {
-        std::array::from_fn(|axis| {
-            i64_to_f32(self.0.get(axis).copied().unwrap_or_default())
-                - grid_half_extent.0.get(axis).copied().unwrap_or_default()
-        })
+    pub const fn new(voxels: [i64; 3]) -> Self {
+        Self(voxels)
+    }
+
+    /// The low corner of a region that is CENTERED ON THE RENDER ORIGIN — `recenter −
+    /// floor(dim/2)`.
+    ///
+    /// The assumption is in the name because the assumption is the whole risk. A cage built
+    /// this way contains the composite only while the origin sits at the composite's midpoint;
+    /// the day the origin becomes sticky or quantized, every caller of this function is a site
+    /// whose region has quietly stopped containing what it frames. That makes the call itself
+    /// the to-do list — grep for it — rather than a subtraction spread across five files where
+    /// nothing marks which ones share a fate.
+    ///
+    /// The subtraction is `i64`, and the cast comes later at
+    /// [`as_render_offset`](Self::as_render_offset). Doing it the other way round — cast each
+    /// term, then subtract — costs a far scene precision that neither term would have lost on
+    /// its own, which is the rule [`RecenterVoxels::a_point_of_this_frame_seen_from`] states
+    /// and which this function used to break.
+    ///
+    /// The FLOOR is integer division before any cast, matching [`GridHalfExtent`]: an odd
+    /// dimension halved in floating point sits half a voxel off and mis-snaps the whole index
+    /// space by one on that axis.
+    #[must_use]
+    #[allow(clippy::as_conversions)]
+    pub fn of_origin_centered_region(recenter: RecenterVoxels, dimensions: [u32; 3]) -> Self {
+        Self(std::array::from_fn(|axis| {
+            let half = i64::from(dimensions.get(axis).copied().unwrap_or_default() / 2);
+            recenter
+                .voxels()
+                .get(axis)
+                .copied()
+                .unwrap_or_default()
+                .wrapping_sub(half)
+        }))
+    }
+
+    /// The raw voxel triple — the consumption door, at the point of positional arithmetic.
+    #[must_use]
+    pub const fn voxels(self) -> [i64; 3] {
+        self.0
+    }
+
+    /// The per-axis `f32` offset that carries a shader's RENDER-local
+    /// `voxel_absolute_position` (`= world_position + grid_half_extent`, a 0-based index into
+    /// the cage) into the TRUE world voxel frame: `true_world = render_absolute + low_corner`.
+    /// See `shaders/cuboid.wgsl`'s `overlay_world_offset`.
+    ///
+    /// The single downcast, taken once at the uniform-packing door and never before.
+    #[must_use]
+    pub fn as_render_offset(self) -> [f32; 3] {
+        self.0.map(i64_to_f32)
     }
 }
 
 /// Half the render grid's voxel dimensions, floored per axis (`floor(dim / 2)`) — the grid cage's
 /// corner-anchoring term. The mesh centers its cage on the origin (its low corner sits at
-/// `−grid_half_extent`), so a shader recovers the render-local absolute voxel index with
-/// `world_position + grid_half_extent`. A distinct type from [`RecenterVoxels`] so the two frame
-/// terms of the overlay offset can never be swapped.
+/// `−grid_half_extent`), so a shader recovers the RENDER-LOCAL absolute voxel index with
+/// `world_position + grid_half_extent`.
+///
+/// **That index role is all this type is for.** The same floored half also appeared inside the
+/// frame derivation `recenter − floor(dim/2)`, which made it look like a frame term; it is not,
+/// and that derivation now lives once in [`RegionLowCorner::of_origin_centered_region`]. What
+/// remains here is a fact about how the CAGE was baked — the vertices really are centered on the
+/// origin — and it stays true of a given mesh no matter what the origin policy later does, which
+/// is exactly why it must not be confused with a frame.
 #[repr(transparent)]
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct GridHalfExtent([f32; 3]);
@@ -261,13 +326,37 @@ mod tests {
     }
 
     #[test]
-    fn overlay_offset_is_recenter_minus_half_extent() {
+    fn an_origin_centered_low_corner_is_the_recenter_less_the_floored_half() {
         let recenter = RecenterVoxels::new([64, 0, -16]);
-        let half = GridHalfExtent::of_grid_dimensions([16, 16, 16]); // floor(16/2) = 8
+        // floor(16/2) = 8 on every axis; the odd axis floors to 3, not 3.5.
         assert_eq!(
-            recenter.render_absolute_to_true_world_offset(half),
-            [64.0 - 8.0, 0.0 - 8.0, -16.0 - 8.0]
+            RegionLowCorner::of_origin_centered_region(recenter, [16, 16, 7]).voxels(),
+            [64 - 8, 0 - 8, -16 - 3]
         );
+    }
+
+    /// **The subtraction happens in `i64`, and a far scene is why.**
+    ///
+    /// Past 2^24 an `f32` no longer names every voxel, so casting each term FIRST and
+    /// subtracting after rounds both sides to the same representable value and loses the
+    /// difference between them — a difference that is itself small and perfectly representable.
+    /// Subtracting first and casting once keeps it. The overlay offset this feeds used to be
+    /// computed the other way round, and this is the case that told them apart.
+    #[test]
+    fn a_far_low_corner_keeps_the_voxel_the_cast_order_would_have_eaten() {
+        // 2^24 = 16_777_216: the first magnitude at which consecutive integers stop being
+        // distinct f32 values.
+        let recenter = RecenterVoxels::new([16_777_217, 0, 0]);
+        let low = RegionLowCorner::of_origin_centered_region(recenter, [2, 2, 2]);
+
+        assert_eq!(low.voxels()[0], 16_777_216);
+        assert_eq!(low.as_render_offset()[0], 16_777_216.0);
+
+        // What the cast-first order produced: 16_777_217 is not representable, so it rounds to
+        // 16_777_216 before the subtraction, and the answer comes out a whole voxel short.
+        #[allow(clippy::as_conversions, clippy::cast_precision_loss)]
+        let cast_first = 16_777_217_i64 as f32 - 1.0_f32;
+        assert_eq!(cast_first, 16_777_215.0);
     }
 
     /// A point baked in one frame, walked into another, lands where that other frame would have

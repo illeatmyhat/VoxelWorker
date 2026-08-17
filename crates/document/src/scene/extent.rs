@@ -32,6 +32,7 @@ use parametric::units::{ExactRational, Measurement};
 use super::producers::{outset_voxels_at, AccumulatedOffset, LeafBody, VisitedLeaf};
 use super::*;
 use crate::intent::{Intent, NodeSpec};
+use substrate::spatial::RegionLowCorner;
 use voxel_core::voxel::RecenterVoxels;
 
 /// The display path's hard coordinate envelope, in whole blocks (±this on any axis).
@@ -875,6 +876,38 @@ impl Scene {
     /// Read this, then cross into the render frame with
     /// [`TrueWorldVoxelPoint::to_recentered`](substrate::spatial::TrueWorldVoxelPoint::to_recentered).
     ///
+    /// The composite's LOW CORNER in **true-world voxels** — where the region's 0-based index
+    /// space counts from (`index = true_world − low_corner`).
+    ///
+    /// Sourced from the geometry, deliberately. The tempting definition is `recenter −
+    /// floor(dim/2)`, which is what five call sites spelled out for themselves, and it gives the
+    /// same answer today for every parity. But it derives a containment fact from the ORIGIN,
+    /// and the origin is the thing that is going to move: written that way, the sticky-origin
+    /// change would have to edit both the policy and this, and in the meantime the definition
+    /// would be pointing at the wrong thing while happening to be right. Read off
+    /// [`placed_extent_voxels`](Self::placed_extent_voxels) instead, this is where the geometry
+    /// actually starts, and the origin policy can do as it likes above it.
+    ///
+    /// `[0, 0, 0]` for a scene with no intrinsic-size leaf, which has no composite at all.
+    #[must_use]
+    pub fn placed_composite_low_corner_voxels(&self, voxels_per_block: u32) -> [i64; 3] {
+        let low_corner = match self.placed_extent_voxels(voxels_per_block) {
+            Some((min_corner, _)) => min_corner,
+            None => [0i64; 3],
+        };
+        debug_assert_eq!(
+            low_corner,
+            RegionLowCorner::of_origin_centered_region(
+                self.recenter_voxels_for_resolve(voxels_per_block),
+                self.placed_region_dimensions(voxels_per_block),
+            )
+            .voxels(),
+            "the origin-centered derivation must agree with the geometry while the origin IS the \
+             midpoint — if this fires, the two are reading different spans",
+        );
+        low_corner
+    }
+
     /// `[0, 0, 0]` for a scene with no intrinsic-size leaf, which has no composite to center.
     #[must_use]
     pub fn placed_composite_center_voxels(&self, voxels_per_block: u32) -> [i64; 3] {

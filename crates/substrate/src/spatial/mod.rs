@@ -24,6 +24,6 @@ pub use surface_intersection::{
     SurfaceIntersectionConfig, SurfaceIntersectionOutcome, TracedCurve, PRUNE_SLOP,
 };
 pub use voxel_frames::{
-    GridHalfExtent, ProducerLocalVoxelPoint, RecenterVoxels, RecenteredVoxelPoint,
+    GridHalfExtent, ProducerLocalVoxelPoint, RecenterVoxels, RecenteredVoxelPoint, RegionLowCorner,
     TrueWorldVoxelPoint,
 };

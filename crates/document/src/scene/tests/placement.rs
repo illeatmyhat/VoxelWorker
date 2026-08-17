@@ -915,3 +915,56 @@ fn node_pivot_origin_tracks_offset_across_densities() {
         }
     }
 }
+
+/// **This test IS the midpoint policy, written as an assertion. S3 deletes it.**
+///
+/// `Scene::placed_composite_low_corner_voxels` reads the composite's own low corner; five call
+/// sites used to spell the same value `recenter − floor(dim/2)` instead. They agree here for
+/// every parity, and the agreement is the bridge that makes the collapse onto one mint
+/// bit-identical.
+///
+/// It is not a law. It holds only because the origin policy puts the render origin at the
+/// composite's midpoint, and the sticky-origin change exists precisely to stop doing that. When
+/// this goes red under a new policy, the correct response is to DELETE it — not to re-derive the
+/// low corner from the recenter to keep it green, which would put back the derivation this
+/// commit removed and would look, in the diff, like a fix.
+#[test]
+fn the_low_corner_and_the_origin_centered_derivation_agree_under_the_midpoint_policy() {
+    use substrate::spatial::RegionLowCorner;
+
+    // Every parity that matters: odd/even span against odd/even density, and a composite whose
+    // two leaves disagree about both — the case a floored midpoint could bias one way.
+    let cases: [(&str, [u32; 3], u32, [i64; 3]); 6] = [
+        ("even span, even density", [2, 2, 2], 16, [0, 0, 0]),
+        ("odd span, density 1", [3, 1, 3], 1, [0, 0, 0]),
+        ("odd span, odd density", [3, 3, 3], 5, [0, 0, 0]),
+        ("odd span, density 15", [5, 1, 3], 15, [0, 0, 0]),
+        ("odd span pushed negative", [3, 3, 3], 1, [-7, -7, -7]),
+        ("odd span pushed far", [3, 1, 5], 16, [100_000, -40, 7]),
+    ];
+
+    for (label, size_blocks, density, offset_blocks) in cases {
+        let shape = SdfShape::from_blocks(ShapeKind::Box, size_blocks, 1, density);
+        let mut node = Node::new(
+            label,
+            NodeContent::Tool {
+                shape,
+                material: MaterialChoice::Stone,
+            },
+        );
+        node.transform = NodeTransform::from_blocks(offset_blocks, density);
+        let scene = Scene::single_node(node);
+
+        let low_corner = scene.placed_composite_low_corner_voxels(density);
+        let derived = RegionLowCorner::of_origin_centered_region(
+            scene.recenter_voxels_for_resolve(density),
+            scene.placed_region_dimensions(density),
+        )
+        .voxels();
+        assert_eq!(
+            low_corner, derived,
+            "[{label}] the geometry's low corner and `recenter − floor(dim/2)` must agree while \
+             the origin IS the midpoint",
+        );
+    }
+}

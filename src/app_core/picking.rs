@@ -22,7 +22,9 @@ use std::sync::Arc;
 use camera::unproject_screen_point_to_ray;
 use display::renderer::LayerBand;
 use evaluation::two_layer_store::TwoLayerChunk;
+use substrate::spatial::RegionLowCorner;
 use voxel_core::core_geom::CHUNK_BLOCKS;
+use voxel_core::voxel::RecenterVoxels;
 
 use super::AppCore;
 
@@ -92,9 +94,11 @@ impl AppCore {
         // The brick path additionally splits that bias into a lattice shift so block boundaries
         // land on brick-edge multiples; a pick has no bricks to align to, so it uses the whole
         // bias directly and no shift.
-        let half = region_dimensions.map(|dimension| (dimension / 2) as i64);
-        let shading_to_absolute: [i64; 3] =
-            std::array::from_fn(|axis| recenter_voxels[axis] - half[axis]);
+        let shading_to_absolute = RegionLowCorner::of_origin_centered_region(
+            RecenterVoxels::new(recenter_voxels),
+            region_dimensions,
+        )
+        .voxels();
 
         let aspect_ratio = viewport[2] / viewport[3];
         let normalized_x = (cursor[0] - viewport[0]) / viewport[2] * 2.0 - 1.0;
@@ -115,7 +119,9 @@ impl AppCore {
         let world_origin = eye_relative_ray.origin + scene_matrices.ray_eye;
         // Into the shading-absolute frame: the same `+ grid_half_extent` the display's camera ray
         // applies, so a pick and a pixel agree about where the ray is.
-        let half_extent = glam::Vec3::new(half[0] as f32, half[1] as f32, half[2] as f32);
+        let half_extent = glam::Vec3::from_array(
+            substrate::spatial::GridHalfExtent::of_grid_dimensions(region_dimensions).voxels(),
+        );
         let march_ray =
             substrate::spatial::Ray::new(world_origin + half_extent, eye_relative_ray.direction);
 

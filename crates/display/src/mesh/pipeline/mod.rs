@@ -169,12 +169,15 @@ impl BakedMesh {
         let view_projection = self.camera_visiting(view_projection, current_frame);
         let (modulation_enabled, base_colors, _material) = material_binding(bound, debug_face_mode);
         let overlay = crate::renderer::grid_overlay_params();
-        // The render grid cage's corner-anchoring term (`floor(dim/2)`), shared by the
-        // `grid_half_extent` uniform AND the overlay's true-world offset below — ONE typed value
-        // so the two can never diverge, and so `recenter − grid_half_extent` only compiles via the
-        // audited `RecenterVoxels::render_absolute_to_true_world_offset` conversion.
+        // The cage's corner-anchoring term (`floor(dim/2)`) — the shader's render-local index
+        // role, and only that. The frame question the overlay asks below is a different one, and
+        // it is answered by the low corner rather than by re-subtracting this from the recenter.
         let grid_half_extent =
             substrate::spatial::GridHalfExtent::of_grid_dimensions(self.grid_dimensions);
+        let low_corner = substrate::spatial::RegionLowCorner::of_origin_centered_region(
+            self.frame,
+            self.grid_dimensions,
+        );
         CuboidUniforms {
             view_projection: view_projection.matrix().to_cols_array_2d(),
             // Corner-anchoring: the grid's low corner is `−floor(dim/2)`, so the GPU
@@ -203,15 +206,12 @@ impl BakedMesh {
             material_base_colors: base_colors,
             material_atlas_rects: atlas_rects,
             ghost_tint: [0.0, 0.0, 0.0, 0.0],
-            // `render_absolute + (recenter − grid_half_extent)` is the TRUE world voxel coord — so
-            // the overlay's block lines land on the world block lattice, not the render grid's
-            // half-extent frame. The subtraction happens ONLY inside this named conversion (the SAME
-            // floor(dim/2) `grid_half_extent` above), so no code can treat the render-local
-            // `world_position + grid_half_extent` as if it were true-world; `recenter` is the
-            // resolve's carried frame.
-            overlay_world_offset: self
-                .frame
-                .render_absolute_to_true_world_offset(grid_half_extent),
+            // `render_absolute + low_corner` is the TRUE world voxel coord — so the overlay's
+            // block lines land on the world block lattice, not the render grid's half-extent
+            // frame. `render_absolute` is the cage-local index (`world_position +
+            // grid_half_extent`), so the low corner is exactly what carries it out to the world,
+            // and nothing here re-derives a frame from a half-extent.
+            overlay_world_offset: low_corner.as_render_offset(),
             _overlay_pad: 0.0,
         }
     }
