@@ -266,7 +266,6 @@ impl DisplayOrchestrator {
                         &cell_key_atlas,
                         &gpu_records,
                         &pyramid,
-                        recenter_voxels,
                     );
                     println!(
                         "brick raymarch: startup field installed ({} records, {} sculpted)",
@@ -710,7 +709,6 @@ impl DisplayOrchestrator {
                                 update,
                                 &gpu_records,
                                 &pyramid,
-                                recenter_voxels,
                             );
                         } else {
                             // Wholesale install: the upload payload was moved out of the
@@ -736,7 +734,6 @@ impl DisplayOrchestrator {
                                 &cell_key_atlas,
                                 &gpu_records,
                                 &pyramid,
-                                recenter_voxels,
                             );
                         }
                         brick_display_installed = true;
@@ -1010,7 +1007,6 @@ impl DisplayOrchestrator {
                         &cell_key_atlas,
                         &gpu_records,
                         &pyramid,
-                        result.recenter_voxels,
                     );
                     println!(
                         "brick: async wholesale field installed ({} records, {} sculpted)",

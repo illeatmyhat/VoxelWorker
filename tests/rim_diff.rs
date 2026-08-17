@@ -116,14 +116,13 @@ fn brick_raymarch_matches_exact_at_grazing_rim() {
         &build.atlas_payload(),
         &gpu_records,
         &pyramid,
-        recenter,
     );
     let frame = renderer.update_uniforms(
         &gpu.queue,
         scene_matrices,
         viewport_px,
         grid_dimensions,
-        renderer.frame_the_installed_field_was_baked_in(),
+        recenter,
         band,
         None,
         false,

@@ -30,6 +30,7 @@
 //! Mesh rebuilt only on selection/geometry change (`rebuild`); `update_uniforms` per
 //! frame writes camera + mapping only; `prepare` re-sizes the map with the target.
 
+use super::baked_frame::BakedInAFrame;
 use super::*;
 use crate::renderer::selection_cel_tint;
 
@@ -118,6 +119,12 @@ pub struct SelectionOutlineRenderer {
     /// this pass rebuilds on SELECTION change while the floating origin moves on GEOMETRY
     /// change, so between the two it is the only thing that knows where these buffers stand.
     baked_frame: RecenterVoxels,
+}
+
+impl BakedInAFrame for SelectionOutlineRenderer {
+    fn baked_frame(&self) -> RecenterVoxels {
+        self.baked_frame
+    }
 }
 
 impl SelectionOutlineRenderer {
@@ -510,11 +517,7 @@ impl SelectionOutlineRenderer {
         current_frame: RecenterVoxels,
         ndc_depth: camera::NdcDepthMapping,
     ) {
-        let view_projection = crate::mesh::pipeline::camera_walked_into_the_baked_frame(
-            view_projection,
-            self.baked_frame,
-            current_frame,
-        );
+        let view_projection = self.camera_visiting(view_projection, current_frame);
         // The G-buffer runs `cuboid.wgsl`'s vertex stage alone, which reads only the
         // camera + corner-anchoring scalars from this block; the ghost fields are inert.
         let gbuffer_uniforms = flat_ghost_uniforms(
@@ -530,7 +533,7 @@ impl SelectionOutlineRenderer {
         );
         let tint = selection_cel_tint();
         let composite_uniforms = SelectionOutlineUniforms {
-            view_projection: view_projection.to_cols_array_2d(),
+            view_projection: view_projection.matrix().to_cols_array_2d(),
             tint,
             outline_alpha: SELECTION_OUTLINE_ALPHA,
             half_voxel: SELECTION_COINCIDENCE_HALF_WIDTH,

@@ -30,6 +30,7 @@
 //! paths (the cuboid mesh and the brick raymarch — the raymarch writes ray-hit depth into
 //! the same attachment).
 
+use super::baked_frame::BakedInAFrame;
 use super::*;
 use crate::renderer::{operand_ghost_loud_tint, operand_ghost_quiet_tint, OperandGhostStyle};
 
@@ -89,6 +90,12 @@ pub struct SelectedOperandGhostRenderer {
     /// The frame the ghost vertices are expressed in — recorded because this pass rebuilds on
     /// SELECTION change while the floating origin moves on GEOMETRY change.
     baked_frame: RecenterVoxels,
+}
+
+impl BakedInAFrame for SelectedOperandGhostRenderer {
+    fn baked_frame(&self) -> RecenterVoxels {
+        self.baked_frame
+    }
 }
 
 impl SelectedOperandGhostRenderer {
@@ -311,11 +318,7 @@ impl SelectedOperandGhostRenderer {
         current_frame: RecenterVoxels,
     ) {
         // The ghost draws wholly in the frame it was baked in, like every other pass.
-        let view_projection = crate::mesh::pipeline::camera_walked_into_the_baked_frame(
-            view_projection,
-            self.baked_frame,
-            current_frame,
-        );
+        let view_projection = self.camera_visiting(view_projection, current_frame);
         for body in &self.bodies {
             let quiet = flat_ghost_uniforms(
                 view_projection,

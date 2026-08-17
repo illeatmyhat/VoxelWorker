@@ -1,3 +1,4 @@
+use super::baked_frame::{BakedInAFrame, CameraInBakedFrame};
 use super::*;
 
 mod bindings;
@@ -74,26 +75,146 @@ impl CuboidChunkBuffers {
     }
 }
 
-/// A camera built for `current_frame`, re-expressed so it can draw vertices that were baked in
-/// `baked_frame`.
+/// How a bound material reaches the shader: `(modulation_enabled, base_colors, material)`.
 ///
-/// The two frames differ by a pure translation, so this is a concat and nothing else: no vertex
-/// moves, no buffer is rewritten, and the shader never learns that anything happened. Written out
-/// as its own function because the DIRECTION is the whole content and a sign error here draws a
-/// scene that looks plausible and stands in the wrong place.
-///
-/// When the frames agree — the steady state, and every golden — the matrix is returned untouched
-/// rather than multiplied by an identity, so the parity is bit-level rather than close enough.
-pub(crate) fn camera_walked_into_the_baked_frame(
-    view_projection: glam::Mat4,
-    baked_frame: RecenterVoxels,
-    current_frame: RecenterVoxels,
-) -> glam::Mat4 {
-    let walk = baked_frame.a_point_of_this_frame_seen_from(current_frame);
-    if walk == glam::Vec3::ZERO {
-        return view_projection;
+/// A `None` (loaded block) falls back to Plain's texture + neutral modulation — the cuboid path
+/// renders a loaded block as a single global material. Debug-faces mode forces modulation off
+/// (the shader bypasses it anyway) but keeps the material, since the atlas is still bound.
+fn material_binding(
+    bound: Option<MaterialChoice>,
+    debug_face_mode: bool,
+) -> (
+    bool,
+    [[f32; 4]; MaterialChoice::MATERIAL_COUNT],
+    MaterialChoice,
+) {
+    match bound {
+        Some(material) if !debug_face_mode => (
+            true,
+            crate::renderer::relative_material_base_colors_public(material),
+            material,
+        ),
+        Some(material) => (
+            false,
+            [[1.0, 1.0, 1.0, 0.0]; MaterialChoice::MATERIAL_COUNT],
+            material,
+        ),
+        None => (
+            false,
+            [[1.0, 1.0, 1.0, 0.0]; MaterialChoice::MATERIAL_COUNT],
+            MaterialChoice::Plain,
+        ),
     }
-    view_projection * glam::Mat4::from_translation(walk)
+}
+
+/// What the resident vertex buffers RECORDED when they were built: the floating origin they stand
+/// in, and the composite grid they were clipped against.
+///
+/// One value because a uniform must not mix the two sides. Every world-space term the shader
+/// reads — the camera, the grid half-extent, the overlay's true-world offset — comes from here
+/// and never from the live scene, so the pass cannot end up with its lattice in one origin and
+/// its positions in another. It is a plain value with no GPU in it, which is what lets a test
+/// bake a real scene and ask what the pass would upload.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct BakedMesh {
+    /// **The frame the resident vertices are expressed in.** Render position = true world
+    /// voxel − this.
+    ///
+    /// It travels with the buffers because the buffers are the only thing that knows it: the
+    /// scene's floating origin is the midpoint of the composite extent, so it moves the moment
+    /// any shape grows, while these vertices go on standing where they were emitted until a
+    /// rebuild lands. Three readers, all of them the same question asked differently — the band
+    /// re-emit (which must re-emit in the frame the rest of the buffers are in), the overlay's
+    /// true-world offset, and the camera reconciliation in [`Self::uniforms_for`] (which walks
+    /// the camera into this frame rather than asking the vertices to move).
+    ///
+    /// Every constructor sets it through [`CuboidMeshRenderer::assemble`], so there is no path
+    /// that leaves it unstated. It once defaulted to `[0, 0, 0]` on the dense builders, which was
+    /// not a harmless placeholder: the overlay read it and put the block lattice a whole recenter
+    /// away from the world lattice.
+    pub(crate) frame: RecenterVoxels,
+    /// The whole composite grid's voxel dims (the band clip maps an absolute layer to
+    /// the global region-local Z; only the Z half is used).
+    pub(crate) grid_dimensions: [u32; 3],
+}
+
+impl BakedInAFrame for BakedMesh {
+    fn baked_frame(&self) -> RecenterVoxels {
+        self.frame
+    }
+}
+
+impl BakedMesh {
+    /// The uniform the solid pass uploads, for a camera standing in `current_frame`.
+    ///
+    /// **The pass draws wholly in the frame its vertices were baked in.** The camera walks to
+    /// them — the two frames differ by a pure integer translation, taken in `i64` before it is
+    /// ever an `f32` — and every other world-space term is read from what the buffers recorded.
+    /// A zero delta leaves the matrix bit-identical, which is the steady state and every golden.
+    ///
+    /// Separated from the upload so it is a value a test can read. The buffer write is the
+    /// action; this is the reading.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn uniforms_for(
+        self,
+        view_projection: glam::Mat4,
+        current_frame: RecenterVoxels,
+        voxels_per_block: u32,
+        grid_overlay_enabled: bool,
+        bound: Option<MaterialChoice>,
+        band: LayerBand,
+        debug_face_mode: bool,
+        atlas_rects: [[f32; 4]; MaterialChoice::MATERIAL_COUNT],
+    ) -> CuboidUniforms {
+        let view_projection = self.camera_visiting(view_projection, current_frame);
+        let (modulation_enabled, base_colors, _material) = material_binding(bound, debug_face_mode);
+        let overlay = crate::renderer::grid_overlay_params();
+        // The render grid cage's corner-anchoring term (`floor(dim/2)`), shared by the
+        // `grid_half_extent` uniform AND the overlay's true-world offset below — ONE typed value
+        // so the two can never diverge, and so `recenter − grid_half_extent` only compiles via the
+        // audited `RecenterVoxels::render_absolute_to_true_world_offset` conversion.
+        let grid_half_extent =
+            substrate::spatial::GridHalfExtent::of_grid_dimensions(self.grid_dimensions);
+        CuboidUniforms {
+            view_projection: view_projection.matrix().to_cols_array_2d(),
+            // Corner-anchoring: the grid's low corner is `−floor(dim/2)`, so the GPU
+            // recovers the absolute voxel frame with `world_position + floor(dim/2)`
+            // (integer-valued). Using `dim/2.0` would be half a voxel off for an ODD
+            // dim, mis-snapping the voxel/block grid overlay and the Z-band clip.
+            grid_half_extent: grid_half_extent.voxels(),
+            voxels_per_block: voxels_per_block.max(1) as f32,
+            voxel_line_color: overlay.voxel_line_color,
+            grid_overlay_enabled: if grid_overlay_enabled { 1.0 } else { 0.0 },
+            block_line_color: overlay.block_line_color,
+            material_modulation_enabled: if modulation_enabled { 1.0 } else { 0.0 },
+            voxel_line_half_width: overlay.voxel_line_half_width,
+            block_line_half_width: overlay.block_line_half_width,
+            voxel_line_alpha: overlay.voxel_line_alpha,
+            block_line_alpha: overlay.block_line_alpha,
+            // Layer-range band clip: the shader keeps fragments whose voxel layer is
+            // in [band_min, band_max] (both INCLUSIVE). `LayerBand::FULL` uses band_max =
+            // u32::MAX, so `as f32` (≈ 4.29e9) leaves every layer unclipped.
+            band_min: band.band_min as f32,
+            band_max: band.band_max as f32,
+            debug_face_mode: if debug_face_mode { 1.0 } else { 0.0 },
+            // The SOLID draw is never the ghost — 0 here keeps the non-onion goldens
+            // byte-green.
+            ghost_mode: 0.0,
+            material_base_colors: base_colors,
+            material_atlas_rects: atlas_rects,
+            ghost_tint: [0.0, 0.0, 0.0, 0.0],
+            // `render_absolute + (recenter − grid_half_extent)` is the TRUE world voxel coord — so
+            // the overlay's block lines land on the world block lattice, not the render grid's
+            // half-extent frame. The subtraction happens ONLY inside this named conversion (the SAME
+            // floor(dim/2) `grid_half_extent` above), so no code can treat the render-local
+            // `world_position + grid_half_extent` as if it were true-world; `recenter` is the
+            // resolve's carried frame.
+            overlay_world_offset: self
+                .frame
+                .render_absolute_to_true_world_offset(grid_half_extent),
+            _overlay_pad: 0.0,
+        }
+    }
 }
 
 /// All GPU resources for drawing the cuboid mesh — the understudy render path and
@@ -159,29 +280,12 @@ pub struct CuboidMeshRenderer {
     /// source grids. Empty on the dense path; populated only by
     /// [`new_from_two_layer_chunks`](Self::new_from_two_layer_chunks).
     /// `density` is what the two-layer mesher needs to re-emit on a band change; the frame it
-    /// re-emits in is [`baked_frame`](Self::baked_frame), which is not a two-layer fact.
+    /// re-emits in is the recorded [`BakedMesh`], which is not a two-layer fact.
     source_two_layer_chunks: Vec<([i32; 3], Arc<evaluation::two_layer_store::TwoLayerChunk>)>,
     source_two_layer_density: u32,
-    /// **The frame the resident vertices are expressed in.** Render position = true world
-    /// voxel − this.
-    ///
-    /// It travels with the buffers because the buffers are the only thing that knows it: the
-    /// scene's floating origin is the midpoint of the composite extent, so it moves the moment
-    /// any shape grows, while these vertices go on standing where they were emitted until a
-    /// rebuild lands. Three readers, all of them the same question asked differently — the band
-    /// re-emit (which must re-emit in the frame the rest of the buffers are in), the overlay's
-    /// true-world offset, and the camera reconciliation in
-    /// [`update_uniforms`](Self::update_uniforms) (which walks the camera into this frame rather
-    /// than asking the vertices to move).
-    ///
-    /// Every constructor sets it through [`assemble`](Self::assemble), so there is no path that
-    /// leaves it unstated. It once defaulted to `[0, 0, 0]` on the dense builders, which was not
-    /// a harmless placeholder: the overlay read it and put the block lattice a whole recenter
-    /// away from the world lattice.
-    baked_frame: RecenterVoxels,
-    /// The whole composite grid's voxel dims (the band clip maps an absolute layer to
-    /// the global region-local Z; only the Z half is used).
-    source_grid_dimensions: [u32; 3],
+    /// What the resident buffers recorded when they were built — see [`BakedMesh`]. Every
+    /// constructor sets it through [`assemble`](Self::assemble), so no path leaves it unstated.
+    baked: BakedMesh,
     /// Total boxes across all chunks the last build produced (diagnostic).
     total_box_count: u32,
     current_band: LayerBand,
@@ -737,8 +841,10 @@ impl CuboidMeshRenderer {
             // overrides these after `assemble` so its band reclip re-meshes from the store.
             source_two_layer_chunks: Vec::new(),
             source_two_layer_density: 1,
-            baked_frame,
-            source_grid_dimensions: grid_dimensions,
+            baked: BakedMesh {
+                frame: baked_frame,
+                grid_dimensions,
+            },
             total_box_count,
             current_band: LayerBand::FULL,
             current_region: None,
@@ -775,7 +881,7 @@ impl CuboidMeshRenderer {
         evicted_dirty: &[[i32; 3]],
     ) {
         profiling::scope!("cuboid_mesh_incremental");
-        self.source_grid_dimensions = grid_dimensions;
+        self.baked.grid_dimensions = grid_dimensions;
 
         // The renderer's KNOWN set is its source grids' coords (includes occupied-but-
         // fully-occluded chunks that carry no buffer), so occluded chunks stay stable
@@ -877,8 +983,10 @@ impl CuboidMeshRenderer {
         evicted_dirty: &[[i32; 3]],
     ) {
         profiling::scope!("cuboid_mesh_incremental_two_layer");
-        self.source_grid_dimensions = grid_dimensions;
-        self.baked_frame = recenter_voxels;
+        self.baked = BakedMesh {
+            frame: recenter_voxels,
+            grid_dimensions,
+        };
         self.source_two_layer_density = voxels_per_block.max(1);
 
         // The renderer's KNOWN set is its retained two-layer chunks' coords (includes
@@ -1026,8 +1134,8 @@ impl CuboidMeshRenderer {
         if !self.source_two_layer_chunks.is_empty() {
             return Some(build_two_layer_chunk_meshes(
                 &self.source_two_layer_chunks,
-                self.source_grid_dimensions,
-                self.baked_frame,
+                self.baked.grid_dimensions,
+                self.baked.frame,
                 self.source_two_layer_density,
                 band,
                 region,
@@ -1043,7 +1151,7 @@ impl CuboidMeshRenderer {
             .collect();
         Some(build_chunk_meshes_with_apron(
             &chunk_refs,
-            self.source_grid_dimensions,
+            self.baked.grid_dimensions,
             band,
             region,
         ))
@@ -1073,7 +1181,7 @@ impl CuboidMeshRenderer {
         // hard-clipped to it (`ClipToRegion`). With no region the slabs span the scene.
         let slab_region = ghost_region(region);
         let depth = band.onion_depth;
-        let grid_z = self.source_grid_dimensions[2];
+        let grid_z = self.baked.grid_dimensions[2];
         let last_layer = grid_z.saturating_sub(1);
         // Lower slab: layers [band_min − depth, band_min − 1]. Skipped when the band bottom
         // is already layer 0 (nothing below to ghost).
@@ -1158,22 +1266,6 @@ impl CuboidMeshRenderer {
         region: Option<RegionClip>,
         debug_face_mode: bool,
     ) {
-        // **The pass draws wholly in the frame its vertices were baked in.** The scene's
-        // floating origin is the midpoint of the composite extent, so growing a shape moves it
-        // — and these buffers are built asynchronously and go on standing in the frame they
-        // were emitted in until the next build lands. For that window the camera is somewhere
-        // the vertices are not.
-        //
-        // Nothing here moves a vertex. The camera walks to them: the two frames differ by a
-        // pure integer translation, taken in i64 before it is ever an `f32`, and folded into
-        // the projection. Every other world-space term in this uniform is read from what the
-        // buffers recorded (`baked_frame`, `source_grid_dimensions`) for the same reason — a
-        // pass that mixed the two would put its shading keys and its block lattice in one
-        // frame and its positions in another. A zero delta leaves the matrix bit-identical,
-        // which is the steady state and every golden.
-        let view_projection =
-            camera_walked_into_the_baked_frame(view_projection, self.baked_frame, current_frame);
-        let grid_dimensions = self.source_grid_dimensions;
         // Layer-range band clip + region scoping: re-mesh clipped to the band inside the region (real cap faces at the band /
         // region edges) when either changed. Debug-faces mode bypasses BOTH (the check
         // sees the whole model), so force the full band + no region while it is on.
@@ -1183,78 +1275,25 @@ impl CuboidMeshRenderer {
             (band, region)
         };
         self.rebuild_for_band(device, effective_band, effective_region);
-        // The bound procedural material drives BOTH the texture binding (selected
-        // in `draw`) and the per-box modulation. A `None` (loaded block) falls
-        // back to Plain's texture + neutral modulation: the cuboid path renders a
-        // loaded block as a single global material. Debug-faces mode forces
-        // modulation off (the shader bypasses it anyway).
-        let (modulation_enabled, base_colors, material) = match bound {
-            Some(material) if !debug_face_mode => (
-                true,
-                crate::renderer::relative_material_base_colors_public(material),
-                material,
-            ),
-            Some(material) => (
-                false,
-                [[1.0, 1.0, 1.0, 0.0]; MaterialChoice::MATERIAL_COUNT],
-                material,
-            ),
-            None => (
-                false,
-                [[1.0, 1.0, 1.0, 0.0]; MaterialChoice::MATERIAL_COUNT],
-                MaterialChoice::Plain,
-            ),
-        };
-        self.bound_material = material;
+        // The bound procedural material drives BOTH the texture binding (selected in `draw`)
+        // and the per-box modulation; record which one the uniform below was built for.
+        let (_, _, bound_material) = material_binding(bound, debug_face_mode);
+        self.bound_material = bound_material;
         // Record the debug flag so `draw` selects the matching cull-off pipeline.
         self.debug_face_mode = debug_face_mode;
 
-        let overlay = crate::renderer::grid_overlay_params();
-        // The render grid cage's corner-anchoring term (`floor(dim/2)`), shared by the
-        // `grid_half_extent` uniform AND the overlay's true-world offset below — ONE typed value
-        // so the two can never diverge, and so `recenter − grid_half_extent` only compiles via the
-        // audited `RecenterVoxels::render_absolute_to_true_world_offset` conversion.
-        let grid_half_extent =
-            substrate::spatial::GridHalfExtent::of_grid_dimensions(grid_dimensions);
-        let uniforms = CuboidUniforms {
-            view_projection: view_projection.to_cols_array_2d(),
-            // Corner-anchoring: the grid's low corner is `−floor(dim/2)`, so the GPU
-            // recovers the absolute voxel frame with `world_position + floor(dim/2)`
-            // (integer-valued). Using `dim/2.0` would be half a voxel off for an ODD
-            // dim, mis-snapping the voxel/block grid overlay and the Z-band clip.
-            grid_half_extent: grid_half_extent.voxels(),
-            voxels_per_block: voxels_per_block.max(1) as f32,
-            voxel_line_color: overlay.voxel_line_color,
-            grid_overlay_enabled: if grid_overlay_enabled { 1.0 } else { 0.0 },
-            block_line_color: overlay.block_line_color,
-            material_modulation_enabled: if modulation_enabled { 1.0 } else { 0.0 },
-            voxel_line_half_width: overlay.voxel_line_half_width,
-            block_line_half_width: overlay.block_line_half_width,
-            voxel_line_alpha: overlay.voxel_line_alpha,
-            block_line_alpha: overlay.block_line_alpha,
-            // Layer-range band clip: the shader keeps fragments whose voxel layer is
-            // in [band_min, band_max] (both INCLUSIVE). `LayerBand::FULL` uses band_max =
-            // u32::MAX, so `as f32` (≈ 4.29e9) leaves every layer unclipped.
-            band_min: band.band_min as f32,
-            band_max: band.band_max as f32,
-            debug_face_mode: if debug_face_mode { 1.0 } else { 0.0 },
-            // The SOLID draw is never the ghost — 0 here keeps the non-onion goldens
-            // byte-green.
-            ghost_mode: 0.0,
-            material_base_colors: base_colors,
-            material_atlas_rects: self.atlas_rects,
-            ghost_tint: [0.0, 0.0, 0.0, 0.0],
-            // `render_absolute + (recenter − grid_half_extent)` is the TRUE world voxel coord — so
-            // the overlay's block lines land on the world block lattice, not the render grid's
-            // half-extent frame. The subtraction happens ONLY inside this named conversion (the SAME
-            // floor(dim/2) `grid_half_extent` above), so no code can treat the render-local
-            // `world_position + grid_half_extent` as if it were true-world; `recenter` is the
-            // resolve's carried frame.
-            overlay_world_offset: self
-                .baked_frame
-                .render_absolute_to_true_world_offset(grid_half_extent),
-            _overlay_pad: 0.0,
-        };
+        // The uniform is a reading of what the buffers recorded, taken next to the frame the
+        // caller is standing in; this call is the only place the two meet.
+        let uniforms = self.baked.uniforms_for(
+            view_projection,
+            current_frame,
+            voxels_per_block,
+            grid_overlay_enabled,
+            bound,
+            band,
+            debug_face_mode,
+            self.atlas_rects,
+        );
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
 
         // The onion GHOST uniform. Identical camera/frame to the solid,
@@ -1277,7 +1316,9 @@ impl CuboidMeshRenderer {
         // Frustum-cull the per-chunk buffers by their world AABBs (sorted for a
         // deterministic draw order; cross-chunk order is pixel-irrelevant — opaque +
         // depth-tested).
-        let frustum = Frustum::from_view_projection(view_projection);
+        // Cull against the SAME matrix that was uploaded — the walked one. The chunk AABBs
+        // stand in the baked frame, so a camera that had not walked would cull them wrongly.
+        let frustum = Frustum::from_view_projection(uniforms.view_projection());
         self.visible_chunks.clear();
         for (coord, chunk) in &self.chunk_buffers {
             if frustum.intersects_aabb(&chunk.aabb) {

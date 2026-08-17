@@ -226,10 +226,6 @@ pub struct BrickRaymarchRenderer {
     /// patch writes only the dirty chunks' slots (unless the atlas grew — then every slot).
     last_atlas_slots_written: u32,
     record_count: u32,
-    /// The composite recenter the boundary set was resolved under (carried from the
-    /// install as [`RecenterVoxels`], the same value the two-layer mesher
-    /// bakes; unwrapped with `.voxels()` only where `march_frame` packs the uniform).
-    recenter_voxels: RecenterVoxels,
     brick_edge_voxels: u32,
     bricks_per_axis: u32,
     /// Inclusive absolute world-block bounds of the resident record set (the
@@ -805,7 +801,6 @@ impl BrickRaymarchRenderer {
             cell_key_texture_dim,
             last_atlas_slots_written: 0,
             record_count: 0,
-            recenter_voxels: RecenterVoxels::new([0, 0, 0]),
             brick_edge_voxels: 1,
             bricks_per_axis: 0,
             absolute_block_bounds: None,
@@ -832,8 +827,8 @@ impl BrickRaymarchRenderer {
     /// Install (or replace) the brick field: upload the packed records + the
     /// sculpted atlas and rebuild the field bind group — the per-edit swap, no
     /// pipeline work. `gpu_records` is [`pack_gpu_records`]' output (possibly with
-    /// forced non-resident slots); `recenter_voxels` the resolve's carried
-    /// recenter. Material AND the on-face-grid overlay are per-record (packed in
+    /// forced non-resident slots). Material AND the on-face-grid overlay are per-record
+    /// (packed in
     /// `gpu_records` / the material atlas) — no scene-wide overlay rides here.
     #[allow(clippy::too_many_arguments)]
     pub fn install_brick_field(
@@ -844,7 +839,6 @@ impl BrickRaymarchRenderer {
         atlas: &SculptedAtlasPayload,
         gpu_records: &[BrickGpuRecord],
         pyramid: &ClipmapPyramid,
-        recenter_voxels: RecenterVoxels,
     ) {
         // The occupancy-only install: the MATERIAL SIDE ATLAS installs EMPTY — the honest default
         // for a caller that holds no cell-key payload (a scene with no MIXED brick). A field WITH
@@ -866,7 +860,6 @@ impl BrickRaymarchRenderer {
             &empty_cell_keys,
             gpu_records,
             pyramid,
-            recenter_voxels,
         );
     }
 
@@ -885,7 +878,6 @@ impl BrickRaymarchRenderer {
         cell_key_atlas: &SculptedCellKeyAtlasPayload,
         gpu_records: &[BrickGpuRecord],
         pyramid: &ClipmapPyramid,
-        recenter_voxels: RecenterVoxels,
     ) {
         // A wholesale install (re)creates the atlas texture from scratch and uploads
         // every sculpted slot — the from-scratch / scene-load / gate-re-engage path.
@@ -906,7 +898,6 @@ impl BrickRaymarchRenderer {
             atlas.geometry.bricks_per_axis,
             gpu_records,
             pyramid,
-            recenter_voxels,
         );
     }
 
@@ -933,7 +924,6 @@ impl BrickRaymarchRenderer {
         update: &BrickFieldUpdate,
         gpu_records: &[BrickGpuRecord],
         pyramid: &ClipmapPyramid,
-        recenter_voxels: RecenterVoxels,
     ) {
         // Read the atlas geometry + dirty-slot bytes straight from the single-owner mirror —
         // no `to_build()`: no per-edit full-records clone, no whole-atlas re-pack.
@@ -996,7 +986,6 @@ impl BrickRaymarchRenderer {
             geometry.bricks_per_axis,
             gpu_records,
             pyramid,
-            recenter_voxels,
         );
     }
 
@@ -1023,7 +1012,6 @@ impl BrickRaymarchRenderer {
         bricks_per_axis: u32,
         gpu_records: &[BrickGpuRecord],
         pyramid: &ClipmapPyramid,
-        recenter_voxels: RecenterVoxels,
     ) {
         // Inclusive absolute block bounds over the record set (the sort is z-major,
         // so x/y still need the full scan; records are few — thousands).
@@ -1172,7 +1160,6 @@ impl BrickRaymarchRenderer {
         self.clipmap_level_3_blocks = pyramid.level_3.blocks_per_cell;
         self.clipmap_level_3_count = level_3_keys.len() as u32;
         self.record_count = gpu_records.len() as u32;
-        self.recenter_voxels = recenter_voxels;
         self.brick_edge_voxels = brick_edge_voxels;
         self.bricks_per_axis = bricks_per_axis;
         self.absolute_block_bounds = absolute_block_bounds;
@@ -1199,26 +1186,16 @@ impl BrickRaymarchRenderer {
         self.record_count
     }
 
-    /// The frame the installed field was baked in.
-    ///
-    /// **A draw must not source its camera frame from here.** The camera's frame is the shell's,
-    /// and the whole point of `current_frame` on [`march_frame`](Self::march_frame) is that the
-    /// two are allowed to differ while a rebuild is in flight. This exists for the parity
-    /// harnesses, which install a field and immediately draw it, and so genuinely mean "the
-    /// steady state, where the two agree".
-    pub fn frame_the_installed_field_was_baked_in(&self) -> RecenterVoxels {
-        self.recenter_voxels
-    }
-
     /// Compute this frame's march frame (the uniform values) WITHOUT uploading —
     /// the shared math behind [`update_uniforms`](Self::update_uniforms) and the
     /// CPU reference march.
-    /// `current_frame` is the frame the CAMERA is in, and it is the caller's to state — not
-    /// `self.recenter_voxels`, which is the frame of whatever field happens to be installed. The
-    /// two part company whenever the floating origin moves and the next field has not landed
-    /// yet, and the brick payload is absolute (its bounds are absolute block coords, its shading
-    /// key is recovered through `shading_to_absolute`), so a field baked under an older origin
-    /// marches correctly the moment this term names the camera's frame rather than its own.
+    /// `current_frame` is the frame the CAMERA is in, and it is the caller's to state. **An
+    /// installed field does not remember the frame it was baked in, and cannot.** Its payload is
+    /// absolute — bounds in absolute block coords, the shading key recovered through
+    /// `shading_to_absolute` — so a field baked under an older origin marches correctly the
+    /// moment this term names the camera's frame. Nothing is recorded that could name a
+    /// different one, which is why the brick and a mesh that landed at a different moment can
+    /// stand side by side and both be right.
     pub fn march_frame(
         &self,
         scene_matrices: camera::SceneMatrices,

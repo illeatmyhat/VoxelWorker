@@ -862,14 +862,13 @@ fn brick_raymarch_hit_set_matches_exact_evaluator() {
             &build.atlas_payload(),
             &gpu_records,
             &pyramid,
-            recenter,
         );
         let frame = renderer.update_uniforms(
             &gpu.queue,
             scene_matrices,
             viewport_px,
             grid_dimensions,
-            renderer.frame_the_installed_field_was_baked_in(),
+            recenter,
             band,
             None,
             false,
@@ -1071,7 +1070,6 @@ fn brick_loaded_material_hit_samples_mesh_rule_texel() {
         &build.atlas_payload(),
         &gpu_records,
         &pyramid,
-        recenter,
     );
 
     // A synthetic per-face material: six distinct solid colors, one per D2Array layer
@@ -1120,7 +1118,7 @@ fn brick_loaded_material_hit_samples_mesh_rule_texel() {
         scene_matrices,
         viewport_px,
         grid_dimensions,
-        renderer.frame_the_installed_field_was_baked_in(),
+        recenter,
         LayerBand::FULL,
         None,
         false,
@@ -1268,14 +1266,13 @@ fn brick_surface_elision_hit_set_unchanged() {
                 &build.atlas_payload(),
                 gpu_records,
                 &pyramid,
-                recenter,
             );
             renderer.update_uniforms(
                 &gpu.queue,
                 scene_matrices,
                 viewport_px,
                 grid_dimensions,
-                renderer.frame_the_installed_field_was_baked_in(),
+                recenter,
                 band,
                 None,
                 false,
@@ -1396,14 +1393,13 @@ fn brick_surface_elision_band_clip_renders_interior() {
                 &build.atlas_payload(),
                 gpu_records,
                 &pyramid,
-                recenter,
             );
             let frame = renderer.update_uniforms(
                 &gpu.queue,
                 scene_matrices,
                 viewport_px,
                 grid_dimensions,
-                renderer.frame_the_installed_field_was_baked_in(),
+                recenter,
                 band,
                 None,
                 false,
@@ -1554,7 +1550,6 @@ fn brick_raymarch_incremental_patch_matches_wholesale_install() {
         &build_a.atlas_payload(),
         &pack_gpu_records(&build_a.brick_records, |_| false),
         &ClipmapPyramid::from_chunks(&fresh_a),
-        scene_a.recenter_voxels_for_resolve(vpb),
     );
     incremental_renderer.patch_brick_field(
         &gpu.device,
@@ -1563,7 +1558,6 @@ fn brick_raymarch_incremental_patch_matches_wholesale_install() {
         &update,
         &pack_gpu_records(field.records(), |_| false),
         &ClipmapPyramid::from_chunks(&fresh_b),
-        recenter_b,
     );
     if !update.atlas_grew {
         assert_eq!(
@@ -1577,7 +1571,7 @@ fn brick_raymarch_incremental_patch_matches_wholesale_install() {
         scene_matrices,
         viewport_px,
         grid_dimensions,
-        incremental_renderer.frame_the_installed_field_was_baked_in(),
+        recenter_b,
         band,
         None,
         false,
@@ -1596,14 +1590,13 @@ fn brick_raymarch_incremental_patch_matches_wholesale_install() {
         &wholesale_build.atlas_payload(),
         &pack_gpu_records(&wholesale_build.brick_records, |_| false),
         &ClipmapPyramid::from_chunks(&fresh_b),
-        recenter_b,
     );
     wholesale_renderer.update_uniforms(
         &gpu.queue,
         scene_matrices,
         viewport_px,
         grid_dimensions,
-        wholesale_renderer.frame_the_installed_field_was_baked_in(),
+        recenter_b,
         band,
         None,
         false,
@@ -1771,7 +1764,7 @@ fn brick_raymarch_incremental_carve_exposes_interior_across_chunk_boundary() {
             scene_matrices,
             viewport_px,
             grid_dimensions,
-            renderer.frame_the_installed_field_was_baked_in(),
+            recenter_carved,
             band,
             None,
             false,
@@ -1790,7 +1783,6 @@ fn brick_raymarch_incremental_carve_exposes_interior_across_chunk_boundary() {
         &build_with_b.atlas_payload(),
         &pack_gpu_records(&build_with_b.brick_records, |_| false),
         &ClipmapPyramid::from_chunks(&fresh_with_b),
-        scene_with_b.recenter_voxels_for_resolve(vpb),
     );
     incremental_renderer.patch_brick_field(
         &gpu.device,
@@ -1799,7 +1791,6 @@ fn brick_raymarch_incremental_carve_exposes_interior_across_chunk_boundary() {
         &update,
         &pack_gpu_records(field.records(), |_| false),
         &ClipmapPyramid::from_chunks(&fresh_carved),
-        recenter_carved,
     );
     let incremental_image = render(&mut incremental_renderer);
 
@@ -1813,7 +1804,6 @@ fn brick_raymarch_incremental_carve_exposes_interior_across_chunk_boundary() {
         &wholesale_build.atlas_payload(),
         &pack_gpu_records(&wholesale_build.brick_records, |_| false),
         &ClipmapPyramid::from_chunks(&fresh_carved),
-        recenter_carved,
     );
     let wholesale_image = render(&mut wholesale_renderer);
 
@@ -1889,7 +1879,7 @@ fn brick_raymarch_residency_miss_renders_coarse_form() {
                 scene_matrices,
                 viewport_px,
                 grid_dimensions,
-                renderer.frame_the_installed_field_was_baked_in(),
+                recenter,
                 band,
                 None,
                 false,
@@ -1907,7 +1897,6 @@ fn brick_raymarch_residency_miss_renders_coarse_form() {
             &build.atlas_payload(),
             &pack_gpu_records(&build.brick_records, |_| false),
             &pyramid,
-            recenter,
         );
         let resident_image = render_image(&renderer);
         // Forced residency miss: every sculpted record → NON_RESIDENT sentinel.
@@ -1918,7 +1907,6 @@ fn brick_raymarch_residency_miss_renders_coarse_form() {
             &build.atlas_payload(),
             &pack_gpu_records(&build.brick_records, |_| true),
             &pyramid,
-            recenter,
         );
         let miss_image = render_image(&renderer);
 
@@ -2046,14 +2034,13 @@ fn brick_raymarch_pyramid_on_equals_off() {
                 &atlas,
                 &gpu_records,
                 pyramid,
-                recenter,
             );
             renderer.update_uniforms(
                 &gpu.queue,
                 scene_matrices,
                 viewport_px,
                 grid_dimensions,
-                renderer.frame_the_installed_field_was_baked_in(),
+                recenter,
                 band,
                 None,
                 false,
@@ -2220,14 +2207,13 @@ fn clipmap_scattered_scene_skips_empty_space() {
         &build.atlas_payload(),
         &gpu_records,
         &pyramid_on,
-        recenter,
     );
     let frame = renderer.update_uniforms(
         &gpu.queue,
         scene_matrices,
         [0, 0, width, height],
         grid_dimensions,
-        renderer.frame_the_installed_field_was_baked_in(),
+        recenter,
         LayerBand::FULL,
         None,
         false,
@@ -2392,7 +2378,6 @@ fn onion_ghost_marches_only_the_onion_slabs() {
         &build.atlas_payload(),
         &records,
         &pyramid,
-        recenter,
     );
 
     // The absolute-voxel-Z set of the hits a given band clip renders, via the SOLID
@@ -2404,7 +2389,7 @@ fn onion_ghost_marches_only_the_onion_slabs() {
             scene_matrices,
             viewport_px,
             grid_dimensions,
-            renderer.frame_the_installed_field_was_baked_in(),
+            recenter,
             clip,
             None,
             false,
@@ -2456,7 +2441,7 @@ fn onion_ghost_marches_only_the_onion_slabs() {
         scene_matrices,
         viewport_px,
         grid_dimensions,
-        renderer.frame_the_installed_field_was_baked_in(),
+        recenter,
         band,
         None,
     );
@@ -2470,7 +2455,7 @@ fn onion_ghost_marches_only_the_onion_slabs() {
         scene_matrices,
         viewport_px,
         grid_dimensions,
-        renderer.frame_the_installed_field_was_baked_in(),
+        recenter,
         scrubbed,
         None,
     );
@@ -2576,7 +2561,6 @@ fn onion_region_confines_the_band_to_the_selected_aabb() {
         &build.atlas_payload(),
         &records,
         &pyramid,
-        recenter,
     );
 
     let render = |renderer: &BrickRaymarchRenderer,
@@ -2588,7 +2572,7 @@ fn onion_region_confines_the_band_to_the_selected_aabb() {
             scene_matrices,
             viewport_px,
             grid_dimensions,
-            renderer.frame_the_installed_field_was_baked_in(),
+            recenter,
             clip,
             region,
             false,
@@ -2678,7 +2662,7 @@ fn onion_region_confines_the_band_to_the_selected_aabb() {
         scene_matrices,
         viewport_px,
         grid_dimensions,
-        renderer.frame_the_installed_field_was_baked_in(),
+        recenter,
         LayerBand {
             onion_depth: 4,
             ..band
@@ -2808,14 +2792,13 @@ fn brick_mixed_material_matches_cpu_reference() {
         &build.cell_key_atlas_payload(),
         &gpu_records,
         &pyramid,
-        recenter,
     );
     let frame = renderer.update_uniforms(
         &gpu.queue,
         scene_matrices,
         viewport_px,
         grid_dimensions,
-        renderer.frame_the_installed_field_was_baked_in(),
+        recenter,
         band,
         None,
         false,

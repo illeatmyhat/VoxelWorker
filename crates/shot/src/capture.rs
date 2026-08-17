@@ -779,7 +779,6 @@ pub(crate) async fn run_capture(options: ShotOptions) {
                     &cell_key_atlas,
                     &gpu_records,
                     &pyramid,
-                    voxel_worker::RecenterVoxels::new(grid.recenter_voxels),
                 );
                 // Grazing-rim DIAGNOSTIC: `--brick --debug-faces` shades every hit by its
                 // face axis + a per-voxel UV checkerboard (geometry-staircase vs shading-

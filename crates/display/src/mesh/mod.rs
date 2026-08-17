@@ -42,6 +42,7 @@ use voxel_core::core_geom::CellKey;
 use voxel_core::core_geom::{MaterialChoice, CHUNK_BLOCKS};
 use voxel_core::voxel::{RecenterVoxels, VoxelGrid};
 
+mod baked_frame;
 mod builder;
 mod emit;
 mod geometry;

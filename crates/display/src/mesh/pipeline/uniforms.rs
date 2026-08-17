@@ -54,6 +54,32 @@ pub(crate) struct CuboidUniforms {
     pub(super) _overlay_pad: f32,
 }
 
+impl CuboidUniforms {
+    /// The camera this block uploads: the caller's, walked into the frame the buffers were baked
+    /// in. Read it rather than the matrix that went into
+    /// [`BakedMesh::uniforms_for`](super::BakedMesh::uniforms_for) — the frustum cull runs
+    /// against chunk AABBs that stand in the baked frame, so an unwalked camera would cull them
+    /// wrongly, and a reader that wants to know what the pass DREW has to ask what it uploaded.
+    pub(crate) fn view_projection(&self) -> glam::Mat4 {
+        glam::Mat4::from_cols_array_2d(&self.view_projection)
+    }
+}
+
+/// The rest of what a pass uploaded, readable only by the tests that check it did not mix two
+/// frames into one block. Production has no reason to read a uniform back — it wrote it.
+#[cfg(test)]
+impl CuboidUniforms {
+    /// `render_absolute + this` is the TRUE world voxel coordinate the grid overlay draws on.
+    pub(crate) fn overlay_world_offset(&self) -> [f32; 3] {
+        self.overlay_world_offset
+    }
+
+    /// The corner-anchoring term `floor(dim/2)` of the grid the buffers were clipped against.
+    pub(crate) fn grid_half_extent(&self) -> [f32; 3] {
+        self.grid_half_extent
+    }
+}
+
 /// Convert a packed [`MaterialAtlas`]'s per-material sub-rects into the uniform
 /// array layout `[inset_min_u, inset_min_v, inset_size_u, inset_size_v]` the shader
 /// indexes by `material_id`. Materials without a packed sub-rect (should not happen
@@ -76,14 +102,14 @@ pub(crate) fn atlas_rects_from(
 /// returns the flat tint before any texture / material / overlay / band read, so every
 /// other field is filled with inert values (overlay + modulation off, band FULL).
 pub(crate) fn flat_ghost_uniforms(
-    view_projection: glam::Mat4,
+    view_projection: CameraInBakedFrame,
     grid_dimensions: [u32; 3],
     voxels_per_block: u32,
     ghost_tint: [f32; 4],
 ) -> CuboidUniforms {
     let overlay = crate::renderer::grid_overlay_params();
     CuboidUniforms {
-        view_projection: view_projection.to_cols_array_2d(),
+        view_projection: view_projection.matrix().to_cols_array_2d(),
         // FLOORED half, matching the solid draw's corner-anchoring (an odd dim's
         // `dim/2.0` would sit half a voxel off — see `update_uniforms`).
         grid_half_extent: substrate::spatial::GridHalfExtent::of_grid_dimensions(grid_dimensions)

@@ -1,4 +1,9 @@
-#![allow(clippy::redundant_clone, clippy::single_match_else)]
+#![allow(
+    clippy::redundant_clone,
+    clippy::single_match_else,
+    clippy::float_cmp,
+    clippy::expect_used
+)]
 
 use super::*;
 
@@ -815,4 +820,147 @@ fn village_instance(name: &str, def: DefId, offset: [i64; 3], density: u32) -> N
     let mut node = Node::new(name, NodeContent::Instance(def));
     node.transform = NodeTransform::from_blocks(offset, density);
     node
+}
+
+/// **The uniform a stale mesh uploads does not move when a neighbour grows.**
+///
+/// The sibling test in `mesh::baked_frame` pins the walk's arithmetic against hand-built frames.
+/// This one asks the question the arithmetic cannot: whether the pass hands the walk the right
+/// two frames. It goes through the seam the pass itself goes through — a real scene, a real
+/// two-layer bake, the real resolve frames, and the very uniform `update_uniforms` writes — so it
+/// is red for a transposition, red for passing the baked frame on both sides, and red for a
+/// future reader that takes one of the uniform's world-space terms off the live scene. All of
+/// those are bit-exact no-ops in the steady state, where the two frames agree, which is every
+/// golden and every parity test.
+#[test]
+fn a_grown_neighbour_does_not_move_the_uniform_a_stale_mesh_uploads() {
+    use crate::mesh::pipeline::BakedMesh;
+
+    let density = 8u32;
+    // Two solids far apart on X. The near one grows; the far one is never touched. A composite
+    // AABB midpoint is what the render origin is, so growing the near one alone drags the origin
+    // — and every drawn thing with it — by half the growth.
+    let scene_at = |width_blocks: u32| {
+        Scene::from_nodes(vec![
+            two_layer_tool(
+                TwoLayerShape::Box,
+                [2, 2, 2],
+                [-40, 0, 0],
+                MC::Stone,
+                density,
+            ),
+            two_layer_tool(
+                TwoLayerShape::Box,
+                [width_blocks, 2, 2],
+                [0, 0, 0],
+                MC::Stone,
+                density,
+            ),
+        ])
+    };
+    // The lowest-X vertex the bake emits belongs to the untouched solid, and its TRUE world
+    // position is `render position + the frame it was baked in`.
+    let untouched_corner_of = |width_blocks: u32| {
+        let scene = scene_at(width_blocks);
+        let frame = scene.recenter_voxels_for_resolve(density);
+        let dimensions = scene.placed_region_dimensions(density);
+        let chunks = TwoLayerStore::enabled().build_covering_chunks(&scene, density, 0);
+        let meshes = build_two_layer_chunk_meshes(
+            &chunks,
+            dimensions,
+            frame,
+            density,
+            LayerBand::FULL,
+            None,
+        );
+        let corner = meshes
+            .iter()
+            .flat_map(|mesh| mesh.vertices.iter())
+            .map(|vertex| glam::Vec3::from_array(vertex.position))
+            .reduce(|lowest, vertex| if vertex.x < lowest.x { vertex } else { lowest })
+            .expect("the bake emitted vertices");
+        (corner, frame, dimensions)
+    };
+
+    let (probe, opening, opening_dimensions) = untouched_corner_of(2);
+    let baked = BakedMesh {
+        frame: opening,
+        grid_dimensions: opening_dimensions,
+    };
+    // A camera pinned to one WORLD point whichever frame it is built in — which is exactly what
+    // the shell's recenter-shift compensation maintains across a rebuild.
+    let camera_of = |frame: RecenterVoxels| {
+        let world_target = glam::Vec3::new(0.0, 0.0, 0.0);
+        let offset = glam::Vec3::from_array(frame.voxels().map(|axis| axis as f32));
+        glam::Mat4::perspective_rh(0.9, 1.6, 1.0, 100_000.0)
+            * glam::Mat4::look_at_rh(
+                world_target - offset + glam::Vec3::new(900.0, -1300.0, 700.0),
+                world_target - offset,
+                glam::Vec3::Z,
+            )
+    };
+    let uniforms_in = |current: RecenterVoxels| {
+        baked.uniforms_for(
+            camera_of(current),
+            current,
+            density,
+            true,
+            Some(MC::Stone),
+            LayerBand::FULL,
+            false,
+            [[0.0; 4]; MC::MATERIAL_COUNT],
+        )
+    };
+    let clip_of =
+        |uniforms: &crate::mesh::CuboidUniforms| uniforms.view_projection() * probe.extend(1.0);
+
+    let settled = uniforms_in(opening);
+    let seated = clip_of(&settled);
+    for width_blocks in [4u32, 40, 400] {
+        let (grown_corner, grown, _) = untouched_corner_of(width_blocks);
+        // The premise, stated rather than assumed: the growth really does move the origin, and
+        // the untouched solid really does stand still in the world while it happens. Without
+        // both, everything below would pass on a scene that never posed the problem.
+        assert_ne!(
+            grown.voxels(),
+            opening.voxels(),
+            "growing to {width_blocks} blocks left the render origin where it was — this test \
+             is measuring nothing",
+        );
+        let world_of = |corner: glam::Vec3, frame: RecenterVoxels| {
+            corner + glam::Vec3::from_array(frame.voxels().map(|axis| axis as f32))
+        };
+        assert_eq!(
+            world_of(grown_corner, grown),
+            world_of(probe, opening),
+            "the untouched solid moved in the world when its neighbour grew to \
+             {width_blocks} blocks",
+        );
+
+        // The mesh has NOT been rebuilt: `baked` still holds the opening frame, and the caller
+        // is now standing in `grown`. The corner must image exactly where it always did.
+        let stale = uniforms_in(grown);
+        let drifted = clip_of(&stale);
+        for axis in 0..4 {
+            assert!(
+                (drifted[axis] - seated[axis]).abs() < 1e-2,
+                "the untouched corner moved on clip axis {axis} when the neighbour grew to \
+                 {width_blocks} blocks: {} vs {}",
+                drifted[axis],
+                seated[axis],
+            );
+        }
+        // And the rest of the uniform stayed in the bake with it — a pass that took its lattice
+        // from the live scene would put the block lines a whole recenter off these positions.
+        assert_eq!(
+            stale.overlay_world_offset(),
+            settled.overlay_world_offset(),
+            "the overlay's true-world offset followed the live scene instead of the bake",
+        );
+        assert_eq!(
+            stale.grid_half_extent(),
+            settled.grid_half_extent(),
+            "the grid half-extent followed the live scene instead of the bake",
+        );
+    }
 }
