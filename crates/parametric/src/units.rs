@@ -530,7 +530,76 @@ pub fn parse(input: &str) -> Result<Measurement, MeasurementParseError> {
     if tokens.is_empty() {
         return Err(MeasurementParseError::Empty);
     }
+    measurement_from_tokens(&tokens)
+}
 
+/// The exact value of one number token, for a grammar that wants a bare count rather than a
+/// measurement term.
+///
+/// Same number forms as a measurement's — integer, decimal, fraction — read by the same code, so
+/// `3.5` means seven halves whether it is a scale factor or half a block.
+///
+/// # Errors
+///
+/// Returns the literal grammar's own complaint for a malformed number.
+pub(crate) fn rational_from_number_token(
+    text: &str,
+) -> Result<ExactRational, MeasurementParseError> {
+    parse_number(text)?
+        .as_ref()
+        .map(NumberLiteral::to_rational)
+        .ok_or_else(|| MeasurementParseError::InvalidNumber {
+            number_text: text.to_owned(),
+        })
+}
+
+/// Whether a word names one of the grid-native units.
+///
+/// The expression grammar asks this to find where a measurement literal ENDS: a number followed
+/// by a unit word is part of the literal, a number followed by anything else is a bare count.
+/// It asks here rather than keeping a list of its own, which is the whole point of
+/// [`Token`] being shared.
+pub(crate) fn is_unit_word(word: &str) -> bool {
+    classify_unit(word).is_some()
+}
+
+/// The voxel term a run of accumulated numbers adds up to.
+///
+/// SUB-VOXEL REJECTION lives here: a voxel is the grid's atom, so every number closed by `voxels`
+/// must be a whole one. `3.5 voxels` is not a rounding question, it is a quantity the grid cannot
+/// hold, and it is refused by name.
+fn whole_voxels_of(numbers: &[NumberLiteral]) -> Result<i64, MeasurementParseError> {
+    let mut term: i64 = 0;
+    for number in numbers {
+        let Some(whole) = number.to_rational().to_integer() else {
+            return Err(MeasurementParseError::SubVoxel {
+                number_text: number.source_text.clone(),
+            });
+        };
+        let Ok(whole) = i64::try_from(whole) else {
+            return Err(MeasurementParseError::InvalidNumber {
+                number_text: number.source_text.clone(),
+            });
+        };
+        let Some(sum) = term.checked_add(whole) else {
+            return Err(MeasurementParseError::InvalidNumber {
+                number_text: number.source_text.clone(),
+            });
+        };
+        term = sum;
+    }
+    Ok(term)
+}
+
+/// The one-literal grammar, over a token slice a caller has already carved out.
+///
+/// [`parse`] hands it a whole input; [`crate::expression::parse`] hands it the greedy munch it
+/// identified as one measurement operand. Both then get the sixteenths idiom, the duplicate-unit
+/// rule and the sub-voxel rejection from the same place — which is the only way those three stay
+/// one answer rather than two that agree until they do not.
+pub(crate) fn measurement_from_tokens(
+    tokens: &[Token],
+) -> Result<Measurement, MeasurementParseError> {
     let mut block_total = ExactRational::from_integer(0);
     let mut voxel_total: i64 = 0;
     let mut seen_blocks = false;
@@ -542,7 +611,45 @@ pub fn parse(input: &str) -> Result<Measurement, MeasurementParseError> {
     let mut pending_numbers: Vec<NumberLiteral> = Vec::new();
     let mut pending_text = String::new();
 
-    for token in tokens {
+    for token in tokens.iter().cloned() {
+        // The ONE-LITERAL grammar over the shared token stream: numbers accumulate, a unit word
+        // closes a term, and anything an expression would need — an operator, a bracket — is not
+        // part of a single measurement and says so. `expression::parse` is the grammar that reads
+        // those; this one deliberately does not grow to meet it.
+        let token = match token {
+            Token::Word(word) => word,
+            Token::Number(text) => {
+                match parse_number(&text)? {
+                    Some(number) => {
+                        if !pending_text.is_empty() {
+                            pending_text.push(' ');
+                        }
+                        pending_text.push_str(&text);
+                        pending_numbers.push(number);
+                    }
+                    None => return Err(MeasurementParseError::InvalidNumber { number_text: text }),
+                }
+                continue;
+            }
+            Token::Operator(sign) => {
+                return Err(MeasurementParseError::InvalidNumber {
+                    number_text: sign.to_string(),
+                })
+            }
+            Token::OpenParen => {
+                return Err(MeasurementParseError::InvalidNumber {
+                    number_text: "(".to_owned(),
+                })
+            }
+            Token::CloseParen => {
+                return Err(MeasurementParseError::InvalidNumber {
+                    number_text: ")".to_owned(),
+                })
+            }
+            Token::Unexpected(text) => {
+                return Err(MeasurementParseError::InvalidNumber { number_text: text })
+            }
+        };
         match classify_unit(&token) {
             Some(unit) => {
                 if pending_numbers.is_empty() {
@@ -565,27 +672,7 @@ pub fn parse(input: &str) -> Result<Measurement, MeasurementParseError> {
                             return Err(MeasurementParseError::DuplicateUnit { unit_text: token });
                         }
                         seen_voxels = true;
-                        // Sub-voxel rejection: every accumulated number for a
-                        // voxel term must be a whole integer.
-                        let mut term: i64 = 0;
-                        for number in &pending_numbers {
-                            let Some(whole) = number.to_rational().to_integer() else {
-                                return Err(MeasurementParseError::SubVoxel {
-                                    number_text: number.source_text.clone(),
-                                });
-                            };
-                            let Ok(whole) = i64::try_from(whole) else {
-                                return Err(MeasurementParseError::InvalidNumber {
-                                    number_text: number.source_text.clone(),
-                                });
-                            };
-                            let Some(sum) = term.checked_add(whole) else {
-                                return Err(MeasurementParseError::InvalidNumber {
-                                    number_text: number.source_text.clone(),
-                                });
-                            };
-                            term = sum;
-                        }
+                        let term = whole_voxels_of(&pending_numbers)?;
                         let Some(sum) = voxel_total.checked_add(term) else {
                             return Err(MeasurementParseError::InvalidNumber {
                                 number_text: pending_text.clone(),
@@ -597,27 +684,9 @@ pub fn parse(input: &str) -> Result<Measurement, MeasurementParseError> {
                 pending_numbers.clear();
                 pending_text.clear();
             }
-            None => {
-                // Not a unit, so it must be a number literal; a non-number here is
-                // either an unknown unit word or garbage.
-                if let Some(number) = parse_number(&token)? {
-                    if !pending_text.is_empty() {
-                        pending_text.push(' ');
-                    }
-                    pending_text.push_str(&token);
-                    pending_numbers.push(number);
-                } else {
-                    // Alphabetic but not a known unit → unknown unit; otherwise
-                    // an unparseable number token.
-                    if token
-                        .chars()
-                        .any(|character| character.is_ascii_alphabetic())
-                    {
-                        return Err(MeasurementParseError::UnknownUnit { unit_text: token });
-                    }
-                    return Err(MeasurementParseError::InvalidNumber { number_text: token });
-                }
-            }
+            // A word the unit table does not know. It could be a parameter name, but a single
+            // measurement literal has no table to look it up in.
+            None => return Err(MeasurementParseError::UnknownUnit { unit_text: token }),
         }
     }
 
@@ -644,31 +713,148 @@ impl NumberLiteral {
     }
 }
 
-/// Break the input into number / unit tokens.
+/// One lexical token of the authored-quantity language.
 ///
-/// Splits on whitespace, then peels a trailing or leading unit letter that is
-/// glued to digits (`"3b"`, `"8v"`) so the compact spelling tokenises the same as
-/// the spaced one. A `/` stays inside its token so a fraction is one token.
-fn tokenise(input: &str) -> Vec<String> {
-    let mut tokens = Vec::new();
-    for raw in input.split_whitespace() {
-        // Peel a glued alphabetic suffix off a digit run: `"3b"` → `["3", "b"]`,
-        // `"3.5blocks"` → `["3.5", "blocks"]`. Only split when the head is numeric
-        // and the tail is alphabetic, so a bare `"blocks"` stays whole.
-        let split_at = raw
-            .char_indices()
-            .find(|(_, character)| character.is_ascii_alphabetic())
-            .map(|(index, _)| index);
-        match split_at {
-            Some(index) if index > 0 => {
-                let (head, tail) = raw.split_at(index);
-                tokens.push(head.to_string());
-                tokens.push(tail.to_string());
+/// **The TOKEN layer is shared; the GRAMMAR over it is not.** [`parse`] reads a single
+/// measurement literal from this stream and [`crate::expression::parse`] reads a whole
+/// expression from the same one. Two tokenizers, each with its own idea of what a unit word is,
+/// is the bug class where both sides have to move together and one of them does not — the day
+/// someone adds `mm` to one list is the day the other stops agreeing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Token {
+    /// A number-shaped run: digits, dots, the closed-up `a/b` fraction idiom, and a leading `-`
+    /// folded in where the minus stood in prefix position.
+    Number(String),
+    /// An alphabetic word — a unit name to one grammar, a parameter name to the other. The
+    /// lexer does not know which, and that is the point of the split.
+    Word(String),
+    /// `+`, `-`, `*` or `/` standing as an operator.
+    Operator(char),
+    /// `(`
+    OpenParen,
+    /// `)`
+    CloseParen,
+    /// A character neither grammar can read. Carried rather than dropped so the error can name
+    /// it — a silently skipped character makes `3 blocks @ 4` parse as something.
+    Unexpected(String),
+}
+
+/// Break the input into tokens.
+///
+/// Whitespace separates but is not required: `"3b"` lexes exactly as `"3 b"`, because the number
+/// scan stops at the first letter and the word scan takes over. Two rules are worth stating
+/// because both were decided rather than fallen into:
+///
+/// **A minus in PREFIX position belongs to the number after it.** `-3b` is a negative offset and
+/// has always tokenised as one signed number; `a - 3` is a subtraction. The discriminator is what
+/// precedes the minus, which is the ordinary unary-versus-binary rule, settled here so neither
+/// grammar has to.
+///
+/// **A closed-up `a/b` is a fraction; a spaced `a / b` is a division.** Whitespace is the whole
+/// discriminator, with no exception, because the sixteenths idiom `8/16 blocks` has to keep
+/// meaning half a block and the only other way to know that is to look ahead for a unit — which
+/// would make the lexer read the grammar it is supposed to be beneath. The cost is that a
+/// closed-up fraction after a division sign binds as one operand: `24v / 2/3` is thirty-six
+/// voxels, `24v / 2 / 3` is four. An earlier draft carved out an exception for exactly that case
+/// and it went in untested; when a falsification pass turned the exception off, nothing reddened,
+/// which is the whole argument against keeping it.
+pub(crate) fn tokenise(input: &str) -> Vec<Token> {
+    let characters: Vec<char> = input.chars().collect();
+    let mut tokens: Vec<Token> = Vec::new();
+    let mut index = 0usize;
+    while let Some(&character) = characters.get(index) {
+        if character.is_whitespace() {
+            index = index.saturating_add(1);
+            continue;
+        }
+        match character {
+            '(' => {
+                tokens.push(Token::OpenParen);
+                index = index.saturating_add(1);
             }
-            _ => tokens.push(raw.to_string()),
+            ')' => {
+                tokens.push(Token::CloseParen);
+                index = index.saturating_add(1);
+            }
+            '+' | '*' | '/' => {
+                tokens.push(Token::Operator(character));
+                index = index.saturating_add(1);
+            }
+            '-' => {
+                let follows_a_value = matches!(
+                    tokens.last(),
+                    Some(Token::Number(_) | Token::Word(_) | Token::CloseParen)
+                );
+                let opens_a_number = characters
+                    .get(index.saturating_add(1))
+                    .is_some_and(|next| next.is_ascii_digit() || *next == '.');
+                if follows_a_value || !opens_a_number {
+                    tokens.push(Token::Operator('-'));
+                    index = index.saturating_add(1);
+                } else {
+                    let (text, next) = scan_number(&characters, index.saturating_add(1));
+                    tokens.push(Token::Number(format!("-{text}")));
+                    index = next;
+                }
+            }
+            _ if character.is_ascii_digit() || character == '.' => {
+                let (text, next) = scan_number(&characters, index);
+                tokens.push(Token::Number(text));
+                index = next;
+            }
+            _ if character.is_ascii_alphabetic() || character == '_' => {
+                let mut text = String::new();
+                while let Some(&letter) = characters.get(index) {
+                    if letter.is_ascii_alphanumeric() || letter == '_' {
+                        text.push(letter);
+                        index = index.saturating_add(1);
+                    } else {
+                        break;
+                    }
+                }
+                tokens.push(Token::Word(text));
+            }
+            _ => {
+                tokens.push(Token::Unexpected(character.to_string()));
+                index = index.saturating_add(1);
+            }
         }
     }
     tokens
+}
+
+/// Read one number run starting at `start`, returning its text and the index after it.
+///
+/// The fraction tail closes up only when a slash has a digit on both sides and no space anywhere
+/// — `8/16` is one operand and `8 / 16` is two.
+fn scan_number(characters: &[char], start: usize) -> (String, usize) {
+    let mut text = String::new();
+    let mut index = start;
+    while let Some(&character) = characters.get(index) {
+        if character.is_ascii_digit() || character == '.' {
+            text.push(character);
+            index = index.saturating_add(1);
+        } else {
+            break;
+        }
+    }
+    if characters.get(index) == Some(&'/')
+        && characters
+            .get(index.saturating_add(1))
+            .is_some_and(char::is_ascii_digit)
+    {
+        text.push('/');
+        index = index.saturating_add(1);
+        while let Some(&digit) = characters.get(index) {
+            if digit.is_ascii_digit() {
+                text.push(digit);
+                index = index.saturating_add(1);
+            } else {
+                break;
+            }
+        }
+    }
+    (text, index)
 }
 
 /// Parse a single number token into an exact rational, or `None` when the token

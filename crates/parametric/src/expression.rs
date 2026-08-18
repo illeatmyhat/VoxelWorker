@@ -107,6 +107,27 @@ impl Expression {
         Self::number(ExactRational::from_integer(i128::from(value)))
     }
 
+    /// The [`Measurement`] this expression IS, when it is one length literal and nothing else.
+    ///
+    /// **The authored blocks+voxels split survives only here.** Evaluating any expression yields
+    /// a [`Quantity`] — a flat voxel count at one density — and a count cannot say whether the
+    /// author wrote `3 blocks` or `48 voxels`. That distinction is what a density re-target reads,
+    /// so a caller that must RETAIN what was typed asks this first and only falls back to the
+    /// evaluated value when the answer is `None`.
+    ///
+    /// `None` for anything compound, for a symbol, and for an angle or a bare number — none of
+    /// which is a length someone wrote down.
+    #[must_use]
+    pub const fn as_authored_length(&self) -> Option<Measurement> {
+        match self {
+            Self::Literal(Literal::Length(measurement)) => Some(*measurement),
+            Self::Literal(Literal::Angle(_) | Literal::Number(_))
+            | Self::Symbol(_)
+            | Self::Negate(_)
+            | Self::Binary { .. } => None,
+        }
+    }
+
     /// A reference to a named parameter.
     #[must_use]
     pub fn symbol(name: impl Into<String>) -> Self {
@@ -166,6 +187,253 @@ impl Expression {
                 right.collect_symbols(into);
             }
         }
+    }
+}
+
+/// Why a typed expression could not be read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExpressionParseError {
+    /// Nothing but whitespace.
+    Empty,
+    /// A measurement literal inside the expression is malformed. Carries the literal grammar's
+    /// own complaint rather than restating it, so `8/0 blocks` reads the same wherever it is
+    /// typed.
+    Measurement(crate::units::MeasurementParseError),
+    /// A token that cannot begin an operand — an operator with nothing to its left, a stray
+    /// bracket, a character the lexer could not read.
+    UnexpectedToken {
+        /// The token as written.
+        text: String,
+    },
+    /// The input stopped where an operand was required: a trailing `+`, an open bracket.
+    UnexpectedEnd,
+    /// An opening bracket with no closing one.
+    UnclosedParen,
+    /// A complete expression followed by something that is not an operator.
+    TrailingInput {
+        /// The first token past the expression.
+        text: String,
+    },
+}
+
+impl From<crate::units::MeasurementParseError> for ExpressionParseError {
+    fn from(error: crate::units::MeasurementParseError) -> Self {
+        Self::Measurement(error)
+    }
+}
+
+impl core::fmt::Display for ExpressionParseError {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Empty => write!(formatter, "empty expression"),
+            Self::Measurement(error) => write!(formatter, "{error}"),
+            Self::UnexpectedToken { text } => {
+                write!(formatter, "`{text}` cannot start a value here")
+            }
+            Self::UnexpectedEnd => {
+                write!(formatter, "the expression ends where a value was expected")
+            }
+            Self::UnclosedParen => write!(formatter, "a `(` is never closed"),
+            Self::TrailingInput { text } => {
+                write!(formatter, "`{text}` is left over after the expression")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ExpressionParseError {}
+
+/// Read an authored expression.
+///
+/// The grammar, over the token stream the units lexer produces:
+///
+/// ```text
+/// expression  := term (('+' | '-') term)*
+/// term        := factor (('*' | '/') factor)*
+/// factor      := '-' factor | primary
+/// primary     := measurement | number | symbol | '(' expression ')'
+/// measurement := (number+ unit_word)+
+/// ```
+///
+/// **A measurement literal is a GREEDY MUNCH, and that is what makes the two grammars compose.**
+/// `3 blocks 8 voxels` is ONE operand, not a product of four tokens, and `3 8/16 blocks` is one
+/// operand too — the sixteenths idiom is a run of numbers closed by a unit. The munch is handed
+/// straight to the literal grammar's own reader, so the duplicate-unit rule and the
+/// sub-voxel rejection are not restated here. `3 blocks * 2` stops the munch at `*`, because `*`
+/// is not a unit word.
+///
+/// A bare number is DIMENSIONLESS — a count or a scale factor. `2 * 3 blocks` is a length;
+/// `2 * 3` is the number six; `3 blocks + 2` is a dimension error, raised at evaluation rather
+/// than here, because this layer reads structure and the evaluator judges dimensions.
+///
+/// **Angle literals are not in this grammar yet.** `45 deg` reads `deg` as a parameter name and
+/// fails as an unknown one. The length field is the only consumer today; an angle field would
+/// need [`AngleMeasurement`] to join the unit table first.
+///
+/// # Errors
+///
+/// Returns the first structural complaint, or the literal grammar's own error for a malformed
+/// measurement inside the expression.
+pub fn parse(input: &str) -> Result<Expression, ExpressionParseError> {
+    let tokens = crate::units::tokenise(input);
+    if tokens.is_empty() {
+        return Err(ExpressionParseError::Empty);
+    }
+    let mut reader = TokenReader {
+        tokens: &tokens,
+        at: 0,
+    };
+    let expression = reader.read_sum()?;
+    reader.peek().map_or(Ok(expression), |token| {
+        Err(ExpressionParseError::TrailingInput {
+            text: describe(token),
+        })
+    })
+}
+
+/// How a token reads back in an error message.
+fn describe(token: &crate::units::Token) -> String {
+    use crate::units::Token;
+    match token {
+        Token::Number(text) | Token::Word(text) | Token::Unexpected(text) => text.clone(),
+        Token::Operator(sign) => sign.to_string(),
+        Token::OpenParen => "(".to_owned(),
+        Token::CloseParen => ")".to_owned(),
+    }
+}
+
+/// A cursor over the token slice. Recursive descent, one level per precedence tier.
+struct TokenReader<'a> {
+    tokens: &'a [crate::units::Token],
+    at: usize,
+}
+
+impl TokenReader<'_> {
+    fn peek(&self) -> Option<&crate::units::Token> {
+        self.tokens.get(self.at)
+    }
+
+    const fn advance(&mut self) {
+        self.at = self.at.saturating_add(1);
+    }
+
+    /// `+` and `-`, left-associative.
+    fn read_sum(&mut self) -> Result<Expression, ExpressionParseError> {
+        let mut left = self.read_product()?;
+        while let Some(&crate::units::Token::Operator(sign @ ('+' | '-'))) = self.peek() {
+            self.advance();
+            let right = self.read_product()?;
+            left = if sign == '+' {
+                left.plus(right)
+            } else {
+                left.minus(right)
+            };
+        }
+        Ok(left)
+    }
+
+    /// `*` and `/`, left-associative and binding tighter than `+`.
+    fn read_product(&mut self) -> Result<Expression, ExpressionParseError> {
+        let mut left = self.read_signed()?;
+        while let Some(&crate::units::Token::Operator(sign @ ('*' | '/'))) = self.peek() {
+            self.advance();
+            let right = self.read_signed()?;
+            left = if sign == '*' {
+                left.times(right)
+            } else {
+                left.divided_by(right)
+            };
+        }
+        Ok(left)
+    }
+
+    /// A leading `-` on a bracket or a symbol. A minus on a NUMBER never reaches here: the lexer
+    /// folds a prefix minus into the number it precedes, which is what keeps `-3b` a signed
+    /// literal in both grammars.
+    fn read_signed(&mut self) -> Result<Expression, ExpressionParseError> {
+        if self.peek() == Some(&crate::units::Token::Operator('-')) {
+            self.advance();
+            return Ok(Expression::Negate(Box::new(self.read_signed()?)));
+        }
+        self.read_operand()
+    }
+
+    fn read_operand(&mut self) -> Result<Expression, ExpressionParseError> {
+        use crate::units::Token;
+        let Some(token) = self.peek() else {
+            return Err(ExpressionParseError::UnexpectedEnd);
+        };
+        match token {
+            Token::OpenParen => {
+                self.advance();
+                let inner = self.read_sum()?;
+                match self.peek() {
+                    Some(Token::CloseParen) => {
+                        self.advance();
+                        Ok(inner)
+                    }
+                    _ => Err(ExpressionParseError::UnclosedParen),
+                }
+            }
+            Token::Number(_) => self.read_number_or_measurement(),
+            Token::Word(name) => {
+                // A unit word with no number in front of it is not an operand. Reading it as a
+                // parameter called `blocks` would turn a typo into an unknown-parameter error
+                // that names the wrong problem.
+                if crate::units::is_unit_word(name) {
+                    return Err(ExpressionParseError::UnexpectedToken { text: name.clone() });
+                }
+                let symbol = Expression::Symbol(name.clone());
+                self.advance();
+                Ok(symbol)
+            }
+            other => Err(ExpressionParseError::UnexpectedToken {
+                text: describe(other),
+            }),
+        }
+    }
+
+    /// The greedy munch: as many `number+ unit_word` groups as run on from here.
+    ///
+    /// Ends at the first token that is neither a number continuing a group nor a unit word
+    /// closing one. If the run closed no group at all, the operand was a bare dimensionless
+    /// number and the single leading number is taken instead.
+    fn read_number_or_measurement(&mut self) -> Result<Expression, ExpressionParseError> {
+        use crate::units::Token;
+        let start = self.at;
+        let mut end_of_last_group = None;
+        let mut cursor = self.at;
+        loop {
+            let numbers_started = cursor;
+            while matches!(self.tokens.get(cursor), Some(Token::Number(_))) {
+                cursor = cursor.saturating_add(1);
+            }
+            if cursor == numbers_started {
+                break;
+            }
+            match self.tokens.get(cursor) {
+                Some(Token::Word(word)) if crate::units::is_unit_word(word) => {
+                    cursor = cursor.saturating_add(1);
+                    end_of_last_group = Some(cursor);
+                }
+                _ => break,
+            }
+        }
+        if let Some(end) = end_of_last_group {
+            let measurement =
+                crate::units::measurement_from_tokens(self.tokens.get(start..end).unwrap_or(&[]))?;
+            self.at = end;
+            return Ok(Expression::length(measurement));
+        }
+        // No unit closed a group, so this is a bare count. Exactly one number belongs to the
+        // operand — `3 4` is two operands with nothing between them, and the caller reports the
+        // second as left over rather than silently summing them.
+        let Some(Token::Number(text)) = self.tokens.get(start) else {
+            return Err(ExpressionParseError::UnexpectedEnd);
+        };
+        let value = crate::units::rational_from_number_token(text)?;
+        self.at = start.saturating_add(1);
+        Ok(Expression::number(value))
     }
 }
 
@@ -436,7 +704,12 @@ pub fn dimension_of(
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::as_conversions, clippy::expect_used, clippy::unwrap_used)]
+    #![allow(
+        clippy::as_conversions,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::unwrap_used
+    )]
 
     use super::*;
 
@@ -689,5 +962,140 @@ mod tests {
             .expect("resolves");
         assert_eq!(value.dimension, Dimension::LENGTH);
         assert_eq!(value.to_whole_voxels(), Ok(-5));
+    }
+
+    /// What a parsed expression is WORTH, at a density, so a test reads as the author would.
+    fn worth(input: &str) -> Result<i64, String> {
+        let expression = parse(input).map_err(|error| error.to_string())?;
+        SymbolTable::new()
+            .evaluate(&expression, DENSITY)
+            .map_err(|error| error.to_string())?
+            .to_whole_voxels()
+            .map_err(|error| error.to_string())
+    }
+
+    /// A single measurement literal must mean, through the expression grammar, exactly what it
+    /// has always meant through the literal one.
+    ///
+    /// This is the compatibility half of the lexer split. The field that reads these is about to
+    /// stop calling `units::parse`, and every spelling it accepted must survive the change —
+    /// including the two the grammars could plausibly disagree about: the sixteenths idiom
+    /// (`3 8/16 blocks`, a run of numbers closed by one unit) and the signed offset (`-1b 4v`,
+    /// where the minus belongs to the first term and not to the sum).
+    #[test]
+    fn every_literal_spelling_means_the_same_through_the_expression_grammar() {
+        for spelling in [
+            "3 blocks",
+            "3b",
+            "3.5 blocks",
+            "8/16 blocks",
+            "3 8/16 blocks",
+            "56 voxels",
+            "3 blocks 8 voxels",
+            "3b 8v",
+            "-3b",
+            "-1b 4v",
+            "-3.5 blocks",
+            "-8/16 blocks",
+            "-12 voxels",
+            "-1 blocks 4 voxels",
+        ] {
+            let through_the_literal = crate::units::parse(spelling)
+                .unwrap_or_else(|error| panic!("`{spelling}` parses as a literal: {error}"))
+                .to_voxels(DENSITY)
+                .expect("lands on whole voxels");
+            assert_eq!(
+                worth(spelling),
+                Ok(through_the_literal),
+                "`{spelling}` must mean the same to both grammars"
+            );
+        }
+    }
+
+    /// Arithmetic, precedence, and the two readings of a slash.
+    ///
+    /// The slash cases are the ones the lexer had to decide. `8/16 blocks` is half a block — a
+    /// closed-up fraction is one operand. `8 / 16 blocks` is not a length at all, so it is not
+    /// here; it is in the dimension test below. And `24 / 2 / 3` is four, not thirty-six: a
+    /// closed-up fraction directly after a division sign would have re-associated it.
+    #[test]
+    fn arithmetic_binds_the_way_arithmetic_binds() {
+        assert_eq!(worth("2 * 3 blocks"), Ok(96));
+        assert_eq!(worth("3 blocks * 2"), Ok(96));
+        assert_eq!(worth("1 block + 4 voxels"), Ok(20));
+        assert_eq!(worth("1 block - 4 voxels"), Ok(12));
+        assert_eq!(worth("2 blocks + 2 * 1 block"), Ok(64));
+        assert_eq!(worth("(2 blocks + 2 blocks) * 2"), Ok(128));
+        assert_eq!(worth("2 blocks / 2"), Ok(16));
+        assert_eq!(worth("-(1 block)"), Ok(-16));
+        assert_eq!(worth("8/16 blocks"), Ok(8));
+        assert_eq!(worth("24 voxels / 2 / 3"), Ok(4));
+        // Whitespace is the whole difference between a division and a fraction, so these two
+        // spellings mean different things on purpose. Pinned because it is the surprise.
+        assert_eq!(worth("24 voxels / 2/3"), Ok(36));
+        assert_eq!(worth("3 blocks * voxel_density / voxel_density"), Ok(48));
+    }
+
+    /// The two things this grammar refuses on purpose, and the two ways it can be malformed.
+    ///
+    /// A SYMBOL parses and then fails to resolve. That is not a stub: the table is empty, and an
+    /// empty table's honest answer to `width` is that it knows no such parameter. The same code
+    /// path serves a real table the day one exists.
+    #[test]
+    fn a_symbol_and_a_dimension_mismatch_are_refused_where_they_belong() {
+        assert!(parse("2 * width + 3 blocks").is_ok(), "a symbol PARSES");
+        assert_eq!(
+            worth("2 * width + 3 blocks"),
+            Err("unknown parameter `width`".to_owned())
+        );
+        // A dimensionless result is not a length, and asking it for voxels is the mismatch —
+        // caught by the same rule, one layer along.
+        let density = SymbolTable::new()
+            .evaluate(&parse("voxel_density").expect("parses"), DENSITY)
+            .expect("resolves");
+        assert_eq!(density.dimension, Dimension::DIMENSIONLESS);
+        assert!(density.to_whole_voxels().is_err());
+        // Adding a count to a length is a DIMENSION error, and it is the evaluator's to raise —
+        // the parser reads structure and judges nothing about what the structure means.
+        assert!(parse("3 blocks + 2").is_ok());
+        assert!(worth("3 blocks + 2").is_err());
+
+        assert_eq!(parse(""), Err(ExpressionParseError::Empty));
+        assert_eq!(parse("   "), Err(ExpressionParseError::Empty));
+        assert_eq!(
+            parse("3 blocks +"),
+            Err(ExpressionParseError::UnexpectedEnd)
+        );
+        assert_eq!(parse("(3 blocks"), Err(ExpressionParseError::UnclosedParen));
+        assert_eq!(
+            parse("3 blocks 4 blocks"),
+            Err(ExpressionParseError::Measurement(
+                crate::units::MeasurementParseError::DuplicateUnit {
+                    unit_text: "blocks".to_owned()
+                }
+            )),
+            "the munch takes both groups, and the literal grammar rejects the duplicate"
+        );
+        assert_eq!(
+            parse("3 4"),
+            Err(ExpressionParseError::TrailingInput {
+                text: "4".to_owned()
+            }),
+            "two bare numbers with nothing between them are not one operand"
+        );
+        assert_eq!(
+            parse("blocks"),
+            Err(ExpressionParseError::UnexpectedToken {
+                text: "blocks".to_owned()
+            }),
+            "a unit word alone is a malformed literal, not a parameter called `blocks`"
+        );
+        assert_eq!(
+            parse("3 blocks @ 2"),
+            Err(ExpressionParseError::TrailingInput {
+                text: "@".to_owned()
+            }),
+            "a character the lexer cannot read is named, never skipped"
+        );
     }
 }

@@ -48,6 +48,6 @@ pub mod units;
 pub use curve_parameter::{CircleRadius, CurveParameter, ResolvedLength, ResolvedScalar};
 pub use dimension::Dimension;
 pub use evaluation::EvaluationContext;
-pub use expression::{Expression, SymbolTable};
+pub use expression::{Expression, ExpressionParseError, SymbolTable};
 pub use quantity::Quantity;
 pub use units::{AngleMeasurement, ExactRational, Measurement};

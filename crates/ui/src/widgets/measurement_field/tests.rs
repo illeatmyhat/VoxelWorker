@@ -118,3 +118,81 @@ fn a_commit_carries_both_the_expression_and_the_landed_voxels() {
 fn an_idle_frame_commits_nothing() {
     assert_eq!(run_field_frame(|| signed_field(32, 16)), None);
 }
+
+/// The field reads ARITHMETIC, not just a literal.
+///
+/// This is the whole of what the expression grammar buys an author today: a size can be typed
+/// as the calculation that produced it instead of as the answer, and the answer still has to
+/// land on a whole voxel like any other.
+#[test]
+fn a_field_accepts_an_expression_and_lands_it_on_whole_voxels() {
+    let commit = signed_field(0, 16)
+        .parse_and_validate("2 * 3 blocks + 4 voxels")
+        .expect("six blocks and four voxels is a whole number of voxels");
+    assert_eq!(commit.voxels, 100);
+
+    assert!(
+        signed_field(0, 16)
+            .parse_and_validate("1 block / 3")
+            .is_err(),
+        "a third of a block is not a whole voxel at density 16"
+    );
+    assert!(
+        bounded_field(4, 16)
+            .parse_and_validate("2 blocks - 2 blocks")
+            .is_err(),
+        "the lower bound judges the ANSWER, not the literals it was built from"
+    );
+}
+
+/// A lone literal keeps the split it was authored with; a calculation cannot.
+///
+/// The retained measurement is what a density re-target re-evaluates, so `3 blocks` must come
+/// back as a BLOCK term and not as forty-eight voxels that will not rescale. The compound case
+/// pins the known limitation rather than hiding it: it retains the answer, so it retains a
+/// voxel count.
+#[test]
+fn a_lone_literal_retains_its_blocks_and_a_calculation_retains_its_answer() {
+    let literal = signed_field(0, 16)
+        .parse_and_validate("3 blocks")
+        .expect("a plain literal commits");
+    assert_eq!(literal.measurement, units::parse("3b").unwrap());
+    assert_eq!(
+        literal.measurement.to_voxels(32),
+        Ok(96),
+        "the block term rescales with the density"
+    );
+
+    let calculated = signed_field(0, 16)
+        .parse_and_validate("1 block * 3")
+        .expect("the same quantity, calculated");
+    assert_eq!(calculated.voxels, literal.voxels);
+    assert_eq!(
+        calculated.measurement.to_voxels(32),
+        Ok(48),
+        "a retained ANSWER is a voxel count and does not rescale"
+    );
+}
+
+/// A name is refused because the table is empty, and the message says which name.
+///
+/// Not a stub refusal: an empty symbol table's honest answer to `width` is that it knows no
+/// such parameter, and that is the same answer a populated one gives for a typo. The day the
+/// document carries parameters, this path starts succeeding without changing.
+#[test]
+fn a_parameter_name_is_refused_by_name() {
+    let refusal = signed_field(0, 16)
+        .parse_and_validate("width * 2")
+        .expect_err("no parameter is defined");
+    assert!(
+        refusal.contains("width"),
+        "the refusal must name the parameter, got: {refusal}"
+    );
+
+    assert!(
+        signed_field(0, 16)
+            .parse_and_validate("3 blocks * 3 blocks")
+            .is_err(),
+        "a length times a length is an area, and a field holds lengths"
+    );
+}

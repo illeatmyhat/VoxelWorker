@@ -4,6 +4,7 @@
 //! commit protocol every measurement editor in the app shares — see [`MeasurementField`].
 
 use crate::theme;
+use parametric::expression::{self, Expression, SymbolTable};
 use parametric::units::{self, DisplayUnit, Measurement, MeasurementError};
 
 /// The width of the text box, in points. Every measurement field is this wide so the
@@ -156,7 +157,7 @@ impl<'a> MeasurementField<'a> {
 
     /// Parse `text` and check it lands on a whole voxel within the bound, or say why not.
     fn parse_and_validate(&self, text: &str) -> Result<MeasurementCommit, String> {
-        let measurement = units::parse(text).map_err(|error| error.to_string())?;
+        let measurement = self.authored_measurement(text)?;
         let voxels = measurement
             .to_voxels(self.density)
             .map_err(|error| measurement_error_text(&error))?;
@@ -167,6 +168,36 @@ impl<'a> MeasurementField<'a> {
                 voxels,
             }),
         }
+    }
+
+    /// Read `text` as an expression and reduce it to the [`Measurement`] the field retains.
+    ///
+    /// The field accepts ARITHMETIC — `2 * 3 blocks + 4 voxels` — because the grammar it reads is
+    /// the same one a named parameter will be typed into. Today the symbol table is empty, so a
+    /// name has no definition and is refused as one; nothing here changes on the day it has some.
+    ///
+    /// **A lone literal keeps its authored split, and only a lone literal can.** `3 blocks` is
+    /// retained as a block term, which re-targets when the density changes. Anything compound is
+    /// retained as the voxel count it evaluated to, because the evaluated value is a count and a
+    /// count has no split to keep — `2 * 3 blocks` and `96 voxels` become indistinguishable the
+    /// moment the multiplication happens. That is a limitation of retaining the ANSWER; it closes
+    /// when the document retains the EXPRESSION beside the measurement and re-resolves it.
+    fn authored_measurement(&self, text: &str) -> Result<Measurement, String> {
+        let expression = expression::parse(text).map_err(|error| error.to_string())?;
+        if let Some(measurement) = expression.as_authored_length() {
+            return Ok(measurement);
+        }
+        let voxels = self.evaluated_voxels(&expression)?;
+        Ok(Measurement::from_voxels(voxels))
+    }
+
+    /// What a compound expression is worth, at this field's density.
+    fn evaluated_voxels(&self, expression: &Expression) -> Result<i64, String> {
+        SymbolTable::new()
+            .evaluate(expression, self.density)
+            .map_err(|error| error.to_string())?
+            .to_whole_voxels()
+            .map_err(|error| error.to_string())
     }
 }
 
