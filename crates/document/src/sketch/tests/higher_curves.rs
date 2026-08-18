@@ -1387,3 +1387,129 @@ fn a_conic_pressed_away_from_its_shoulder_does_not_snap_before_it_moves() {
         "six up at the flank is six up at the shoulder: {at:?}"
     );
 }
+
+/// **A set moves as one, and a relation inside it never notices.**
+///
+/// This is the reason the multi-entity drag is not a loop over the single-curve one. Two segments
+/// joined at a corner, both selected: run one at a time, the first translation tears the joint,
+/// the settle drags the second segment part-way to repair it, and the second translation then
+/// starts from somewhere the author never put it. Stated as one set of hands, the joint is
+/// satisfied by the displacement itself and the settle has nothing to do.
+#[test]
+fn a_set_moves_by_one_step_and_the_joint_inside_it_never_moves_relative() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let tail = sketch.add_free_point(SketchPoint::new(0, 0));
+    let corner = sketch.add_free_point(SketchPoint::new(6, 0));
+    let head = sketch.add_free_point(SketchPoint::new(6, 8));
+    let first = sketch.connect(tail, corner).expect("a segment");
+    let second = sketch.connect(corner, head).expect("a segment");
+
+    let before: Vec<_> = sketch
+        .points()
+        .iter()
+        .map(|point| (point.id, point.at.in_plane()))
+        .collect();
+
+    let by = [3.0, -2.0];
+    assert!(
+        sketch
+            .translate_together(
+                &[SketchCurve::Segment(first), SketchCurve::Segment(second)],
+                &[],
+                None,
+                by,
+                ctx(16),
+                SnapReach::UNBOUNDED,
+                &mut GestureSoFar::none(),
+            )
+            .expect("the set translate is answered")
+            .moved
+    );
+
+    for (id, was) in before {
+        let now = sketch.point_in_plane(id).expect("every point survives");
+        assert!(
+            (now[0] - (was[0] + by[0])).abs() < 1e-6 && (now[1] - (was[1] + by[1])).abs() < 1e-6,
+            "{was:?} went to {now:?}, not by {by:?}",
+        );
+    }
+
+    // The shared corner belongs to both selected segments and is named twice on the way in. It
+    // gets ONE hand, so it travels exactly one step — a duplicate would also weigh it twice in the
+    // settle, quietly making a shared corner stiffer than a free one.
+    let at = sketch.point_in_plane(corner).expect("the corner stands");
+    assert!(
+        (at[0] - 9.0).abs() < 1e-6 && (at[1] + 2.0).abs() < 1e-6,
+        "the shared corner went to {at:?}, not [9, -2]",
+    );
+}
+
+/// **A partial selection is the union of the answers to its parts.**
+///
+/// One endpoint of a line plus a whole separate circle. The endpoint is the lead, the circle's
+/// points are carried, and the line's FAR end is not declared at all — so it stays where it is,
+/// exactly as it would under today's single-endpoint drag. The unselected side of a drawing is
+/// never pinned: that would be the shell inventing a constraint the author did not write.
+#[test]
+fn a_partial_selection_carries_what_was_picked_and_leaves_the_rest_to_the_drawing() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let anchored = sketch.add_free_point(SketchPoint::new(0, 0));
+    let dragged = sketch.add_free_point(SketchPoint::new(10, 0));
+    sketch.connect(anchored, dragged).expect("a segment");
+    let circle = sketch
+        .add_circle(SketchPoint::new(-8, 5), SketchLength::new(4))
+        .expect("a circle");
+    let hub = sketch.points_of(SketchCurve::Circle(circle))[0];
+
+    let by = [2.0, 4.0];
+    assert!(
+        sketch
+            .translate_together(
+                &[SketchCurve::Circle(circle)],
+                &[dragged],
+                Some(dragged),
+                by,
+                ctx(16),
+                SnapReach::UNBOUNDED,
+                &mut GestureSoFar::none(),
+            )
+            .expect("the set translate is answered")
+            .moved
+    );
+
+    for (point, want) in [
+        (dragged, [12.0, 4.0]),
+        (hub, [-6.0, 9.0]),
+        (anchored, [0.0, 0.0]),
+    ] {
+        let at = sketch.point_in_plane(point).expect("the point stands");
+        assert!(
+            (at[0] - want[0]).abs() < 1e-6 && (at[1] - want[1]).abs() < 1e-6,
+            "{at:?} is not {want:?}",
+        );
+    }
+}
+
+/// A set with nothing in it is not a failure and not a move — the same answer a drag of a curve
+/// the drawing does not hold gives.
+#[test]
+fn an_empty_set_is_answered_without_moving_anything() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    sketch.add_free_point(SketchPoint::new(1, 1));
+    let answered = sketch
+        .translate_together(
+            &[],
+            &[],
+            None,
+            [5.0, 5.0],
+            ctx(16),
+            SnapReach::UNBOUNDED,
+            &mut GestureSoFar::none(),
+        )
+        .expect("an empty set is answered");
+    assert!(!answered.moved);
+    let at = sketch
+        .point_in_plane(sketch.points()[0].id)
+        .expect("stands");
+    assert!((at[0] - 1.0).abs() < 1e-6 && (at[1] - 1.0).abs() < 1e-6);
+}

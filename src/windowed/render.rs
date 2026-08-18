@@ -1183,6 +1183,9 @@ impl WindowedState {
         // frame and taken back after. Which way round an arc is drawn is path-dependent, and the
         // preview is rebuilt from the pre-drag producer every frame, so the drawing cannot know it.
         let mut carried_arcs = drag.gesture.clone();
+        // The picked set as it stood at the press, taken by value so the match below is free to
+        // touch `self` (the snap ghost) without holding the drag open.
+        let carried_set = drag.carried_set.clone();
         let moved = match held {
             SketchGrab::Point(id) if began => preview
                 .sketch
@@ -1237,6 +1240,37 @@ impl WindowedState {
                 snapped.in_plane(),
                 context,
             ),
+            // The whole picked set, by the displacement the cursor has walked since the press —
+            // measured absolutely against the pre-drag producer, like every other translate here,
+            // so a set that wanders back to its own start is back where it started exactly.
+            //
+            // ONE call, never a loop over the members: run one at a time, each curve would settle
+            // against a drawing whose neighbours had not moved yet, and a corner two of them share
+            // would be carried once per curve. That is measured, not assumed — two sequential
+            // single-curve translates move a shared corner by twice the step.
+            SketchGrab::TranslateSet {
+                grabbed,
+                from: Some(from),
+            } if began => {
+                let (from, now) = (from.in_plane(), snapped.in_plane());
+                preview
+                    .sketch
+                    .translate_together(
+                        &carried_set.curves,
+                        &carried_set.loose_points,
+                        grabbed,
+                        [now[0] - from[0], now[1] - from[1]],
+                        context,
+                        snap_reach,
+                        &mut carried_arcs,
+                    )
+                    .map(|answered| {
+                        // Only a set with a LEAD can snap, so a body-pressed set clears the ghost
+                        // here every frame — which is the truth it should be telling.
+                        self.sketch_snap_ghost = answered.kept;
+                        answered.moved
+                    })
+            }
             // The press could not read a profile coordinate, so the first frame that can records
             // where the gesture started and moves nothing.
             SketchGrab::TranslateLever { fit, from: None } => {
@@ -1254,6 +1288,19 @@ impl WindowedState {
                     drag.began = began;
                     drag.held = SketchGrab::Translate {
                         curve,
+                        from: Some(snapped),
+                    };
+                }
+                return IntentEffect::none();
+            }
+            SketchGrab::TranslateSet {
+                grabbed,
+                from: None,
+            } => {
+                if let Some(drag) = self.sketch_drag.as_mut() {
+                    drag.began = began;
+                    drag.held = SketchGrab::TranslateSet {
+                        grabbed,
                         from: Some(snapped),
                     };
                 }
@@ -5077,6 +5124,9 @@ impl WindowedState {
                     .map(|fit| SketchGrab::TranslateLever { fit, from: None })
             })
             .or_else(|| self.grabbable_sketch_curve_at(cursor_x, cursor_y))?;
+        let (held, carried_set) =
+            grab_that_carries_the_selection(held, target, &self.panel_state.selection)
+                .unwrap_or_else(|| (held, SketchSelectionSet::default()));
         let node = self.panel_state.scene.node_by_id(target)?;
         let document::scene::NodeContent::SketchTool { producer, .. } = &node.content else {
             return None;
@@ -5084,6 +5134,7 @@ impl WindowedState {
         Some(SketchVertexDrag {
             target,
             held,
+            carried_set,
             original: producer.clone(),
             original_offset: node.transform.offset_voxels,
             original_min: self.profile_bbox_min(producer)?,
@@ -7444,6 +7495,64 @@ fn polygon_double_area(boundary: &[egui::Pos2]) -> f32 {
     sum
 }
 
+/// Upgrade a press into a gesture that carries the WHOLE PICKED SET, when that is what the press
+/// meant — `None` when it meant only the entity under it.
+///
+/// A press that lands on something ALREADY PICKED, while more than one thing is picked, carries
+/// the picked set. The selection is what declares the rigid set (ADR 0042); the press only says
+/// which member LEADS it, and only a press on a dot can say that — a body press names no point,
+/// so the set travels with no lead and therefore takes no snap.
+///
+/// **Membership is of the pressed ENTITY, exactly.** Pressing an ENDPOINT of a picked curve — the
+/// curve picked, the dot not — does NOT carry the set: it reshapes, the way it always has. That is
+/// deliberate. The author reached for a dot, and a dot is the handle that changes a shape;
+/// carrying the set from one would make the same gesture mean two different things depending on
+/// what else happened to be picked. It is also the one case in this cut an author might read the
+/// other way, so it is the one to watch in use — and if it turns out wrong, the repair is widening
+/// this one predicate rather than rearranging anything.
+///
+/// A LEVER is a manipulator and an ANNOTATION is a label. Neither is a member of anything, so
+/// neither is offered the upgrade.
+fn grab_that_carries_the_selection(
+    held: SketchGrab,
+    sketch: document::scene::NodeId,
+    selection: &ui::panel::Selection,
+) -> Option<(SketchGrab, SketchSelectionSet)> {
+    let pressed = match held {
+        SketchGrab::Point(id) => selection_target(sketch, ui::panel::SketchEntity::Point(id)),
+        SketchGrab::Translate { curve, .. } => {
+            selection_target(sketch, ui::panel::SketchEntity::Curve(curve))
+        }
+        SketchGrab::TranslateLever { .. }
+        | SketchGrab::Annotation { .. }
+        | SketchGrab::TranslateSet { .. } => return None,
+    };
+    if !selection.contains(pressed) {
+        return None;
+    }
+    let carried_set = SketchSelectionSet {
+        curves: selection.sketch_curves(sketch).collect(),
+        loose_points: selection.sketch_points(sketch).collect(),
+    };
+    // One member is the entity under the cursor and nothing else; that gesture is already spelled
+    // by the grab the press resolved, and routing it through the set would only lose the arms that
+    // read a curve KIND (a circle's rim, a conic's rho).
+    if carried_set.curves.len() + carried_set.loose_points.len() < 2 {
+        return None;
+    }
+    let grabbed = match held {
+        SketchGrab::Point(id) => Some(id),
+        _ => None,
+    };
+    Some((
+        SketchGrab::TranslateSet {
+            grabbed,
+            from: None,
+        },
+        carried_set,
+    ))
+}
+
 /// The picked entity as the SELECTION names it, so a constraint's in-progress picks light up
 /// through the shipped sketch highlight path rather than a second one that could disagree.
 fn selection_target(
@@ -8459,13 +8568,14 @@ mod tests {
         advance_circle_center_diameter_gesture, aggregate_marquee_picks, angle_arc_radius,
         angle_legs, apply_sketch_snap, circle_gesture_is_current, circle_marquee_hit, circle_ring,
         closest_point_on_segment, complete_circle_center_diameter, concentric_badge_locus,
-        marquee_box_px, nearest_sketch_edge_for_requirement, nearest_sketch_edge_from_candidates,
-        nearest_tangent_lever, point_in_screen_polygon, point_to_segment_distance,
-        pointer_left_the_press, polygon_double_area, reset_failed_sketch_constraint_completion,
-        reset_refused_sketch_constraint_completion, segment_touches_rect, segments_intersect,
-        select_sketch_constraint_refusal_culprits, sketch_constraint_badge_at,
-        sketch_curve_from_hit, sketch_profile_edit_transaction, symmetry_badge_locus,
-        tangent_badge_locus, trim_number, SketchEdgeHit, DIMENSION_STANDOFF_PX,
+        grab_that_carries_the_selection, marquee_box_px, nearest_sketch_edge_for_requirement,
+        nearest_sketch_edge_from_candidates, nearest_tangent_lever, point_in_screen_polygon,
+        point_to_segment_distance, pointer_left_the_press, polygon_double_area,
+        reset_failed_sketch_constraint_completion, reset_refused_sketch_constraint_completion,
+        segment_touches_rect, segments_intersect, select_sketch_constraint_refusal_culprits,
+        sketch_constraint_badge_at, sketch_curve_from_hit, sketch_profile_edit_transaction,
+        symmetry_badge_locus, tangent_badge_locus, trim_number, SketchEdgeHit, SketchGrab,
+        DIMENSION_STANDOFF_PX,
     };
     use document::sketch::{
         ConstraintKind, LineSide, PlaneAxis, Sketch, SketchCurve, SketchLength, SketchPoint,
@@ -9813,5 +9923,138 @@ mod tests {
             "{:?}",
             legs[1]
         );
+    }
+
+    /// The three answers the press-time upgrade owes, and the boundary it deliberately refuses.
+    ///
+    /// The refusal is the point of the last case: a dot that is NOT itself picked reshapes, even
+    /// when the curve it sits on is picked and even when the set around it is large. Widening that
+    /// is a one-predicate change if the authoring says so — which is why it is asserted rather
+    /// than left to be discovered.
+    #[test]
+    fn a_press_carries_the_picked_set_only_from_a_member_of_it() {
+        let sketch = document::scene::NodeId(41);
+        let (first, second, corner, stray) = (7u32, 9u32, 11u32, 13u32);
+        let picked = ui::panel::Selection::from_targets([
+            ui::panel::SelectionTarget::SketchSegment {
+                sketch,
+                entity: first,
+            },
+            ui::panel::SelectionTarget::SketchSegment {
+                sketch,
+                entity: second,
+            },
+            ui::panel::SelectionTarget::SketchPoint {
+                sketch,
+                entity: corner,
+            },
+        ]);
+
+        // A picked curve's BODY: the whole set travels, and nothing leads it — so nothing snaps.
+        let body = grab_that_carries_the_selection(
+            SketchGrab::Translate {
+                curve: SketchCurve::Segment(first),
+                from: None,
+            },
+            sketch,
+            &picked,
+        )
+        .expect("a picked curve carries the set");
+        assert_eq!(
+            body.0,
+            SketchGrab::TranslateSet {
+                grabbed: None,
+                from: None
+            }
+        );
+        assert_eq!(
+            body.1.curves,
+            vec![SketchCurve::Segment(first), SketchCurve::Segment(second)]
+        );
+        assert_eq!(body.1.loose_points, vec![corner]);
+
+        // A picked DOT: the same set, led by the dot the author has hold of.
+        let dot = grab_that_carries_the_selection(SketchGrab::Point(corner), sketch, &picked)
+            .expect("a picked point carries the set");
+        assert_eq!(
+            dot.0,
+            SketchGrab::TranslateSet {
+                grabbed: Some(corner),
+                from: None
+            }
+        );
+
+        // An UNPICKED dot standing on a picked curve. Membership is of the entity, exactly.
+        assert!(
+            grab_that_carries_the_selection(SketchGrab::Point(stray), sketch, &picked).is_none()
+        );
+    }
+
+    /// A set of one is the gesture the press already resolved, and a manipulator is never a member.
+    #[test]
+    fn a_lone_pick_a_lever_and_a_label_are_left_to_the_grabs_that_already_answer_them() {
+        let sketch = document::scene::NodeId(43);
+        let only = 5u32;
+        let alone =
+            ui::panel::Selection::from_targets([ui::panel::SelectionTarget::SketchCircle {
+                sketch,
+                entity: only,
+            }]);
+        // Routing a lone circle through the set would lose the arm that reads its rim.
+        assert!(grab_that_carries_the_selection(
+            SketchGrab::Translate {
+                curve: SketchCurve::Circle(only),
+                from: None,
+            },
+            sketch,
+            &alone,
+        )
+        .is_none());
+
+        let many = ui::panel::Selection::from_targets([
+            ui::panel::SelectionTarget::SketchCircle {
+                sketch,
+                entity: only,
+            },
+            ui::panel::SelectionTarget::SketchPoint { sketch, entity: 6 },
+        ]);
+        for never in [
+            SketchGrab::TranslateLever { fit: 6, from: None },
+            SketchGrab::Annotation { constraint: 6 },
+        ] {
+            assert!(
+                grab_that_carries_the_selection(never, sketch, &many).is_none(),
+                "{never:?} is not a member of anything"
+            );
+        }
+    }
+
+    /// A pick in ANOTHER sketch is not in this one's set, however large it makes the selection.
+    #[test]
+    fn a_neighbouring_sketchs_picks_are_no_part_of_this_ones_set() {
+        let (mine, theirs) = (document::scene::NodeId(47), document::scene::NodeId(48));
+        let picked = ui::panel::Selection::from_targets([
+            ui::panel::SelectionTarget::SketchSegment {
+                sketch: mine,
+                entity: 3,
+            },
+            ui::panel::SelectionTarget::SketchSegment {
+                sketch: theirs,
+                entity: 4,
+            },
+            ui::panel::SelectionTarget::SketchPoint {
+                sketch: theirs,
+                entity: 5,
+            },
+        ]);
+        assert!(grab_that_carries_the_selection(
+            SketchGrab::Translate {
+                curve: SketchCurve::Segment(3),
+                from: None,
+            },
+            mine,
+            &picked,
+        )
+        .is_none());
     }
 }

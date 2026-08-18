@@ -367,6 +367,16 @@ impl Hand {
         }
     }
 
+    /// The one point the author actually has hold of. At most one hand in a set may be this: the
+    /// snap measures its cone from the lead's travel, and the rest of the set rides the correction.
+    fn lead(point: EntityId, to: [f64; 2]) -> Self {
+        Self {
+            point,
+            to,
+            role: HandRole::Lead,
+        }
+    }
+
     /// A point held where it already stands, which is how a reshape names what it turns about.
     fn pin(point: EntityId, at: [f64; 2]) -> Self {
         Self {
@@ -3445,6 +3455,110 @@ impl Sketch {
                 })
                 .unwrap_or_default(),
         }
+    }
+
+    /// Carry a WHOLE SET of curves and loose points by one displacement, as one rigid set.
+    ///
+    /// The multi-entity form of [`translate_curve`](Self::translate_curve), and deliberately not
+    /// a loop over it: run one at a time, each curve would settle against a drawing in which its
+    /// neighbours had not moved yet, and every relation between two selected curves would be
+    /// violated and then corrected on every step. Stated as one set of hands, a relation with
+    /// both ends inside the set is satisfied by the displacement itself and the settle never sees
+    /// it — which is the same reason `translate_curve` states a curve's points together rather
+    /// than one after another.
+    ///
+    /// **The selection declares the rigid set; the grabbed point leads it.** ADR 0042 has a
+    /// gesture state its own rigid set rather than leave the solver to infer one, and a selection
+    /// is exactly that statement: the author picked these and asked for them to move together.
+    /// Where the press landed on one of the set's own points, that point is the `Lead` and the
+    /// rest are `Carried`, so a snap has something to measure its cone from and the whole set
+    /// rides the correction rigidly. Where it did not — a press on a curve's body, a marquee
+    /// dragged from empty space — there is no lead, and a set with no lead has no snap, which is
+    /// the same law a single-curve body drag already lives under.
+    ///
+    /// What the set does NOT say anything about is the unselected geometry. A selected point
+    /// coincident with an unselected one, a selected circle tangent to an unselected line: those
+    /// relations get no hand and are left for the settle to answer, exactly as they would be for a
+    /// single-curve drag. Pinning the unselected side would be the shell inventing a constraint
+    /// the author never wrote.
+    ///
+    /// A point named twice — once loose, once as an endpoint of a selected curve, or shared by two
+    /// selected curves — gets ONE hand. Two hands on one point are two assertions about the same
+    /// unknown, and while they agree here (both say `stood + by`) the duplicate would still be
+    /// weighed twice by the settle, which quietly makes a shared corner stiffer than a free one.
+    ///
+    /// **A TRANSLATE GESTURE HAS AN EMPTY HOLD SET BY CONSTRUCTION.** Not "none was needed here"
+    /// — none can exist. A hold says "this quantity must survive the motion", and a translation
+    /// preserves every quantity a hold could name: lengths, radii, angles, distances between any
+    /// two carried points. Holds belong to gestures that RESHAPE. So this emits no `Hand::pin`,
+    /// and a later reader who notices the omission and "completes" it will be adding the offset
+    /// recipe to a carry.
+    ///
+    /// What it is NOT is a loop over `handles_a_widening_must_hold`. That builder pins arc centers
+    /// so a body drag spends itself widening a shape instead of carrying it, which is the right
+    /// answer for an offset and the wrong one here: a translated arc must take its center with it,
+    /// and `translate_curve` correctly does not call it either.
+    ///
+    /// Like `translate_curve` this is a DISPLACEMENT, measured by the caller from where the press
+    /// landed: a set the author grabbed by the middle of one of its members names no place the
+    /// cursor should end up on.
+    pub fn translate_together(
+        &mut self,
+        curves: &[SketchCurve],
+        loose_points: &[EntityId],
+        grabbed: Option<EntityId>,
+        by: [f64; 2],
+        context: parametric::EvaluationContext,
+        snap_reach: SnapReach,
+        carries: &mut GestureSoFar,
+    ) -> Result<DragAnswer, SketchEvaluationError> {
+        // Pick order, then de-duplicated: a shared corner is one hand, and the traversal order is
+        // the author's own so a failure is reported against the entity they would name first.
+        let mut carried: Vec<EntityId> = Vec::new();
+        let mut already_held = std::collections::HashSet::new();
+        for point in curves
+            .iter()
+            .flat_map(|curve| self.every_point_of(*curve))
+            .chain(loose_points.iter().copied())
+        {
+            if already_held.insert(point) {
+                carried.push(point);
+            }
+        }
+
+        // The grabbed point leads only if it is actually IN the set. A press that landed on a
+        // curve's body, or a marquee dragged from empty space, names no point — and then the set
+        // has no lead, which is the state a single-curve body drag is already in.
+        let leads = grabbed.filter(|point| already_held.contains(point));
+        let hands: Vec<_> = carried
+            .into_iter()
+            .filter_map(|point| {
+                let stood = self.point_in_plane(point)?;
+                let to = [stood[0] + by[0], stood[1] + by[1]];
+                Some(if Some(point) == leads {
+                    Hand::lead(point, to)
+                } else {
+                    Hand::carried(point, to)
+                })
+            })
+            .collect();
+        if hands.is_empty() {
+            return Ok(DragAnswer::stood(false));
+        }
+        self.drag_or_leave_it_alone(|sketch| {
+            // Where they stood, read before they are written down. See `settle_under_the_hands`.
+            let was: Vec<(EntityId, [f64; 2])> = hands
+                .iter()
+                .filter_map(|hand| Some((hand.point, sketch.point_in_plane(hand.point)?)))
+                .collect();
+            for hand in &hands {
+                if let Some(index) = sketch.point_index(hand.point) {
+                    sketch.points[index].at = SketchPoint::from_continuous(hand.to[0], hand.to[1]);
+                }
+            }
+            sketch.sync_derived_points();
+            sketch.settle_under_the_hands(&hands, &was, context, snap_reach, carries)
+        })
     }
 
     /// Run a drag attempt, and put the drawing back exactly as it was unless it stands.

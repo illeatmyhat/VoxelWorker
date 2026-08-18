@@ -316,6 +316,33 @@ impl Selection {
         })
     }
 
+    /// Every picked CURVE of `sketch`, of whatever kind — the union of
+    /// [`sketch_segments`](Self::sketch_segments), [`sketch_arcs`](Self::sketch_arcs),
+    /// [`sketch_circles`](Self::sketch_circles) and
+    /// [`sketch_higher_curves`](Self::sketch_higher_curves), each re-spelled as the
+    /// [`SketchCurve`] its own store names it by.
+    ///
+    /// Built by CHAINING those four rather than by matching the targets a fifth time, so a new
+    /// curve kind joins this union the moment it joins its own accessor. That matters more than
+    /// the line count: the caller — a drag that carries a whole selection — has no business
+    /// knowing there are four stores, and the one thing a union enumerator must never become is
+    /// a second list of kinds to keep in step with the first.
+    ///
+    /// Grouped by kind rather than interleaved in pick order. The one consumer moves the whole
+    /// set rigidly, so the traversal order decides nothing about the answer; it decides only
+    /// which entity a failure is reported against.
+    ///
+    /// This is not the fix for the enumerate-the-accessors complaint in
+    /// [`SelectionTarget::is_positional`](SelectionTarget::is_positional) — it is one union, for
+    /// one gesture. It becomes the start of that fix only if the transforms come to read it.
+    pub fn sketch_curves(&self, sketch: NodeId) -> impl Iterator<Item = SketchCurve> + '_ {
+        self.sketch_segments(sketch)
+            .map(SketchCurve::Segment)
+            .chain(self.sketch_arcs(sketch).map(SketchCurve::Arc))
+            .chain(self.sketch_circles(sketch).map(SketchCurve::Circle))
+            .chain(self.sketch_higher_curves(sketch))
+    }
+
     /// The picked CONSTRAINT ids of `sketch`, in pick order.
     pub fn sketch_constraints(&self, sketch: NodeId) -> impl Iterator<Item = EntityId> + '_ {
         self.targets.iter().filter_map(move |target| match *target {

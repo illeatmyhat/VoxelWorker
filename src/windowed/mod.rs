@@ -634,6 +634,26 @@ enum SketchGrab {
         fit: document::sketch::EntityId,
         from: Option<document::sketch::SketchPoint>,
     },
+    /// A WHOLE SELECTION — every picked curve and loose point — carried by however far the cursor
+    /// has come since the press, as one rigid set.
+    ///
+    /// The set itself is not here. It rides on [`SketchVertexDrag::carried_set`], because this
+    /// enum is `Copy` and is copied out by value in two readers that want nothing but the kind.
+    /// That is the arrangement the drag struct already has and not a new one: the grab NAMES the
+    /// gesture, the drag OWNS the gesture's inputs — `original` and `gesture` live there for the
+    /// same reason.
+    ///
+    /// `grabbed` is the point the press landed on, when it landed on one. It becomes the set's
+    /// LEAD (ADR 0042): the snap measures its cone from that point's travel and the rest of the
+    /// set rides the correction rigidly. A press on a curve's BODY names no point, and a set with
+    /// no lead has no snap — the same state a single-curve body drag is already in.
+    ///
+    /// Relative, with the same `from` memory [`Translate`](Self::Translate) keeps and for the same
+    /// reason: "the set goes where the cursor is" names no particular place on it.
+    TranslateSet {
+        grabbed: Option<document::sketch::EntityId>,
+        from: Option<document::sketch::SketchPoint>,
+    },
     /// A dimension's ANNOTATION, which goes where the cursor goes without the claim going with it.
     ///
     /// The one drag in the sketch that moves no geometry. It rewrites
@@ -647,15 +667,43 @@ enum SketchGrab {
 }
 
 impl SketchGrab {
-    /// The point this grab holds, if it holds one — the overlay marks that handle as dragged.
+    /// The LEAD DOT this grab holds, if it holds one — the overlay marks that handle as dragged.
+    ///
+    /// Not "the point that moves", which a set drag has many of, and not "the point the gesture
+    /// concerns", which a lever has. It is the dot the author has under the cursor: the one the
+    /// snap measures from and the one the ghost circle anchors to. Lighting it says which point
+    /// the kernel is listening to, so a gesture with no such point must report none.
     const fn point(self) -> Option<document::sketch::EntityId> {
         match self {
             Self::Point(id) => Some(id),
+            // A set carried from a press on one of its own dots has that dot under the cursor and
+            // leads by it; a set carried from a press on a curve's body has no lead dot, and says
+            // so here for the same reason it takes no snap.
+            Self::TranslateSet { grabbed, .. } => grabbed,
             // The lever's fit point is not reported as the held handle: the overlay would draw the
             // dot in its dragged state for a gesture the author is running on the stick.
             Self::Translate { .. } | Self::TranslateLever { .. } | Self::Annotation { .. } => None,
         }
     }
+}
+
+/// The picked geometry a [`SketchGrab::TranslateSet`] carries, as the two lists the document's
+/// batched translate takes.
+///
+/// Read off the selection ONCE, at the press. Reading it live each frame would be correct today
+/// and correct only by a schedule — the press arms a selection resolve that lands on the release,
+/// so "the selection cannot change under a drag" is a sequencing claim, not a property. A gesture
+/// is read from its opening (ADR 0041), and its subjects are part of that reading.
+///
+/// Empty for every other grab, which costs two idle `Vec`s and keeps the drag one shape.
+#[derive(Debug, Clone, Default)]
+struct SketchSelectionSet {
+    /// Every picked curve of the open sketch, of whatever kind.
+    curves: Vec<document::sketch::SketchCurve>,
+    /// Every picked VERTEX of the open sketch. Loose only in the sense that the selection named
+    /// them directly; one may well also be an endpoint of a picked curve, and the document verb
+    /// de-duplicates rather than weighing a shared corner twice.
+    loose_points: Vec<document::sketch::EntityId>,
 }
 
 /// An in-progress sketch drag, identified by the stable entity it holds.
@@ -672,6 +720,9 @@ struct SketchVertexDrag {
     /// What the press grabbed — a stable entity, NOT a loop index, which is invalid once the
     /// graph opens.
     held: SketchGrab,
+    /// The picked set this gesture carries — empty unless `held` is
+    /// [`SketchGrab::TranslateSet`], which is the only grab that reads it.
+    carried_set: SketchSelectionSet,
     /// The sketch producer as it stood when the vertex was grabbed — the base every preview
     /// moves the dragged vertex on (a fresh clone), so successive frames never compound, and
     /// the RESTORE-before-commit reverts to exactly this.
