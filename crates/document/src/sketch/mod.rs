@@ -2384,6 +2384,48 @@ impl Sketch {
         &self.splines
     }
 
+    /// Every curve the drawing holds, of whatever kind, each named by the
+    /// [`SketchCurve`] its own store spells it as.
+    ///
+    /// The ONE place that says what "all the curves" means. A reader that wants a count, or a
+    /// sweep over the whole drawing, asks here rather than chaining seven stores of its own —
+    /// which is how a kind gets forgotten by everything except the store that holds it.
+    ///
+    /// Not to be confused with the partial walks elsewhere in this file. Those name a SUBSET on
+    /// purpose and say why (`curves_standing_on_any` reaches only the stores a solve can cross).
+    /// This one is total, and `every_curve_names_one_of_each_kind` is written so that adding a
+    /// [`SketchCurve`] variant fails to compile until it joins.
+    ///
+    /// Grouped by kind. Nothing here promises an order across kinds.
+    pub fn every_curve(&self) -> Vec<SketchCurve> {
+        self.segments
+            .iter()
+            .map(|segment| SketchCurve::Segment(segment.id))
+            .chain(self.arcs.iter().map(|arc| SketchCurve::Arc(arc.id)))
+            .chain(
+                self.circles
+                    .iter()
+                    .map(|circle| SketchCurve::Circle(circle.id)),
+            )
+            .chain(
+                self.beziers
+                    .iter()
+                    .map(|bezier| SketchCurve::Bezier(bezier.id)),
+            )
+            .chain(
+                self.ellipses
+                    .iter()
+                    .map(|ellipse| SketchCurve::Ellipse(ellipse.id)),
+            )
+            .chain(self.conics.iter().map(|conic| SketchCurve::Conic(conic.id)))
+            .chain(
+                self.splines
+                    .iter()
+                    .map(|spline| SketchCurve::Spline(spline.id)),
+            )
+            .collect()
+    }
+
     /// Read-only view of associative mirror and pattern rules.
     pub fn patterns(&self) -> &[SketchPattern] {
         &self.patterns

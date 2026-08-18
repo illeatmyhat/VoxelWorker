@@ -59,11 +59,15 @@ in the drawing. Two loose points still meet in the middle, as they always have.
 going to travel whatever its size. Without this, a four-corner quad would outweigh a single
 pinned target point and the anchor would try to move the thing that cannot move.
 
-**Rigidity is off during a drag.** It answers "which configuration would the author have
-chosen?", and a drag already answers that — the hand. Its reference would be wrong there in
-any case: `move_point` writes the grabbed point to the cursor *before* the settle runs, so
-every span through that point reads as already stretched, and rigidity measured against it
-resists the author's own gesture. Four drag tests caught this on the first wiring.
+**Rigidity during a drag is measured BEFORE the hand.** It answers "which configuration
+would the author have chosen?", and a drag answers that too — the hand — so the two only
+agree if they are asked about the same drawing. `move_point` writes the grabbed point to the
+cursor *before* the settle runs, so a reference read from the live points has every span
+through that point already stretched, and rigidity measured against it resists the author's
+own gesture. Four drag tests caught that on the first wiring, and the first fix was to switch
+rigidity off during a drag entirely. [ADR 0039](../adr/0039-a-preference-is-measured-before-the-hand.md)
+replaced that with the reference the preference actually wanted: the problem carries `was`,
+the pre-drag positions, and every span is measured against those.
 
 **Deleting an edge takes the ends nothing else draws.** A line removed from a drawing used to
 leave two dots the author never placed. A constraint is not a reason for a point to outlive
@@ -86,8 +90,5 @@ plumbing only; Tangent remains out of scope.
 - **Rotation preference across pieces.** `Parallel` between two separate pieces must rotate
   one of them, and per-axis rigidity resists exactly that. The exactness pass produces a
   correct answer; whether it produces a *tidy* one is unmeasured.
-- **Rigidity during a drag**, if a dragged corner should carry its polygon. Needs the
-  pre-drag drawing threaded through as a separate rigidity reference, since the current
-  reference is read from the already-moved points.
 - **Arcs are rigid by chord only.** The chord span is preserved and the sweep is stored, so an
   arc translates rigidly, but nothing expresses a preference against a sweep change.

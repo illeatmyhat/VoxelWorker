@@ -1513,3 +1513,77 @@ fn an_empty_set_is_answered_without_moving_anything() {
         .expect("stands");
     assert!((at[0] - 1.0).abs() < 1e-6 && (at[1] - 1.0).abs() < 1e-6);
 }
+
+/// **Adding a curve kind must break this test at COMPILE time, not leave a store unread.**
+///
+/// The exhaustive `match` below has no wildcard, so an eighth [`SketchCurve`] variant fails to
+/// compile here until someone decides what `every_curve` should do about it. A runtime count
+/// would not do that job: a forgotten store simply contributes nothing, and "seven" would still
+/// be seven.
+#[test]
+fn every_curve_names_one_of_each_kind() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let tail = sketch.add_free_point(SketchPoint::new(0, 0));
+    let head = sketch.add_free_point(SketchPoint::new(10, 0));
+    sketch.connect(tail, head).expect("a segment");
+    let sweep = sketch.add_free_point(SketchPoint::new(10, 10));
+    sketch
+        .connect_arc(head, sweep, AngleMeasurement::from_degrees(90))
+        .expect("an arc");
+    sketch.add_circle(SketchPoint::new(-20, 0), SketchLength::new(4));
+    sketch
+        .add_cubic_bezier([
+            SketchPoint::new(0, 20),
+            SketchPoint::new(4, 24),
+            SketchPoint::new(8, 24),
+            SketchPoint::new(12, 20),
+        ])
+        .expect("a bezier");
+    sketch
+        .add_ellipse(
+            SketchPoint::new(-20, 20),
+            SketchPoint::new(-12, 20),
+            SketchPoint::new(-20, 24),
+        )
+        .expect("an ellipse");
+    sketch
+        .add_conic(
+            SketchPoint::new(0, -20),
+            SketchPoint::new(8, -20),
+            SketchPoint::new(4, -14),
+            0.5,
+        )
+        .expect("a conic");
+    sketch
+        .add_fit_point_spline(
+            &[
+                SketchPoint::new(-20, -20),
+                SketchPoint::new(-14, -16),
+                SketchPoint::new(-8, -20),
+            ],
+            false,
+        )
+        .expect("a spline");
+
+    let (mut segments, mut arcs, mut circles) = (0u32, 0u32, 0u32);
+    let (mut beziers, mut ellipses, mut conics, mut splines) = (0u32, 0u32, 0u32, 0u32);
+    for curve in sketch.every_curve() {
+        match curve {
+            SketchCurve::Segment(_) => segments += 1,
+            SketchCurve::Arc(_) => arcs += 1,
+            SketchCurve::Circle(_) => circles += 1,
+            SketchCurve::Bezier(_) => beziers += 1,
+            SketchCurve::Ellipse(_) => ellipses += 1,
+            SketchCurve::Conic(_) => conics += 1,
+            SketchCurve::Spline(_) => splines += 1,
+        }
+    }
+    assert_eq!(
+        [segments, arcs, circles, beziers, ellipses, conics, splines],
+        [1, 1, 1, 1, 1, 1, 1],
+        "every store the drawing holds is read exactly once"
+    );
+
+    // A conic's chord is drawn, not stored — the drawing holds seven curves and no more.
+    assert_eq!(sketch.every_curve().len(), 7);
+}

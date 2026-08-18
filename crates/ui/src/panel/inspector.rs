@@ -464,12 +464,9 @@ fn build_sketch_inspector_section(
         // A hand-built polygon: read-only note, no Width/Depth (editing them would
         // mean discarding the profile). Only the plane + operation params are editable.
         ui.label(
-            egui::RichText::new(format!(
-                "Custom profile ({} points)",
-                producer.sketch.points().len()
-            ))
-            .small()
-            .weak(),
+            egui::RichText::new(what_the_profile_holds(&producer.sketch))
+                .small()
+                .weak(),
         );
     }
 
@@ -863,4 +860,70 @@ fn build_material_section(
     }
     ui.separator();
     changed
+}
+
+/// The one-line note a hand-built profile gets in place of Width / Depth.
+///
+/// Counts CURVES, not points. A circle is one curve standing on one point, so counting points
+/// read "1 points" for a whole shape — wrong twice over, and wrong in the direction that makes a
+/// drawing look emptier than it is. A drawing of nothing but loose points is the one case where
+/// points are the honest unit, so that is the one case that reports them.
+fn what_the_profile_holds(sketch: &Sketch) -> String {
+    let curves = sketch.every_curve().len();
+    let points = sketch.points().len();
+    let plural = |count: usize, noun: &str| {
+        if count == 1 {
+            format!("{count} {noun}")
+        } else {
+            format!("{count} {noun}s")
+        }
+    };
+    match (curves, points) {
+        (0, 0) => "Empty profile".to_owned(),
+        (0, points) => format!("Custom profile ({})", plural(points, "point")),
+        (curves, _) => format!("Custom profile ({})", plural(curves, "curve")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::expect_used, clippy::indexing_slicing)]
+
+    use super::what_the_profile_holds;
+    use document::sketch::{PlaneAxis, Sketch, SketchLength, SketchPoint};
+
+    /// The circle is the case that prompted this: one curve, one point, and the old readout
+    /// called a whole shape "1 points".
+    #[test]
+    fn a_profile_reports_the_curves_it_draws_and_falls_back_to_points_only_when_it_draws_none() {
+        let mut circle = Sketch::empty(PlaneAxis::Z);
+        circle.add_circle(SketchPoint::new(0, 0), SketchLength::new(4));
+        assert_eq!(what_the_profile_holds(&circle), "Custom profile (1 curve)");
+
+        let mut triangle = Sketch::empty(PlaneAxis::Z);
+        let corners: Vec<_> = [(0, 0), (10, 0), (5, 8)]
+            .into_iter()
+            .map(|(x, y)| triangle.add_free_point(SketchPoint::new(x, y)))
+            .collect();
+        for pair in 0..corners.len() {
+            let next = (pair + 1) % corners.len();
+            triangle
+                .connect(corners[pair], corners[next])
+                .expect("a closing edge");
+        }
+        assert_eq!(
+            what_the_profile_holds(&triangle),
+            "Custom profile (3 curves)"
+        );
+
+        let mut loose = Sketch::empty(PlaneAxis::Z);
+        loose.add_free_point(SketchPoint::new(1, 1));
+        loose.add_free_point(SketchPoint::new(2, 2));
+        assert_eq!(what_the_profile_holds(&loose), "Custom profile (2 points)");
+
+        assert_eq!(
+            what_the_profile_holds(&Sketch::empty(PlaneAxis::Z)),
+            "Empty profile"
+        );
+    }
 }
