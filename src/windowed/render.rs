@@ -4681,6 +4681,7 @@ impl WindowedState {
                 cursor,
                 self.last_pixels_per_point,
             )
+            .map(|hit| hit.constraint)
         })
     }
 
@@ -5112,7 +5113,9 @@ impl WindowedState {
                     egui::Pos2::new(cursor_x as f32, cursor_y as f32),
                     self.last_pixels_per_point,
                 )
-                .map(|constraint| SketchGrab::Annotation { constraint })
+                .map(|hit| SketchGrab::Annotation {
+                    constraint: hit.constraint,
+                })
             })
             // A lever's stick moves the point it belongs to, never the spline it steers. The
             // handle rides along at the angle and length it was left at, which is exactly what a
@@ -8465,6 +8468,20 @@ fn sketch_constraint_badge_at(
         .map(|badge| badge.constraint)
 }
 
+/// A dimension's number found under the cursor: which dimension, and the box it was found in.
+///
+/// The box travels with the id because the two callers want different halves of one answer and
+/// neither can recompute the other — a hit-test that returned only the id would leave an inline
+/// editor to lay the number out a second time, and a second layout is a second opinion about
+/// where the number is.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct DimensionValueHit {
+    /// The dimension the number stands for.
+    constraint: document::sketch::EntityId,
+    /// That number's own box, in egui POINTS.
+    label: egui::Rect,
+}
+
 /// The constraint whose dimension VALUE is under a physical-pixel cursor.
 ///
 /// The number is a dimension's only mark and therefore its only target. Later gizmos win a tie,
@@ -8473,19 +8490,90 @@ fn sketch_dimension_value_at(
     gizmos: &[ui::chrome::DimensionGizmo],
     cursor: egui::Pos2,
     pixels_per_point: f32,
-) -> Option<document::sketch::EntityId> {
+) -> Option<DimensionValueHit> {
     let cursor = egui::Pos2::new(cursor.x / pixels_per_point, cursor.y / pixels_per_point);
-    gizmos
+    // The topmost gizmo whose number covers the cursor answers, and then either names a
+    // constraint or refuses for everyone. It does NOT fall through to whatever is beneath it: a
+    // ghost sitting over a real dimension is still the mark the author is pointing at, and
+    // handing the click to the one underneath would edit a number they cannot see.
+    let (gizmo, label) = gizmos.iter().rev().find_map(|gizmo| {
+        let label = gizmo
+            .drawing
+            .label_boxes()
+            .into_iter()
+            .find(|box_px| box_px.expand(3.0).contains(cursor))?;
+        Some((gizmo, label))
+    })?;
+    Some(DimensionValueHit {
+        constraint: gizmo.constraint?,
+        label,
+    })
+}
+
+/// The text an inline editor opens on for `dimension`, or `None` for a quantity this box does not
+/// yet edit.
+///
+/// **Exactly the string the rail field seeds with**, by construction — both are the canonical
+/// blocks+voxels rendering of the value the document holds. Two spellings of one number would
+/// make the editor look like it had changed something by opening.
+///
+/// An ANGLE is `None`. The expression grammar has no angle literals, so a box here could only
+/// accept a bare degree count, which is what the drag control it would replace already does
+/// better. It joins when the grammar does.
+fn dimension_seed_text(dimension: &document::sketch::Dimension, density: u32) -> Option<String> {
+    use document::sketch::Dimension;
+    let voxels = match dimension {
+        Dimension::Span { length, .. }
+        | Dimension::SpanAlong { length, .. }
+        | Dimension::Gap { length, .. }
+        | Dimension::RimGap { length, .. }
+        | Dimension::Radius { length, .. }
+        | Dimension::Diameter { length, .. } => length.value(),
+        Dimension::Angle { .. } => return None,
+    };
+    Some(parametric::units::format(
+        voxels.round() as i64,
+        density,
+        parametric::units::DisplayUnit::BlocksAndVoxels,
+    ))
+}
+
+/// The inline editor a press opens, when the press opens one.
+///
+/// **A single click does not open a box.** The number carries three gestures already — a click
+/// selects it, a drag moves where it sits — and an editor that appeared on every select would
+/// take the keyboard away from an author who was only pointing at something. The second click is
+/// what says "and I mean to change it", which is the same bargain the rest of the industry
+/// strikes on the same mark.
+///
+/// Returns the constraint beside the editor because the EDITOR does not name what it edits: it is
+/// a box at a place holding text, and pairing it with a subject is the caller's job precisely so
+/// the same box can open over a gesture that has no subject yet.
+fn measurement_editor_opened_by(
+    gizmos: &[ui::chrome::DimensionGizmo],
+    cursor: egui::Pos2,
+    pixels_per_point: f32,
+    second_click: bool,
+    sketch: &document::sketch::Sketch,
+    density: u32,
+) -> Option<(document::sketch::EntityId, ui::widgets::MeasurementEdit)> {
+    if !second_click {
+        return None;
+    }
+    let hit = sketch_dimension_value_at(gizmos, cursor, pixels_per_point)?;
+    let document::sketch::ConstraintKind::Dimension(dimension) = sketch
+        .constraints()
         .iter()
-        .rev()
-        .find(|gizmo| {
-            gizmo
-                .drawing
-                .label_boxes()
-                .into_iter()
-                .any(|box_px| box_px.expand(3.0).contains(cursor))
-        })
-        .and_then(|gizmo| gizmo.constraint)
+        .find(|held| held.id == hit.constraint)
+        .map(|held| held.kind)?
+    else {
+        return None;
+    };
+    let seed = dimension_seed_text(&dimension, density)?;
+    Some((
+        hit.constraint,
+        ui::widgets::MeasurementEdit::new(hit.label, seed),
+    ))
 }
 
 /// What the top bar says about a refused constraint. `offer` screens the clerical
@@ -8568,14 +8656,14 @@ mod tests {
         advance_circle_center_diameter_gesture, aggregate_marquee_picks, angle_arc_radius,
         angle_legs, apply_sketch_snap, circle_gesture_is_current, circle_marquee_hit, circle_ring,
         closest_point_on_segment, complete_circle_center_diameter, concentric_badge_locus,
-        grab_that_carries_the_selection, marquee_box_px, nearest_sketch_edge_for_requirement,
-        nearest_sketch_edge_from_candidates, nearest_tangent_lever, point_in_screen_polygon,
-        point_to_segment_distance, pointer_left_the_press, polygon_double_area,
-        reset_failed_sketch_constraint_completion, reset_refused_sketch_constraint_completion,
-        segment_touches_rect, segments_intersect, select_sketch_constraint_refusal_culprits,
-        sketch_constraint_badge_at, sketch_curve_from_hit, sketch_profile_edit_transaction,
-        symmetry_badge_locus, tangent_badge_locus, trim_number, SketchEdgeHit, SketchGrab,
-        DIMENSION_STANDOFF_PX,
+        grab_that_carries_the_selection, marquee_box_px, measurement_editor_opened_by,
+        nearest_sketch_edge_for_requirement, nearest_sketch_edge_from_candidates,
+        nearest_tangent_lever, point_in_screen_polygon, point_to_segment_distance,
+        pointer_left_the_press, polygon_double_area, reset_failed_sketch_constraint_completion,
+        reset_refused_sketch_constraint_completion, segment_touches_rect, segments_intersect,
+        select_sketch_constraint_refusal_culprits, sketch_constraint_badge_at,
+        sketch_curve_from_hit, sketch_profile_edit_transaction, symmetry_badge_locus,
+        tangent_badge_locus, trim_number, SketchEdgeHit, SketchGrab, DIMENSION_STANDOFF_PX,
     };
     use document::sketch::{
         ConstraintKind, LineSide, PlaneAxis, Sketch, SketchCurve, SketchLength, SketchPoint,
@@ -10056,5 +10144,165 @@ mod tests {
             &picked,
         )
         .is_none());
+    }
+}
+
+/// The inline measurement editor's opening, at the shell's own seam.
+///
+/// These press the number through the SAME published hit boxes the shell presses — the rect comes
+/// out of `label_boxes()` rather than being rebuilt here — because a test that hand-builds a rect
+/// and pokes the decision with it goes green while the real click path stays broken. That is
+/// exactly the failure the author reported when the rail field turned out to be unreachable.
+#[cfg(test)]
+mod measurement_editor_tests {
+    #![allow(clippy::expect_used, clippy::indexing_slicing)]
+
+    use super::measurement_editor_opened_by;
+
+    const DENSITY: u32 = 16;
+
+    /// A sketch holding one span dimension, and the id of that dimension.
+    fn a_dimensioned_span() -> (document::sketch::Sketch, document::sketch::EntityId) {
+        let mut sketch = document::sketch::Sketch::empty(document::sketch::PlaneAxis::Z);
+        let tail = sketch.add_free_point(document::sketch::SketchPoint::new(0, 0));
+        let head = sketch.add_free_point(document::sketch::SketchPoint::new(32, 0));
+        let dimension = sketch
+            .add_constraint(
+                document::sketch::ConstraintKind::Dimension(document::sketch::Dimension::Span {
+                    from: tail,
+                    to: head,
+                    length: document::sketch::SketchLength::new(32),
+                }),
+                parametric::EvaluationContext::new(
+                    core::num::NonZeroU32::new(DENSITY).expect("sixteen is not zero"),
+                ),
+            )
+            .expect("two free points can stand thirty-two apart");
+        (sketch, dimension)
+    }
+
+    /// A gizmo whose number sits at `at`, standing for `constraint`.
+    fn a_gizmo_showing(
+        constraint: Option<document::sketch::EntityId>,
+        text: &str,
+        at: egui::Pos2,
+    ) -> ui::chrome::DimensionGizmo {
+        ui::chrome::DimensionGizmo {
+            drawing: ui::gizmos::dimension::Drawing {
+                pieces: Vec::new(),
+                labels: vec![ui::gizmos::dimension::Label {
+                    at,
+                    text: text.to_owned(),
+                    along: egui::Vec2::new(1.0, 0.0),
+                    across: egui::Vec2::new(0.0, 1.0),
+                    anchor: ui::gizmos::dimension::Anchor::Middle,
+                    lift: 0.0,
+                }],
+                rank: ui::gizmos::dimension::Rank::Driving,
+            },
+            constraint,
+            picked: false,
+        }
+    }
+
+    /// The centre of the one box a gizmo publishes, in PHYSICAL pixels.
+    fn the_published_number(
+        gizmo: &ui::chrome::DimensionGizmo,
+        pixels_per_point: f32,
+    ) -> egui::Pos2 {
+        let boxes = gizmo.drawing.label_boxes();
+        assert_eq!(boxes.len(), 1, "the fixture draws exactly one number");
+        let centre = boxes[0].center();
+        egui::Pos2::new(centre.x * pixels_per_point, centre.y * pixels_per_point)
+    }
+
+    /// RED 1: a second click on the number opens a box AT that number, holding what it says.
+    ///
+    /// The anchor must be the published box itself and the seed the value the drawing shows — an
+    /// editor that opened somewhere else, or opened on a differently-spelled number, would read as
+    /// having changed something merely by being opened.
+    #[test]
+    fn a_second_click_on_a_number_opens_an_editor_there_holding_that_number() {
+        let (sketch, dimension) = a_dimensioned_span();
+        let gizmo = a_gizmo_showing(Some(dimension), "2b", egui::Pos2::new(120.0, 80.0));
+        let cursor = the_published_number(&gizmo, 2.0);
+
+        let (constraint, editor) =
+            measurement_editor_opened_by(&[gizmo.clone()], cursor, 2.0, true, &sketch, DENSITY)
+                .expect("a second click on a dimension's number opens its editor");
+
+        assert_eq!(constraint, dimension);
+        assert_eq!(
+            editor.anchor,
+            gizmo.drawing.label_boxes()[0],
+            "the box opens on the number's own published rect"
+        );
+        assert_eq!(
+            editor.seed,
+            parametric::units::format(32, DENSITY, parametric::units::DisplayUnit::BlocksAndVoxels),
+            "and it opens holding exactly what the rail field would have shown"
+        );
+    }
+
+    /// A FIRST click opens nothing, and neither does a press away from the number.
+    ///
+    /// The first is the whole reason the gesture is doubled: the number also takes a select and a
+    /// drag, and a box that appeared on every select would steal the keyboard from an author who
+    /// was only pointing. The second is the ordinary miss.
+    #[test]
+    fn a_first_click_and_a_miss_open_nothing() {
+        let (sketch, dimension) = a_dimensioned_span();
+        let gizmo = a_gizmo_showing(Some(dimension), "2b", egui::Pos2::new(120.0, 80.0));
+        let cursor = the_published_number(&gizmo, 2.0);
+
+        assert!(
+            measurement_editor_opened_by(&[gizmo.clone()], cursor, 2.0, false, &sketch, DENSITY)
+                .is_none(),
+            "one click selects; it does not open a box"
+        );
+        assert!(
+            measurement_editor_opened_by(
+                &[gizmo],
+                egui::Pos2::new(2000.0, 2000.0),
+                2.0,
+                true,
+                &sketch,
+                DENSITY
+            )
+            .is_none(),
+            "a double click on empty space opens nothing"
+        );
+    }
+
+    /// The GHOST of a dimension being placed stands for nothing, so it cannot be edited — and it
+    /// does not hand the click on to whatever it happens to be covering.
+    ///
+    /// A ghost carries `constraint: None` precisely so it answers no pick with an id no drawing
+    /// holds. The second half is the one worth pinning: the ghost is laid out LAST and so is on
+    /// top, and the topmost mark is what the author is pointing at. Falling through would open an
+    /// editor over a number hidden behind the one they clicked.
+    #[test]
+    fn a_ghost_dimension_has_nothing_to_edit_and_shields_what_it_covers() {
+        let (sketch, dimension) = a_dimensioned_span();
+        let at = egui::Pos2::new(120.0, 80.0);
+        let real = a_gizmo_showing(Some(dimension), "2b", at);
+        let ghost = a_gizmo_showing(None, "2b", at);
+        let cursor = the_published_number(&ghost, 2.0);
+
+        assert!(
+            measurement_editor_opened_by(&[ghost.clone()], cursor, 2.0, true, &sketch, DENSITY)
+                .is_none(),
+            "a dimension that is still being placed has no value to restate"
+        );
+        assert!(
+            measurement_editor_opened_by(&[real.clone()], cursor, 2.0, true, &sketch, DENSITY)
+                .is_some(),
+            "the control: the same box over a real dimension does open"
+        );
+        assert!(
+            measurement_editor_opened_by(&[real, ghost], cursor, 2.0, true, &sketch, DENSITY)
+                .is_none(),
+            "the ghost is on top, so the ghost is what was clicked"
+        );
     }
 }

@@ -40,6 +40,8 @@
     clippy::use_self,
     clippy::wildcard_imports
 )]
+pub mod measurement_editor;
 pub mod measurement_field;
 
+pub use measurement_editor::MeasurementEdit;
 pub use measurement_field::{measurement_error_text, MeasurementCommit, MeasurementField};
