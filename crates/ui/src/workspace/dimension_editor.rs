@@ -315,6 +315,13 @@ mod tests {
     /// A panel holding two segments meeting at a right angle, dimensioned, and that
     /// dimension's id.
     fn a_panel_showing_an_angle() -> (crate::panel::PanelState, document::sketch::EntityId) {
+        a_panel_showing_an_angle_of(90.0)
+    }
+
+    /// The same, at a value a DRAG would have solved rather than one anybody typed.
+    fn a_panel_showing_an_angle_of(
+        degrees: f64,
+    ) -> (crate::panel::PanelState, document::sketch::EntityId) {
         let mut sketch = document::sketch::Sketch::empty(document::sketch::PlaneAxis::Z);
         let corner = sketch.add_free_point(document::sketch::SketchPoint::new(0, 0));
         let along = sketch.add_free_point(document::sketch::SketchPoint::new(32, 0));
@@ -326,7 +333,8 @@ mod tests {
                 document::sketch::ConstraintKind::Dimension(document::sketch::Dimension::Angle {
                     first: document::sketch::AngleArm::Segment { segment: first },
                     second: document::sketch::AngleArm::Segment { segment: second },
-                    degrees: parametric::units::AngleMeasurement::from_degrees(90),
+                    degrees: parametric::units::AngleMeasurement::try_from_degrees_f64(degrees)
+                        .expect("a finite angle"),
                     corner: document::sketch::AngleCorner::Between,
                 }),
                 parametric::EvaluationContext::new(
@@ -417,5 +425,68 @@ mod tests {
             super::seed_text(&span, DENSITY).as_deref(),
             Some("2 blocks 0 voxels")
         );
+    }
+
+    /// **Touching a value and putting it back is not an edit.** The falsifying test for the one
+    /// worry the two-decimal seed raises: a measured angle stores more digits than its label
+    /// shows, so if the protocol committed on any KEYSTROKE, opening a box and idly typing would
+    /// quietly truncate the stored value to what was painted.
+    ///
+    /// It does not, because the rule is text equality and not a touched flag — the buffer comes
+    /// back to the seed and the frame that loses focus writes nothing. What remains is display
+    /// precision, which is a different thing from data loss and is not closed by retaining text:
+    /// an angle that arrived by DRAG has no authored text to retain, so its seed is formatted from
+    /// the value for good.
+    #[test]
+    fn typing_into_a_measured_angle_and_undoing_it_writes_nothing() {
+        let stored = 31.2437_f64;
+        let (state, constraint) = a_panel_showing_an_angle_of(stored);
+        let context = egui::Context::default();
+        let seeded = super::seed_text(&dimension_named(&state, constraint), DENSITY)
+            .expect("an angle seeds with its degrees");
+        assert_eq!(
+            seeded, "31.24\u{b0}",
+            "the label rounds, the store does not"
+        );
+
+        let mut open = Some(OpenDimensionEditor {
+            constraint,
+            editor: MeasurementEdit::new(
+                egui::Rect::from_min_size(egui::pos2(100.0, 60.0), egui::vec2(40.0, 14.0)),
+                seeded,
+            ),
+        });
+        let _ = editor_frame(&context, &state, &mut open, Vec::new());
+
+        // A keystroke and its undo, caret wherever egui put it.
+        let touched = editor_frame(
+            &context,
+            &state,
+            &mut open,
+            vec![
+                egui::Event::Text("9".to_owned()),
+                pressing(egui::Key::Backspace),
+                pressing(egui::Key::Enter),
+            ],
+        );
+        assert_eq!(
+            touched.restate_sketch_dimension, None,
+            "the text came back to the seed, so nothing was written"
+        );
+        assert_eq!(
+            dimension_named(&state, constraint)
+                .degrees()
+                .map(parametric::units::AngleMeasurement::to_degrees_f64),
+            Some(stored),
+            "and every digit the drag solved is still there"
+        );
+    }
+
+    /// The dimension `constraint` names, for a test that already knows it is there.
+    fn dimension_named(
+        state: &crate::panel::PanelState,
+        constraint: document::sketch::EntityId,
+    ) -> document::sketch::Dimension {
+        super::dimension_of(state, constraint).expect("the fixture's dimension")
     }
 }
