@@ -1,10 +1,11 @@
 //! The blocks+voxels [`Measurement`](parametric::units::Measurement) text field.
 //!
 //! One authored spatial quantity as a labeled row in a panel. The commit protocol is
-//! [`MeasurementEntry`]'s; this is the chrome around it — a label, a fixed-width box, and a hint.
+//! [`QuantityEntry`]'s and the meaning is [`LengthBinding`]'s; this is the chrome around the two
+//! — a label, a fixed-width box, and a hint.
 
-use super::measurement_entry::{MeasurementEntry, MeasurementEntryOutcome};
-use super::MeasurementCommit;
+use super::quantity_binding::{LengthBinding, MeasurementCommit};
+use super::quantity_entry::{QuantityEntry, QuantityEntryOutcome};
 
 /// The width of the text box, in points. Every measurement field is this wide so the
 /// columns line up down a panel regardless of which section drew them.
@@ -23,7 +24,7 @@ const FIELD_WIDTH_POINTS: f32 = 142.0;
 /// A rail row is present because a panel is open, not because the author asked to type. Focusing
 /// it on appearance would take the keyboard away from whatever they were actually doing. An
 /// inline editor, which answers a gesture that already said "I mean to change this", opts in with
-/// [`MeasurementEntry::focus_when_new`].
+/// [`QuantityEntry::focus_when_new`].
 pub struct MeasurementField<'a> {
     id_base: egui::Id,
     label: &'a str,
@@ -69,24 +70,31 @@ impl<'a> MeasurementField<'a> {
     /// document on `Some` is always correct.
     pub fn show(self, ui: &mut egui::Ui) -> Option<MeasurementCommit> {
         let (label, box_id) = (self.label, Self::box_id(self.id_base));
-        match self.entry().run(ui, |ui, buffer| {
-            ui.horizontal(|ui| {
-                ui.label(format!("{label} "));
-                ui.add(
-                    egui::TextEdit::singleline(buffer)
-                        .id(box_id)
-                        .desired_width(FIELD_WIDTH_POINTS)
-                        .hint_text("blocks + voxels"),
-                )
-            })
-            .inner
-        }) {
-            MeasurementEntryOutcome::Committed(commit) => Some(commit),
+        let binding = self.binding();
+        let seed = LengthBinding::seed(self.seed_voxels, self.density);
+        let drawn = QuantityEntry::new(self.id_base, seed).run(
+            ui,
+            |text| binding.read(text),
+            |ui, buffer| {
+                ui.horizontal(|ui| {
+                    ui.label(format!("{label} "));
+                    ui.add(
+                        egui::TextEdit::singleline(buffer)
+                            .id(box_id)
+                            .desired_width(FIELD_WIDTH_POINTS)
+                            .hint_text("blocks + voxels"),
+                    )
+                })
+                .inner
+            },
+        );
+        match drawn {
+            QuantityEntryOutcome::Committed(commit) => Some(commit),
             // A rail row has nowhere to go on any of these. It stays where it is, showing
             // whatever the protocol left in it.
-            MeasurementEntryOutcome::Idle
-            | MeasurementEntryOutcome::Refused
-            | MeasurementEntryOutcome::Cancelled => None,
+            QuantityEntryOutcome::Idle
+            | QuantityEntryOutcome::Refused
+            | QuantityEntryOutcome::Cancelled => None,
         }
     }
 
@@ -99,20 +107,15 @@ impl<'a> MeasurementField<'a> {
         id_base.with("box")
     }
 
-    /// This field's protocol, with the bound applied when it has one.
+    /// This field's binding, with the bound applied when it has one.
     ///
-    /// The canonical seed — what the document currently says, as a blocks+voxels string — is
-    /// struck here, because the FIELD is what knows the value as a voxel count.
-    fn entry(&self) -> MeasurementEntry<'a> {
-        let seed = parametric::units::format(
-            self.seed_voxels,
-            self.density,
-            parametric::units::DisplayUnit::BlocksAndVoxels,
-        );
-        let entry = MeasurementEntry::new(self.id_base, seed, self.density);
+    /// The canonical SEED — what the document currently says, as a blocks+voxels string — is
+    /// struck at the call site above, because the FIELD is what knows the value as a voxel count.
+    fn binding(&self) -> LengthBinding<'a> {
+        let binding = LengthBinding::new(self.density);
         match self.min_voxels {
-            Some(minimum) => entry.min_voxels(minimum, self.min_error),
-            None => entry,
+            Some(minimum) => binding.floor(minimum, self.min_error),
+            None => binding,
         }
     }
 }

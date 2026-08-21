@@ -4519,7 +4519,10 @@ impl WindowedState {
                     }
                     let struck =
                         ProjectedRim::project(corner_at, f64::from(radius / per_unit), &to_px)?;
-                    let value = format!("{}\u{b0}", trim_number(degrees.to_degrees_f64()));
+                    // The SAME renderer the editor seeds with, so double-clicking this
+                    // number opens a box showing character-for-character what is painted
+                    // here - which is what makes an untouched box a no-op, not a rounding.
+                    let value = ui::widgets::AngleBinding::seed(degrees);
                     ui::gizmos::dimension::angle(
                         vertex,
                         from,
@@ -8276,19 +8279,6 @@ fn angle_arc_radius(vertex: egui::Pos2, placed: Option<egui::Pos2>, reach: f32) 
         .max(DIMENSION_STANDOFF_PX)
 }
 
-/// A number for a dimension label: no trailing zeros, and no decimal point when it is whole.
-///
-/// An angle authored as 30 should read `30`, not `30.00`. Two places is where a sketch angle stops
-/// being a number the author recognises as the one they typed.
-fn trim_number(value: f64) -> String {
-    let text = format!("{value:.2}");
-    match text.trim_end_matches('0').trim_end_matches('.') {
-        // A value that rounds away to nothing IS zero, and nobody writes that as "-0".
-        "" | "-" | "-0" => "0".to_string(),
-        trimmed => trimmed.to_string(),
-    }
-}
-
 /// The signed turn from `from` onto `to`, folded into `(-π, π]` — the short way round.
 fn signed_turn(from: egui::Vec2, to: egui::Vec2) -> f32 {
     let cross = from.x * to.y - from.y * to.x;
@@ -8549,25 +8539,6 @@ fn sketch_dimension_value_at(
     })
 }
 
-/// The text an inline editor opens on for `dimension`, or `None` for a quantity this box does not
-/// yet edit.
-///
-/// **Exactly the string the rail field seeds with**, by construction — both are the canonical
-/// blocks+voxels rendering of the value the document holds. Two spellings of one number would
-/// make the editor look like it had changed something by opening.
-///
-/// An ANGLE is `None`. The expression grammar has no angle literals, so a box here could only
-/// accept a bare degree count, which is what the drag control it would replace already does
-/// better. It joins when the grammar does.
-fn dimension_seed_text(dimension: &document::sketch::Dimension, density: u32) -> Option<String> {
-    let length = dimension.length()?;
-    Some(parametric::units::format(
-        length.value().round() as i64,
-        density,
-        parametric::units::DisplayUnit::BlocksAndVoxels,
-    ))
-}
-
 /// How soon a second click must land to be part of a double one.
 ///
 /// egui's own `max_double_click_delay`, so the viewport agrees with every widget the author
@@ -8628,7 +8599,7 @@ fn measurement_editor_opened_by(
     else {
         return None;
     };
-    let seed = dimension_seed_text(&dimension, density)?;
+    let seed = ui::workspace::seed_text(&dimension, density)?;
     Some((
         hit.constraint,
         ui::widgets::MeasurementEdit::new(hit.label, seed),
@@ -8721,7 +8692,7 @@ mod tests {
         reset_failed_sketch_constraint_completion, reset_refused_sketch_constraint_completion,
         segment_touches_rect, segments_intersect, select_sketch_constraint_refusal_culprits,
         sketch_constraint_badge_at, sketch_curve_from_hit, sketch_profile_edit_transaction,
-        symmetry_badge_locus, tangent_badge_locus, trim_number, SketchEdgeHit, SketchGrab,
+        symmetry_badge_locus, tangent_badge_locus, SketchEdgeHit, SketchGrab,
         DIMENSION_STANDOFF_PX,
     };
     use document::sketch::{
@@ -9949,14 +9920,23 @@ mod tests {
         );
     }
     /// A dimension label shows the number the author typed, not a float's idea of it.
+    ///
+    /// Asked of the ANGLE BINDING, because the label and the editor's seed are now one renderer:
+    /// what the drawing paints has to be readable back by the box that opens over it.
     #[test]
     fn a_dimension_value_drops_the_zeros_it_does_not_need() {
-        assert_eq!(trim_number(30.0), "30");
-        assert_eq!(trim_number(22.5), "22.5");
+        let painted = |degrees: f64| {
+            ui::widgets::AngleBinding::seed(
+                parametric::units::AngleMeasurement::try_from_degrees_f64(degrees)
+                    .expect("a finite angle"),
+            )
+        };
+        assert_eq!(painted(30.0), "30\u{b0}");
+        assert_eq!(painted(22.5), "22.5\u{b0}");
         // Rust formats half-way values to EVEN, so this is 0.12 and not 0.13.
-        assert_eq!(trim_number(0.125), "0.12");
-        assert_eq!(trim_number(-0.001), "0");
-        assert_eq!(trim_number(0.0), "0");
+        assert_eq!(painted(0.125), "0.12\u{b0}");
+        assert_eq!(painted(-0.001), "0\u{b0}");
+        assert_eq!(painted(0.0), "0\u{b0}");
     }
 
     /// **Two lines make four corners and the annotation picks one of them.**

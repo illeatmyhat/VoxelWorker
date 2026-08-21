@@ -875,51 +875,21 @@ fn sketch_dimension_value(ui: &mut egui::Ui, state: &mut PanelState, response: &
         return;
     };
     let restated = match dimension {
-        // Every length a dimension states is typed at the number itself: double-click the value on
-        // the drawing. A field here as well would be a second place to look for one quantity, and
-        // the rail is the one nobody finds.
+        // EVERY quantity a dimension states is typed at the number itself: double-click the value
+        // on the drawing. A field here as well would be a second place to look for one quantity,
+        // and the rail is the one nobody finds. The angle was the last holdout, kept while the
+        // grammar had no way to say `45\u{b0}`; now that it has one, the drag goes the way the five
+        // length fields did.
         document::sketch::Dimension::Span { .. }
         | document::sketch::Dimension::SpanAlong { .. }
         | document::sketch::Dimension::Gap { .. }
-        | document::sketch::Dimension::RimGap { .. } => None,
+        | document::sketch::Dimension::RimGap { .. }
+        | document::sketch::Dimension::Angle { .. } => None,
         document::sketch::Dimension::Radius { curve, length }
         | document::sketch::Dimension::Diameter { curve, length } => {
             rail_heading(ui, "Dimension");
             let across = matches!(dimension, document::sketch::Dimension::Diameter { .. });
             sketch_rim_value(ui, curve, length, across)
-        }
-        document::sketch::Dimension::Angle {
-            first,
-            second,
-            degrees,
-            corner,
-        } => {
-            rail_heading(ui, "Dimension");
-            let mut turn = degrees.to_degrees_f64();
-            let changed = ui
-                .horizontal(|ui| {
-                    ui.label("Angle");
-                    ui.add(
-                        egui::DragValue::new(&mut turn)
-                            .speed(0.5)
-                            .range(0.0..=180.0)
-                            .suffix("\u{b0}"),
-                    )
-                    .changed()
-                })
-                .inner;
-            // Degrees are a plain number rather than a blocks+voxels expression, so there is no
-            // literal for the inline editor to seed and this one stays a drag. It joins the
-            // drawing the day the grammar has angle literals.
-            changed
-                .then(|| parametric::units::AngleMeasurement::try_from_degrees_f64(turn).ok())
-                .flatten()
-                .map(|degrees| document::sketch::Dimension::Angle {
-                    first,
-                    second,
-                    degrees,
-                    corner,
-                })
         }
     };
     if let Some(restated) = restated {

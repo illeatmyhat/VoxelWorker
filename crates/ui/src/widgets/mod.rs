@@ -41,11 +41,13 @@
     clippy::wildcard_imports
 )]
 pub mod measurement_editor;
-pub mod measurement_entry;
 pub mod measurement_field;
+pub mod quantity_binding;
+pub mod quantity_entry;
 
 pub use measurement_editor::MeasurementEdit;
-pub use measurement_entry::{
-    measurement_error_text, MeasurementCommit, MeasurementEntry, MeasurementEntryOutcome,
-};
 pub use measurement_field::MeasurementField;
+pub use quantity_binding::{
+    measurement_error_text, AngleBinding, LengthBinding, MeasurementCommit,
+};
+pub use quantity_entry::{Accepted, QuantityEntry, QuantityEntryOutcome};

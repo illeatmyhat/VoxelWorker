@@ -5,9 +5,13 @@
 //! says, and turns a committed value back into the same
 //! [`PanelResponse::restate_sketch_dimension`] the rail used to produce — so the door the shell
 //! applies it through did not change when the door the author reaches for did.
+//!
+//! **Which binding runs is the dimension's own answer.** A span states a length and an angle
+//! states degrees; each says so by answering `Dimension::length` or `Dimension::degrees`, and this
+//! file switches on THAT rather than on a list of members it would have to keep in step.
 
 use crate::panel::{PanelResponse, PanelState};
-use crate::widgets::{MeasurementEdit, MeasurementEntryOutcome};
+use crate::widgets::{AngleBinding, LengthBinding, MeasurementEdit, QuantityEntryOutcome};
 
 /// An open editor and the dimension it will restate.
 ///
@@ -21,20 +25,36 @@ pub struct OpenDimensionEditor {
     pub editor: MeasurementEdit,
 }
 
-/// The sentence shown when a dimension is typed below its floor.
+/// The sentence shown when a length dimension is typed below its floor.
 ///
 /// A dimension of nothing is not a smaller dimension, it is a different claim — two points in one
-/// place is Coincident, and a rim of nothing is not a curve — so every member has a floor of one
-/// voxel and says so in its own words.
+/// place is Coincident, and a rim of nothing is not a curve — so every length member has a floor
+/// of one voxel and says so in its own words.
+///
+/// An angle has no floor: zero degrees is Parallel stated with a number, which is a claim the
+/// drawing can hold.
 fn at_least_one_voxel(dimension: &document::sketch::Dimension) -> &'static str {
     use document::sketch::Dimension;
     match dimension {
         Dimension::Span { .. } | Dimension::SpanAlong { .. } => "a span is at least one voxel",
         Dimension::Gap { .. } | Dimension::RimGap { .. } => "a gap is at least one voxel",
         Dimension::Radius { .. } | Dimension::Diameter { .. } => "a rim needs at least one voxel",
-        // Never reached: an angle opens no editor, because the grammar has no angle literals.
+        // Never reached: an angle takes the angle binding, which has no floor to name.
         Dimension::Angle { .. } => "an angle is measured in degrees",
     }
+}
+
+/// The text a box opens on for `dimension`, at `density`.
+///
+/// Character-for-character what the drawing paints beside the same dimension, because the box
+/// opens over that number and an author who changes nothing must be able to leave without
+/// changing anything. Both renderings come from the binding that will read the text back.
+#[must_use]
+pub fn seed_text(dimension: &document::sketch::Dimension, density: u32) -> Option<String> {
+    if let Some(length) = dimension.length() {
+        return Some(LengthBinding::seed(length.value().round() as i64, density));
+    }
+    dimension.degrees().map(AngleBinding::seed)
 }
 
 /// Draw the open dimension editor, if one is open, and act on what it did.
@@ -56,25 +76,41 @@ pub fn sketch_dimension_editor(
         return;
     };
     let id_base = egui::Id::new(("sketch_dimension_editor", held.constraint));
-    let outcome = held.editor.show(
-        ctx,
-        id_base,
-        state.geometry.voxels_per_block,
-        Some((1, at_least_one_voxel(&dimension))),
-    );
-    match outcome {
-        MeasurementEntryOutcome::Committed(commit) => {
-            let length =
-                document::sketch::SketchLength::retained(commit.measurement, commit.voxels);
-            if let Some(restated) = dimension.with_length(length) {
-                response.restate_sketch_dimension = Some((held.constraint, restated));
-            }
-            *open = None;
+
+    // The switch. A dimension that states degrees gets the angle binding and a dimension that
+    // states a length gets the length one; the box, the protocol and the door out are the same
+    // for both.
+    let restated = if dimension.degrees().is_some() {
+        match held
+            .editor
+            .show(ctx, id_base, |text| AngleBinding.read(text))
+        {
+            QuantityEntryOutcome::Committed(degrees) => Some(dimension.with_degrees(degrees)),
+            QuantityEntryOutcome::Cancelled => Some(None),
+            QuantityEntryOutcome::Refused | QuantityEntryOutcome::Idle => None,
         }
-        MeasurementEntryOutcome::Cancelled => *open = None,
-        // A refusal keeps the box open with the rejected text and its complaint — closing here
-        // would throw away what the author typed at the moment they can still fix it.
-        MeasurementEntryOutcome::Refused | MeasurementEntryOutcome::Idle => {}
+    } else {
+        let binding = LengthBinding::new(state.geometry.voxels_per_block)
+            .floor(1, at_least_one_voxel(&dimension));
+        match held.editor.show(ctx, id_base, |text| binding.read(text)) {
+            QuantityEntryOutcome::Committed(commit) => {
+                let length =
+                    document::sketch::SketchLength::retained(commit.measurement, commit.voxels);
+                Some(dimension.with_length(length))
+            }
+            QuantityEntryOutcome::Cancelled => Some(None),
+            // A refusal keeps the box open with the rejected text and its complaint — closing here
+            // would throw away what the author typed at the moment they can still fix it.
+            QuantityEntryOutcome::Refused | QuantityEntryOutcome::Idle => None,
+        }
+    };
+
+    // `Some` means the box is done with, whether it produced a value or was abandoned.
+    if let Some(restated) = restated {
+        if let Some(restated) = restated {
+            response.restate_sketch_dimension = Some((held.constraint, restated));
+        }
+        *open = None;
     }
 }
 
@@ -273,6 +309,113 @@ mod tests {
         assert!(
             !reached_the_shell,
             "the editor consumed the key, so the global cancel does not also fire"
+        );
+    }
+
+    /// A panel holding two segments meeting at a right angle, dimensioned, and that
+    /// dimension's id.
+    fn a_panel_showing_an_angle() -> (crate::panel::PanelState, document::sketch::EntityId) {
+        let mut sketch = document::sketch::Sketch::empty(document::sketch::PlaneAxis::Z);
+        let corner = sketch.add_free_point(document::sketch::SketchPoint::new(0, 0));
+        let along = sketch.add_free_point(document::sketch::SketchPoint::new(32, 0));
+        let up = sketch.add_free_point(document::sketch::SketchPoint::new(0, 32));
+        let first = sketch.connect(corner, along).expect("a segment");
+        let second = sketch.connect(corner, up).expect("a second segment");
+        let constraint = sketch
+            .add_constraint(
+                document::sketch::ConstraintKind::Dimension(document::sketch::Dimension::Angle {
+                    first: document::sketch::AngleArm::Segment { segment: first },
+                    second: document::sketch::AngleArm::Segment { segment: second },
+                    degrees: parametric::units::AngleMeasurement::from_degrees(90),
+                    corner: document::sketch::AngleCorner::Between,
+                }),
+                parametric::EvaluationContext::new(
+                    core::num::NonZeroU32::new(DENSITY).expect("a nonzero density"),
+                ),
+            )
+            .expect("a right angle the drawing already satisfies");
+
+        let mut state = crate::panel::PanelState::default();
+        state.geometry.voxels_per_block = DENSITY;
+        let node = state.scene.add_node(document::scene::Node::new(
+            "Sketch",
+            document::scene::NodeContent::SketchTool {
+                producer: document::sketch::SketchSolid::extrude(sketch, 8),
+                material: voxel_core::core_geom::MaterialChoice::default(),
+            },
+        ));
+        state.sketch_mode = Some(node);
+        (state, constraint)
+    }
+
+    /// The user's report, closed: an ANGULAR dimension takes a typed value like every other one.
+    ///
+    /// The same box, the same protocol and the same door out; only the binding differs. The seed
+    /// is what the drawing paints, and typing over it restates the angle.
+    #[test]
+    fn typing_an_angle_and_pressing_enter_restates_the_dimension() {
+        let (state, constraint) = a_panel_showing_an_angle();
+        let context = egui::Context::default();
+        let mut open = Some(OpenDimensionEditor {
+            constraint,
+            editor: MeasurementEdit::new(
+                egui::Rect::from_min_size(egui::pos2(100.0, 60.0), egui::vec2(40.0, 14.0)),
+                super::seed_text(
+                    &document::sketch::Dimension::Angle {
+                        first: document::sketch::AngleArm::Segment { segment: 0 },
+                        second: document::sketch::AngleArm::Segment { segment: 1 },
+                        degrees: parametric::units::AngleMeasurement::from_degrees(90),
+                        corner: document::sketch::AngleCorner::Between,
+                    },
+                    DENSITY,
+                )
+                .expect("an angle seeds with its degrees"),
+            ),
+        });
+
+        let _ = editor_frame(&context, &state, &mut open, Vec::new());
+
+        let mut events = replace_the_seed_with("45\u{b0}");
+        events.push(pressing(egui::Key::Enter));
+        let committed = editor_frame(&context, &state, &mut open, events);
+
+        let (restated_id, restated) = committed
+            .restate_sketch_dimension
+            .expect("Enter commits the typed angle");
+        assert_eq!(restated_id, constraint);
+        assert_eq!(
+            restated
+                .degrees()
+                .map(parametric::units::AngleMeasurement::to_degrees_f64),
+            Some(45.0),
+            "the angle the author typed"
+        );
+        assert!(open.is_none(), "and the box closes behind it");
+    }
+
+    /// The seed IS what the drawing paints, for both dimensions. Two spellings of one number make
+    /// the box look like it changed something by opening.
+    #[test]
+    fn a_dimension_seeds_with_the_text_it_is_painted_with() {
+        let angle = document::sketch::Dimension::Angle {
+            first: document::sketch::AngleArm::Segment { segment: 0 },
+            second: document::sketch::AngleArm::Segment { segment: 1 },
+            degrees: parametric::units::AngleMeasurement::from_degrees(90),
+            corner: document::sketch::AngleCorner::Between,
+        };
+        assert_eq!(
+            super::seed_text(&angle, DENSITY).as_deref(),
+            Some("90\u{b0}")
+        );
+
+        let span = document::sketch::Dimension::Span {
+            from: 0,
+            to: 1,
+            length: document::sketch::SketchLength::new(32),
+        };
+        assert_eq!(
+            super::seed_text(&span, DENSITY).as_deref(),
+            Some("2 blocks 0 voxels")
         );
     }
 }

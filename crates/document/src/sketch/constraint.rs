@@ -386,6 +386,55 @@ impl Dimension {
         }
     }
 
+    /// The degrees this dimension states, when it states any.
+    ///
+    /// [`length`](Self::length)'s opposite number, and the two are exhaustive between them: every
+    /// member answers exactly one of them and no member answers both. That is the shape a
+    /// dimension-free editor needs — it asks which quantity this is by asking, not by carrying a
+    /// list of members.
+    #[must_use]
+    pub const fn degrees(self) -> Option<parametric::units::AngleMeasurement> {
+        match self {
+            Self::Angle { degrees, .. } => Some(degrees),
+            Self::Span { .. }
+            | Self::SpanAlong { .. }
+            | Self::Gap { .. }
+            | Self::RimGap { .. }
+            | Self::Radius { .. }
+            | Self::Diameter { .. } => None,
+        }
+    }
+
+    /// The same dimension, restated at `degrees`. `None` for every member that measures a length.
+    ///
+    /// [`with_length`](Self::with_length)'s opposite number, exhaustive for the same reason: a
+    /// seventh member that states an angle fails to compile here rather than silently declining
+    /// to be editable.
+    #[must_use]
+    pub const fn with_degrees(self, degrees: parametric::units::AngleMeasurement) -> Option<Self> {
+        match self {
+            Self::Angle {
+                first,
+                second,
+                corner,
+                ..
+            } => Some(Self::Angle {
+                first,
+                second,
+                degrees,
+                corner,
+            }),
+            // A length's quantity is voxels. Handing it degrees would be a category error, and
+            // returning it unchanged would look like a silent success.
+            Self::Span { .. }
+            | Self::SpanAlong { .. }
+            | Self::Gap { .. }
+            | Self::RimGap { .. }
+            | Self::Radius { .. }
+            | Self::Diameter { .. } => None,
+        }
+    }
+
     /// Whether this member states how far apart two points stand — the family whose members share
     /// a subject pair and so have to be told apart by what they measure along.
     const fn measures_a_distance(self) -> bool {

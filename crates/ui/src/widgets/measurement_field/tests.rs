@@ -22,11 +22,6 @@ fn signed_field<'a>(text_seed: i64, density: u32) -> MeasurementField<'a> {
     MeasurementField::new(egui::Id::new("test_field"), "X", text_seed, density)
 }
 
-/// A field with the properties of the SIZE site: at least one voxel.
-fn bounded_field<'a>(text_seed: i64, density: u32) -> MeasurementField<'a> {
-    signed_field(text_seed, density).min_voxels(1, "size must be at least 1 voxel")
-}
-
 /// Run one headless frame containing the field, returning what it committed.
 ///
 /// The field is rebuilt by the closure rather than passed in, because egui's `run_ui`

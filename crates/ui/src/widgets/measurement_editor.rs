@@ -33,7 +33,7 @@
 //! day a box makes Enter REQUIRED to finish a gesture, this law is gone and the drawing has
 //! stopped moving at the speed of thought.
 
-use super::measurement_entry::{MeasurementEntry, MeasurementEntryOutcome};
+use super::quantity_entry::{Accepted, QuantityEntry, QuantityEntryOutcome};
 use crate::theme;
 
 /// An OPEN measurement editor: where the box sits, and what it opened on.
@@ -100,16 +100,16 @@ impl MeasurementEdit {
     /// ESCAPE IS CONSUMED on the frame it cancels. Escape is also the shell's global cancel, and
     /// an author abandoning a number has not asked to abandon the tool they are holding.
     ///
-    /// `minimum` is the lower bound and the sentence to show when it is missed, for a quantity
-    /// that cannot legitimately go to zero.
+    /// `read` is the BINDING — a length's, an angle's, or one not written yet. The box is chrome
+    /// and the protocol under it is dimension-free, so the only thing that makes this editor an
+    /// editor OF something is the closure the caller hands in.
     #[must_use]
-    pub fn show(
+    pub fn show<T>(
         &self,
         ctx: &egui::Context,
         id_base: egui::Id,
-        density: u32,
-        minimum: Option<(i64, &str)>,
-    ) -> MeasurementEntryOutcome {
+        read: impl FnOnce(&str) -> Result<Accepted<T>, String>,
+    ) -> QuantityEntryOutcome<T> {
         let width = self.anchor.width().max(MINIMUM_BOX_WIDTH_POINTS);
         let outcome = egui::Area::new(id_base.with("area"))
             .order(egui::Order::Foreground)
@@ -118,25 +118,21 @@ impl MeasurementEdit {
             .show(ctx, |ui| {
                 Self::frame()
                     .show(ui, |ui| {
-                        let entry = MeasurementEntry::new(id_base, self.seed.clone(), density)
-                            .focus_when_new();
-                        let entry = match minimum {
-                            Some((least, message)) => entry.min_voxels(least, message),
-                            None => entry,
-                        };
-                        entry.run(ui, |ui, buffer| {
-                            ui.add(
-                                egui::TextEdit::singleline(buffer)
-                                    .id(id_base.with("box"))
-                                    .desired_width(width),
-                            )
-                        })
+                        QuantityEntry::new(id_base, self.seed.clone())
+                            .focus_when_new()
+                            .run(ui, read, |ui, buffer| {
+                                ui.add(
+                                    egui::TextEdit::singleline(buffer)
+                                        .id(id_base.with("box"))
+                                        .desired_width(width),
+                                )
+                            })
                     })
                     .inner
             })
             .inner;
 
-        if outcome == MeasurementEntryOutcome::Cancelled {
+        if matches!(outcome, QuantityEntryOutcome::Cancelled) {
             ctx.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
         }
         outcome
@@ -150,9 +146,8 @@ impl MeasurementEdit {
 /// something like [`AN_EXPRESSION_WORTH_TYPING`] without the text scrolling out of its own left
 /// edge while it is still being written.
 ///
-/// Checked against the app's real text style by
-/// [`the_box_holds_an_expression_worth_typing`](tests::the_box_holds_an_expression_worth_typing)
-/// rather than guessed at — a font change moves the requirement and the test says so.
+/// Checked against the app's real text style by `the_box_holds_an_expression_worth_typing` rather
+/// than guessed at — a font change moves the requirement and the test says so.
 pub const MINIMUM_BOX_WIDTH_POINTS: f32 = 176.0;
 
 /// The expression the box is measured against: a two-term sum in full words, plus the caret's

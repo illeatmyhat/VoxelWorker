@@ -206,7 +206,7 @@ mod inspector;
 mod rail;
 mod top_bar;
 
-pub use dimension_editor::{sketch_dimension_editor, OpenDimensionEditor};
+pub use dimension_editor::{seed_text, sketch_dimension_editor, OpenDimensionEditor};
 
 use crate::palette::BlockPalette;
 use crate::panel::{ExportPanelState, PanelResponse, PanelState};
