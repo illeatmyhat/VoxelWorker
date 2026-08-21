@@ -566,7 +566,7 @@ fn classify_unit(word: &str) -> Option<UnitKind> {
     match word.to_ascii_lowercase().as_str() {
         "blocks" | "block" | "b" => Some(UnitKind::Blocks),
         "voxels" | "voxel" | "v" => Some(UnitKind::Voxels),
-        "degrees" | "degree" | "deg" => Some(UnitKind::Degrees),
+        "degrees" | "degree" | "deg" | "\u{b0}" => Some(UnitKind::Degrees),
         _ => None,
     }
 }
@@ -962,6 +962,15 @@ pub(crate) fn tokenise(input: &str) -> Vec<Token> {
                 tokens.push(Token::Number(text));
                 index = next;
             }
+            // The degree sign is a unit WORD that happens not to be a letter. It is here
+            // rather than left to fall through as an unexpected character because it is what
+            // the drawing paints: an angle reads `45\u{b0}`, so the box that opens over it seeds
+            // with `45\u{b0}`, and a seed the lexer cannot read would make an untouched commit a
+            // parse failure.
+            '\u{b0}' => {
+                tokens.push(Token::Word(character.to_string()));
+                index = index.saturating_add(1);
+            }
             _ if character.is_ascii_alphabetic() || character == '_' => {
                 let mut text = String::new();
                 while let Some(&letter) = characters.get(index) {
@@ -1204,11 +1213,12 @@ mod tests {
     /// keeps them EXACTLY. `22 1/2` degrees is 45/2, not 22.5 rounded to whatever a float holds.
     #[test]
     fn an_angle_reads_every_number_form_exactly() {
-        let cases: [(&str, i128, i128); 5] = [
+        let cases: [(&str, i128, i128); 6] = [
             ("45 deg", 45, 1),
             ("45deg", 45, 1),
             ("22 1/2 degrees", 45, 2),
             ("1/3 deg", 1, 3),
+            ("45\u{b0}", 45, 1),
             ("-30 deg", -30, 1),
         ];
         for (text, numerator, denominator) in cases {
