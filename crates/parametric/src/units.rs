@@ -423,6 +423,18 @@ pub enum MeasurementParseError {
     DuplicateUnit { unit_text: String },
     /// A fraction with a zero denominator (e.g. `"8/0 blocks"`).
     ZeroDenominator { number_text: String },
+    /// A unit word from the OTHER dimension: a degree closing a length term, or a block closing
+    /// an angle.
+    ///
+    /// Named rather than folded into [`UnknownUnit`](Self::UnknownUnit), because the word IS a
+    /// unit and is spelled correctly — it just does not measure the thing being read. "unknown
+    /// unit `deg`" would send the author hunting for a typo that is not there.
+    WrongDimension {
+        /// The unit word as written.
+        unit_text: String,
+        /// What the grammar that refused it was reading: "length" or "angle".
+        reading: &'static str,
+    },
 }
 
 impl fmt::Display for MeasurementParseError {
@@ -451,6 +463,9 @@ impl fmt::Display for MeasurementParseError {
             }
             Self::ZeroDenominator { number_text } => {
                 write!(formatter, "`{number_text}` has a zero denominator")
+            }
+            Self::WrongDimension { unit_text, reading } => {
+                write!(formatter, "`{unit_text}` is not a unit of {reading}")
             }
         }
     }
@@ -491,21 +506,76 @@ impl fmt::Display for MeasurementError {
 
 impl std::error::Error for MeasurementError {}
 
-/// Which grid-native unit a token names.
+/// Which unit a token names.
+///
+/// **The whole unit VOCABULARY is this one table.** Degrees sit in it beside blocks and voxels
+/// even though no length is ever measured in them, because the alternative is a second table
+/// somewhere else and then `45deg` has two implementations that agree until one of them moves.
+/// What a given grammar ACCEPTS is a separate question, asked by [`UnitKind::dimension`] — see
+/// the note on [`UnitDimension`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum UnitKind {
     Blocks,
     Voxels,
+    Degrees,
+}
+
+/// What a unit measures.
+///
+/// **The vocabulary is shared and the GRAMMARS are not.** One lexer knows every unit word, so the
+/// compact spelling splits the same way whatever follows it; then the length grammar refuses a
+/// degree BY NAME and the angle grammar refuses a block BY NAME. That is what makes `3 blocks +
+/// 45 deg` say "`deg` is not a unit of length" instead of "unknown unit `deg`", which would send
+/// the author hunting for a typo in a word they spelled correctly.
+///
+/// Which dimension a FIELD accepts is neither grammar's question — it is the binding's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum UnitDimension {
+    /// Blocks and voxels: a [`Measurement`].
+    Length,
+    /// Degrees: an [`AngleMeasurement`].
+    Angle,
+}
+
+impl UnitDimension {
+    /// The word this dimension goes by in a complaint, as it reads after "is not a unit of".
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Length => "length",
+            Self::Angle => "angle",
+        }
+    }
+}
+
+impl UnitKind {
+    /// What this unit measures.
+    const fn dimension(self) -> UnitDimension {
+        match self {
+            Self::Blocks | Self::Voxels => UnitDimension::Length,
+            Self::Degrees => UnitDimension::Angle,
+        }
+    }
 }
 
 /// Classify a unit word (case-insensitive). `None` for anything that is not a
 /// recognized unit. Accepts the long, short and single-letter spellings.
+///
+/// Degrees have no single-letter spelling: `d` next to `b` and `v` reads as another grid unit,
+/// and the author who means degrees can write three letters.
 fn classify_unit(word: &str) -> Option<UnitKind> {
     match word.to_ascii_lowercase().as_str() {
         "blocks" | "block" | "b" => Some(UnitKind::Blocks),
         "voxels" | "voxel" | "v" => Some(UnitKind::Voxels),
+        "degrees" | "degree" | "deg" => Some(UnitKind::Degrees),
         _ => None,
     }
+}
+
+/// What dimension the unit word `word` measures, if it is one at all.
+///
+/// The expression grammar asks this to decide which literal reader a munched group belongs to.
+pub(crate) fn unit_dimension(word: &str) -> Option<UnitDimension> {
+    classify_unit(word).map(UnitKind::dimension)
 }
 
 /// Parse a units expression into a [`Measurement`] (STRICT).
@@ -667,6 +737,15 @@ pub(crate) fn measurement_from_tokens(
                         }
                         block_total = block_total.plus(term);
                     }
+                    // The refusal the vocabulary/grammar split exists for. Degrees are in the
+                    // one unit table so the lexer splits `45deg` the way it splits `3b`, and the
+                    // LENGTH grammar turns them away by name right here.
+                    UnitKind::Degrees => {
+                        return Err(MeasurementParseError::WrongDimension {
+                            unit_text: token,
+                            reading: UnitDimension::Length.name(),
+                        })
+                    }
                     UnitKind::Voxels => {
                         if seen_voxels {
                             return Err(MeasurementParseError::DuplicateUnit { unit_text: token });
@@ -698,6 +777,87 @@ pub(crate) fn measurement_from_tokens(
     }
 
     Ok(Measurement::new(block_total, voxel_total))
+}
+
+/// The angle-literal grammar, over a token slice a caller has already carved out.
+///
+/// The length grammar's sibling, and deliberately not a branch inside it. It reads
+/// `number+ degree_word` — a run of numbers closed by a degree, so the mixed-fraction idiom
+/// carries over (`22 1/2 deg` is 45/2 degrees, exactly) — and refuses a block or a voxel BY NAME,
+/// which is the same refusal the length grammar makes in the other direction.
+///
+/// **An angle keeps no split, and needs none.** A length is retained as blocks-and-voxels because
+/// that split re-targets when the density changes; degrees have no density and no second unit, so
+/// the exact rational IS the retention.
+pub(crate) fn angle_from_tokens(
+    tokens: &[Token],
+) -> Result<AngleMeasurement, MeasurementParseError> {
+    let mut total = ExactRational::from_integer(0);
+    let mut closed = false;
+    let mut pending_numbers: Vec<NumberLiteral> = Vec::new();
+    let mut pending_text = String::new();
+
+    for token in tokens.iter().cloned() {
+        let word = match token {
+            Token::Word(word) => word,
+            Token::Number(text) => {
+                let Some(number) = parse_number(&text)? else {
+                    return Err(MeasurementParseError::InvalidNumber { number_text: text });
+                };
+                if !pending_text.is_empty() {
+                    pending_text.push(' ');
+                }
+                pending_text.push_str(&text);
+                pending_numbers.push(number);
+                continue;
+            }
+            other => {
+                return Err(MeasurementParseError::InvalidNumber {
+                    number_text: describe_token(&other),
+                })
+            }
+        };
+        match classify_unit(&word) {
+            Some(UnitKind::Degrees) => {
+                if pending_numbers.is_empty() {
+                    return Err(MeasurementParseError::MissingNumber { unit_text: word });
+                }
+                if closed {
+                    return Err(MeasurementParseError::DuplicateUnit { unit_text: word });
+                }
+                closed = true;
+                for number in &pending_numbers {
+                    total = total.plus(number.to_rational());
+                }
+                pending_numbers.clear();
+                pending_text.clear();
+            }
+            Some(UnitKind::Blocks | UnitKind::Voxels) => {
+                return Err(MeasurementParseError::WrongDimension {
+                    unit_text: word,
+                    reading: UnitDimension::Angle.name(),
+                })
+            }
+            None => return Err(MeasurementParseError::UnknownUnit { unit_text: word }),
+        }
+    }
+
+    if !pending_numbers.is_empty() {
+        return Err(MeasurementParseError::MissingUnit {
+            number_text: pending_text,
+        });
+    }
+    Ok(AngleMeasurement::new(total))
+}
+
+/// A non-number, non-word token as it reads back in a literal grammar's complaint.
+fn describe_token(token: &Token) -> String {
+    match token {
+        Token::Number(text) | Token::Word(text) | Token::Unexpected(text) => text.clone(),
+        Token::Operator(sign) => sign.to_string(),
+        Token::OpenParen => "(".to_owned(),
+        Token::CloseParen => ")".to_owned(),
+    }
 }
 
 /// One parsed number literal plus its original text (kept for error messages).
@@ -996,6 +1156,97 @@ mod tests {
     fn parse_and_evaluate(input: &str, density: u32) -> Result<i64, MeasurementError> {
         let measurement = parse(input).expect("input should parse");
         measurement.to_voxels(density)
+    }
+
+    /// The refusal the shared vocabulary buys. `deg` is a unit the LEXER knows and the LENGTH
+    /// grammar declines, by name.
+    ///
+    /// Before degrees joined the table this said "unknown unit `deg`" — accidentally close to
+    /// right, and wrong in the way that matters: it sends an author who spelled the word
+    /// correctly looking for a typo.
+    #[test]
+    fn a_degree_is_not_a_length() {
+        for spelling in [
+            "45 deg",
+            "45deg",
+            "45 degrees",
+            "1 degree",
+            "3 blocks 45 deg",
+        ] {
+            assert_eq!(
+                parse(spelling),
+                Err(MeasurementParseError::WrongDimension {
+                    unit_text: spelling
+                        .rsplit(|c: char| !c.is_ascii_alphabetic())
+                        .next()
+                        .unwrap()
+                        .to_owned(),
+                    reading: "length",
+                }),
+                "`{spelling}` is not a length"
+            );
+        }
+    }
+
+    /// And the same refusal in the other direction, so neither grammar is the privileged one.
+    #[test]
+    fn a_block_is_not_an_angle() {
+        assert_eq!(
+            angle_from_tokens(&tokenise("3 blocks")),
+            Err(MeasurementParseError::WrongDimension {
+                unit_text: "blocks".to_owned(),
+                reading: "angle",
+            })
+        );
+    }
+
+    /// An angle reads the same number forms a length does — including the mixed fraction — and
+    /// keeps them EXACTLY. `22 1/2` degrees is 45/2, not 22.5 rounded to whatever a float holds.
+    #[test]
+    fn an_angle_reads_every_number_form_exactly() {
+        let cases: [(&str, i128, i128); 5] = [
+            ("45 deg", 45, 1),
+            ("45deg", 45, 1),
+            ("22 1/2 degrees", 45, 2),
+            ("1/3 deg", 1, 3),
+            ("-30 deg", -30, 1),
+        ];
+        for (text, numerator, denominator) in cases {
+            let angle = angle_from_tokens(&tokenise(text)).expect("an angle literal");
+            let expected = ExactRational::new(numerator, denominator).expect("a valid rational");
+            assert_eq!(angle.degrees(), expected, "`{text}`");
+        }
+    }
+
+    /// The same shape of complaint a length makes, so an angle is not a grammar with its own
+    /// manners.
+    #[test]
+    fn an_angle_complains_like_a_length_does() {
+        assert_eq!(
+            angle_from_tokens(&tokenise("45")),
+            Err(MeasurementParseError::MissingUnit {
+                number_text: "45".to_owned()
+            })
+        );
+        assert_eq!(
+            angle_from_tokens(&tokenise("deg")),
+            Err(MeasurementParseError::MissingNumber {
+                unit_text: "deg".to_owned()
+            })
+        );
+        assert_eq!(
+            angle_from_tokens(&tokenise("45 deg 10 deg")),
+            Err(MeasurementParseError::DuplicateUnit {
+                unit_text: "deg".to_owned()
+            })
+        );
+    }
+
+    /// `d` is deliberately NOT a degree: a single letter beside `b` and `v` reads as a third grid
+    /// unit, and the author who means degrees can write three letters.
+    #[test]
+    fn a_lone_d_is_not_a_degree() {
+        assert!(unit_dimension("d").is_none());
     }
 
     #[test]

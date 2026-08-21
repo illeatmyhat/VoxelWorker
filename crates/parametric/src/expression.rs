@@ -252,7 +252,8 @@ impl std::error::Error for ExpressionParseError {}
 /// term        := factor (('*' | '/') factor)*
 /// factor      := '-' factor | primary
 /// primary     := measurement | number | symbol | '(' expression ')'
-/// measurement := (number+ unit_word)+
+/// measurement := (number+ length_word)+
+/// angle       := number+ degree_word
 /// ```
 ///
 /// **A measurement literal is a GREEDY MUNCH, and that is what makes the two grammars compose.**
@@ -266,9 +267,11 @@ impl std::error::Error for ExpressionParseError {}
 /// `2 * 3` is the number six; `3 blocks + 2` is a dimension error, raised at evaluation rather
 /// than here, because this layer reads structure and the evaluator judges dimensions.
 ///
-/// **Angle literals are not in this grammar yet.** `45 deg` reads `deg` as a parameter name and
-/// fails as an unknown one. The length field is the only consumer today; an angle field would
-/// need [`AngleMeasurement`] to join the unit table first.
+/// **An ANGLE literal is the same shape with a different unit.** `45 deg` is one operand, and so
+/// is `22 1/2 degrees`. Which literal reader a munch goes to is decided by its first unit word;
+/// mixing the two dimensions inside one munch is refused by the reader that got it, by name.
+/// Whether an angle is a legal ANSWER is not this layer's question — `3 blocks + 45 deg` parses
+/// and then fails to evaluate, the same way `3 blocks + 2` does.
 ///
 /// # Errors
 ///
@@ -398,10 +401,17 @@ impl TokenReader<'_> {
     /// Ends at the first token that is neither a number continuing a group nor a unit word
     /// closing one. If the run closed no group at all, the operand was a bare dimensionless
     /// number and the single leading number is taken instead.
+    ///
+    /// **The FIRST unit word picks the reader, and the reader judges the rest.** The munch itself
+    /// is dimension-blind — it stops on any unit word — so `3 blocks 45 deg` is munched whole and
+    /// handed to the length grammar, which refuses the degree by name. Filtering the munch by
+    /// dimension instead would end the operand at `45` and report the leftover `deg` as trailing
+    /// input, which describes the parser's state rather than the author's mistake.
     fn read_number_or_measurement(&mut self) -> Result<Expression, ExpressionParseError> {
-        use crate::units::Token;
+        use crate::units::{Token, UnitDimension};
         let start = self.at;
         let mut end_of_last_group = None;
+        let mut dimension = None;
         let mut cursor = self.at;
         loop {
             let numbers_started = cursor;
@@ -413,6 +423,7 @@ impl TokenReader<'_> {
             }
             match self.tokens.get(cursor) {
                 Some(Token::Word(word)) if crate::units::is_unit_word(word) => {
+                    dimension = dimension.or_else(|| crate::units::unit_dimension(word));
                     cursor = cursor.saturating_add(1);
                     end_of_last_group = Some(cursor);
                 }
@@ -420,10 +431,15 @@ impl TokenReader<'_> {
             }
         }
         if let Some(end) = end_of_last_group {
-            let measurement =
-                crate::units::measurement_from_tokens(self.tokens.get(start..end).unwrap_or(&[]))?;
+            let munched = self.tokens.get(start..end).unwrap_or(&[]);
+            let literal = match dimension {
+                Some(UnitDimension::Angle) => {
+                    Expression::angle(crate::units::angle_from_tokens(munched)?)
+                }
+                _ => Expression::length(crate::units::measurement_from_tokens(munched)?),
+            };
             self.at = end;
-            return Ok(Expression::length(measurement));
+            return Ok(literal);
         }
         // No unit closed a group, so this is a bare count. Exactly one number belongs to the
         // operand — `3 4` is two operands with nothing between them, and the caller reports the
@@ -821,6 +837,71 @@ mod tests {
                 .to_whole_voxels(),
             Ok(112)
         );
+    }
+
+    /// An angle is an operand of the same grammar, not a second parser bolted on. It munches the
+    /// same way, takes the same number forms, and composes with the same operators.
+    #[test]
+    fn an_angle_literal_is_an_operand_like_any_other() {
+        let degrees = |numerator: i128, denominator: i128| {
+            AngleMeasurement::new(ExactRational::new(numerator, denominator).expect("valid"))
+        };
+        let cases: [(&str, Expression); 4] = [
+            ("45 deg", Expression::angle(degrees(45, 1))),
+            ("45deg", Expression::angle(degrees(45, 1))),
+            ("22 1/2 degrees", Expression::angle(degrees(45, 2))),
+            (
+                "45 deg / 2",
+                Expression::angle(degrees(45, 1)).divided_by(Expression::whole(2)),
+            ),
+        ];
+        for (text, expected) in cases {
+            assert_eq!(parse(text), Ok(expected), "`{text}`");
+        }
+    }
+
+    /// A compound angle loses NOTHING, which is why there is no `as_authored_angle` beside
+    /// `as_authored_length`. The evaluator is exact rationals and they are closed under all four
+    /// operators, so `45 deg / 2` evaluates to exactly 45/2 degrees — there is no authored split
+    /// to rescue, the way blocks-and-voxels has one.
+    #[test]
+    fn a_compound_angle_stays_exact() {
+        let value = SymbolTable::new()
+            .evaluate(&parse("45 deg / 2").expect("parses"), DENSITY)
+            .expect("resolves");
+        assert_eq!(value.dimension, Dimension::ANGLE);
+        assert_eq!(
+            value.value,
+            ExactRational::new(45, 2).expect("a valid rational")
+        );
+    }
+
+    /// Mixing the dimensions inside ONE munch is the literal grammar's complaint, by name, and
+    /// not a structural one about a leftover token.
+    #[test]
+    fn a_degree_inside_a_length_literal_is_named() {
+        assert_eq!(
+            parse("3 blocks 45 deg"),
+            Err(ExpressionParseError::Measurement(
+                crate::units::MeasurementParseError::WrongDimension {
+                    unit_text: "deg".to_owned(),
+                    reading: "length",
+                }
+            ))
+        );
+    }
+
+    /// Mixing them across an OPERATOR parses fine and fails where dimensions are judged. Same as
+    /// `3 blocks + 2`: this layer reads structure, the evaluator reads dimensions.
+    #[test]
+    fn a_length_plus_an_angle_parses_and_then_refuses() {
+        let mixed = parse("3 blocks + 45 deg").expect("structurally fine");
+        assert!(matches!(
+            SymbolTable::new().evaluate(&mixed, DENSITY),
+            Err(EvaluationError::Quantity(
+                QuantityError::MismatchedDimensions { .. }
+            ))
+        ));
     }
 
     #[test]
