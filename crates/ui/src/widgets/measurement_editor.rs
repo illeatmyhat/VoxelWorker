@@ -143,6 +143,71 @@ impl MeasurementEdit {
     }
 }
 
-/// The narrowest the box goes, in points. A dimension's number can be two characters wide, and a
-/// box that size has no room for the expression the author came here to type.
-pub const MINIMUM_BOX_WIDTH_POINTS: f32 = 96.0;
+/// The narrowest the box goes, in points.
+///
+/// Sized for what the author came here to TYPE, not for the value they double-clicked. A
+/// dimension's number can be two characters wide, and the box that replaces it has to hold
+/// something like [`AN_EXPRESSION_WORTH_TYPING`] without the text scrolling out of its own left
+/// edge while it is still being written.
+///
+/// Checked against the app's real text style by
+/// [`the_box_holds_an_expression_worth_typing`](tests::the_box_holds_an_expression_worth_typing)
+/// rather than guessed at — a font change moves the requirement and the test says so.
+pub const MINIMUM_BOX_WIDTH_POINTS: f32 = 176.0;
+
+/// The expression the box is measured against: a two-term sum in full words, plus the caret's
+/// own room after it. Not the longest thing anyone will ever type — the longest thing that should
+/// fit without the box having to scroll.
+pub const AN_EXPRESSION_WORTH_TYPING: &str = "2 blocks + 4 voxels";
+
+#[cfg(test)]
+mod tests {
+    use super::{AN_EXPRESSION_WORTH_TYPING, MINIMUM_BOX_WIDTH_POINTS};
+
+    /// What `text` measures in the app's own body style, in points.
+    ///
+    /// Inside a real frame, because the fonts do not exist until one has run — which is also the
+    /// only place the measurement means anything.
+    fn laid_out(text: &str) -> f32 {
+        let context = egui::Context::default();
+        context.style_mut(crate::theme::apply_app_style);
+        let mut width = 0.0;
+        let _ = context.run_ui(egui::RawInput::default(), |ctx| {
+            egui::Area::new(egui::Id::new("measure")).show(ctx, |ui| {
+                let font = egui::TextStyle::Body.resolve(ui.style());
+                width = ui
+                    .painter()
+                    .layout_no_wrap(text.to_owned(), font, egui::Color32::WHITE)
+                    .size()
+                    .x;
+            });
+        });
+        width
+    }
+
+    /// The box is wide enough for a real expression in the app's real font.
+    ///
+    /// [`MINIMUM_BOX_WIDTH_POINTS`] is a number in a file, and a number in a file cannot know what
+    /// the text style does. This measures the style the app actually installs, so a font that
+    /// grows fails here instead of silently squeezing the caret out of the box.
+    #[test]
+    fn the_box_holds_an_expression_worth_typing() {
+        let wanted = laid_out(AN_EXPRESSION_WORTH_TYPING);
+        assert!(
+            MINIMUM_BOX_WIDTH_POINTS >= wanted,
+            "the box is {MINIMUM_BOX_WIDTH_POINTS} points and `{AN_EXPRESSION_WORTH_TYPING}` \
+             measures {wanted}"
+        );
+    }
+
+    /// And no more than half again as wide as the text it owes room to. The box stands OVER the
+    /// drawing; one sized like a dialog hides the geometry the number is about.
+    #[test]
+    fn the_box_is_not_wider_than_the_room_it_owes() {
+        let wanted = laid_out(AN_EXPRESSION_WORTH_TYPING);
+        assert!(
+            MINIMUM_BOX_WIDTH_POINTS <= wanted * 1.5,
+            "the box is {MINIMUM_BOX_WIDTH_POINTS} points for {wanted} points of text"
+        );
+    }
+}
