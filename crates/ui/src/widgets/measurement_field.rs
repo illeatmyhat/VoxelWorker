@@ -1,53 +1,29 @@
-//! The blocks+voxels [`Measurement`] text field.
+//! The blocks+voxels [`Measurement`](parametric::units::Measurement) text field.
 //!
-//! One authored spatial quantity, edited as text. This is the single owner of the
-//! commit protocol every measurement editor in the app shares — see [`MeasurementField`].
+//! One authored spatial quantity as a labeled row in a panel. The commit protocol is
+//! [`MeasurementEntry`]'s; this is the chrome around it — a label, a fixed-width box, and a hint.
 
-use crate::theme;
-use parametric::expression::{self, Expression, SymbolTable};
-use parametric::units::{self, DisplayUnit, Measurement, MeasurementError};
+use super::measurement_entry::{MeasurementEntry, MeasurementEntryOutcome};
+use super::MeasurementCommit;
 
 /// The width of the text box, in points. Every measurement field is this wide so the
 /// columns line up down a panel regardless of which section drew them.
 const FIELD_WIDTH_POINTS: f32 = 142.0;
 
-/// A successful commit: the authored expression AND what it landed on.
-///
-/// Both halves matter and neither is derivable from the other at the call site — the
-/// `measurement` is RETAINED on the document (lossless density re-targeting and
-/// exact-expression undo), while `voxels` is the canonical value the
-/// resolve actually uses. See [`crate::widgets::measurement_field`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct MeasurementCommit {
-    /// The authored expression, to retain on the document.
-    pub measurement: Measurement,
-    /// The canonical voxel value it lands on at the current density.
-    pub voxels: i64,
-}
-
-/// A labeled blocks+voxels text field that commits on Enter or click-away.
-///
-/// ## Why this is a component and not a `fn(&mut Ui, …)`
-///
-/// The commit protocol is subtle enough that a second hand-rolled copy drifts from the
-/// first. It has four rules that all have to hold together:
-///
-/// 1. **The buffer is local, not bound to the document.** In-progress text lives in egui
-///    temp memory so a partial edit survives across frames without writing anything.
-/// 2. **`lost_focus()` is the single commit trigger** — it fires on Enter AND on
-///    click-away, so there is exactly one path a value can take into the document.
-/// 3. **An UNFOCUSED field with no error re-syncs to the canonical seed**, so undo,
-///    external edits and density changes reflect in the field. A field showing an error
-///    keeps the user's rejected text instead, so they can see and fix it — a silent
-///    revert would discard what they typed.
-/// 4. **A failed commit writes nothing.** Parse and validation errors are shown inline
-///    and the document is untouched.
+/// A labeled blocks+voxels text field that commits on Enter, Tab or click-away.
 ///
 /// ## Signed by default
 ///
 /// A measurement is signed unless [`min_voxels`](Self::min_voxels) says otherwise. An
 /// offset moves either way, and an outset that insets is a NEGATIVE outset — so the
 /// bound is opt-in, and the sites that need one carry their own message.
+///
+/// ## It does not take the keyboard
+///
+/// A rail row is present because a panel is open, not because the author asked to type. Focusing
+/// it on appearance would take the keyboard away from whatever they were actually doing. An
+/// inline editor, which answers a gesture that already said "I mean to change this", opts in with
+/// [`MeasurementEntry::focus_when_new`].
 pub struct MeasurementField<'a> {
     id_base: egui::Id,
     label: &'a str,
@@ -92,129 +68,44 @@ impl<'a> MeasurementField<'a> {
     /// therefore only ever sees values that parsed and validated, and writing the
     /// document on `Some` is always correct.
     pub fn show(self, ui: &mut egui::Ui) -> Option<MeasurementCommit> {
-        let text_id = self.id_base.with("text");
-        let error_id = self.id_base.with("error");
-        // The canonical seed: what the document currently says, as a blocks+voxels string.
-        let seed = units::format(self.seed_voxels, self.density, DisplayUnit::BlocksAndVoxels);
-
-        let mut buffer = ui
-            .memory(|memory| memory.data.get_temp::<String>(text_id))
-            .unwrap_or_else(|| seed.clone());
-
-        let widget = egui::TextEdit::singleline(&mut buffer)
-            .desired_width(FIELD_WIDTH_POINTS)
-            .hint_text("blocks + voxels");
-        let edit_response = ui
-            .horizontal(|ui| {
-                ui.label(format!("{} ", self.label));
-                ui.add(widget)
+        let (label, box_id) = (self.label, Self::box_id(self.id_base));
+        match self.entry().run(ui, |ui, buffer| {
+            ui.horizontal(|ui| {
+                ui.label(format!("{label} "));
+                ui.add(
+                    egui::TextEdit::singleline(buffer)
+                        .id(box_id)
+                        .desired_width(FIELD_WIDTH_POINTS)
+                        .hint_text("blocks + voxels"),
+                )
             })
-            .inner;
-
-        // Editing again clears any stale error, so the red message tracks the LAST
-        // committed attempt rather than in-progress typing.
-        if edit_response.changed() {
-            ui.memory_mut(|memory| memory.data.remove::<String>(error_id));
+            .inner
+        }) {
+            MeasurementEntryOutcome::Committed(commit) => Some(commit),
+            // A rail row has nowhere to go on any of these. It stays where it is, showing
+            // whatever the protocol left in it.
+            MeasurementEntryOutcome::Idle
+            | MeasurementEntryOutcome::Refused
+            | MeasurementEntryOutcome::Cancelled => None,
         }
-
-        // Rule 2: `lost_focus()` fires on Enter AND click-away. The typed `buffer` is
-        // still live here — the unfocused re-sync below happens only on NON-commit
-        // frames, so a commit always reads the user's text, never the seed. A focus loss
-        // with no actual edit is a no-op.
-        let mut commit = None;
-        if edit_response.lost_focus() && buffer.trim() != seed {
-            match self.parse_and_validate(&buffer) {
-                Ok(committed) => {
-                    ui.memory_mut(|memory| memory.data.remove::<String>(error_id));
-                    // Settle the field on the canonical form of the applied value.
-                    buffer =
-                        units::format(committed.voxels, self.density, DisplayUnit::BlocksAndVoxels);
-                    commit = Some(committed);
-                }
-                Err(message) => {
-                    ui.memory_mut(|memory| memory.data.insert_temp(error_id, message));
-                }
-            }
-        } else if !edit_response.has_focus() {
-            // Rule 3: mirror the canonical value, UNLESS a prior commit failed — then
-            // keep the rejected text on screen beside its error rather than silently
-            // reverting work the user can still fix.
-            let has_error = ui.memory(|memory| memory.data.get_temp::<String>(error_id).is_some());
-            if !has_error {
-                buffer = seed.clone();
-            }
-        }
-
-        // Rule 1: persist the in-progress text for the next frame.
-        ui.memory_mut(|memory| memory.data.insert_temp(text_id, buffer));
-
-        if let Some(message) = ui.memory(|memory| memory.data.get_temp::<String>(error_id)) {
-            ui.colored_label(theme::WARN, message);
-        }
-
-        commit
     }
 
-    /// Parse `text` and check it lands on a whole voxel within the bound, or say why not.
-    fn parse_and_validate(&self, text: &str) -> Result<MeasurementCommit, String> {
-        let measurement = self.authored_measurement(text)?;
-        let voxels = measurement
-            .to_voxels(self.density)
-            .map_err(|error| measurement_error_text(&error))?;
+    /// The text box's own egui id, derived from the field's.
+    ///
+    /// Stable rather than auto-generated, so the box can be addressed — focused, or driven by a
+    /// test — without depending on where in a layout it happened to be built.
+    #[must_use]
+    pub fn box_id(id_base: egui::Id) -> egui::Id {
+        id_base.with("box")
+    }
+
+    /// This field's protocol, with the bound applied when it has one.
+    fn entry(&self) -> MeasurementEntry<'a> {
+        let entry = MeasurementEntry::new(self.id_base, self.seed_voxels, self.density);
         match self.min_voxels {
-            Some(minimum) if voxels < minimum => Err(self.min_error.to_string()),
-            _ => Ok(MeasurementCommit {
-                measurement,
-                voxels,
-            }),
+            Some(minimum) => entry.min_voxels(minimum, self.min_error),
+            None => entry,
         }
-    }
-
-    /// Read `text` as an expression and reduce it to the [`Measurement`] the field retains.
-    ///
-    /// The field accepts ARITHMETIC — `2 * 3 blocks + 4 voxels` — because the grammar it reads is
-    /// the same one a named parameter will be typed into. Today the symbol table is empty, so a
-    /// name has no definition and is refused as one; nothing here changes on the day it has some.
-    ///
-    /// **A lone literal keeps its authored split, and only a lone literal can.** `3 blocks` is
-    /// retained as a block term, which re-targets when the density changes. Anything compound is
-    /// retained as the voxel count it evaluated to, because the evaluated value is a count and a
-    /// count has no split to keep — `2 * 3 blocks` and `96 voxels` become indistinguishable the
-    /// moment the multiplication happens. That is a limitation of retaining the ANSWER; it closes
-    /// when the document retains the EXPRESSION beside the measurement and re-resolves it.
-    fn authored_measurement(&self, text: &str) -> Result<Measurement, String> {
-        let expression = expression::parse(text).map_err(|error| error.to_string())?;
-        if let Some(measurement) = expression.as_authored_length() {
-            return Ok(measurement);
-        }
-        let voxels = self.evaluated_voxels(&expression)?;
-        Ok(Measurement::from_voxels(voxels))
-    }
-
-    /// What a compound expression is worth, at this field's density.
-    fn evaluated_voxels(&self, expression: &Expression) -> Result<i64, String> {
-        SymbolTable::new()
-            .evaluate(expression, self.density)
-            .map_err(|error| error.to_string())?
-            .to_whole_voxels()
-            .map_err(|error| error.to_string())
-    }
-}
-
-/// A [`MeasurementError`] as the sentence shown under the field.
-///
-/// The non-landing case names BOTH neighboring whole-voxel values, because the useful
-/// next action is picking one of them.
-pub fn measurement_error_text(error: &MeasurementError) -> String {
-    match error {
-        MeasurementError::BlockTermNotWholeVoxels {
-            density,
-            nearest_floor_voxels,
-            nearest_ceil_voxels,
-        } => format!(
-            "doesn't land on a whole voxel at density {density}; nearest are {nearest_floor_voxels} or {nearest_ceil_voxels} voxels"
-        ),
-        MeasurementError::ZeroDensity => "density must be at least 1".to_string(),
     }
 }
 
