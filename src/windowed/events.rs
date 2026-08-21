@@ -806,6 +806,13 @@ impl ApplicationHandler for App {
                     }
                 };
             }
+            WindowEvent::CursorLeft { .. } => {
+                // The pointer is no longer anywhere in this window, so the place it was is not a
+                // place any more. Kept apart from the release path on purpose: a release lets go
+                // of the button while the pointer stays put, and this is the one event that does
+                // move it away.
+                state.pointer.left();
+            }
             WindowEvent::MouseWheel { delta, .. } if !egui_consumed => {
                 // Wheel over the Signal chrome (stack + rail) belongs to the chrome,
                 // not the camera — mirroring the orbit/pan gates.
