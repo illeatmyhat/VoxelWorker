@@ -825,5 +825,42 @@ impl Sheet {
                 }
             },
         );
+        self.specimen_row(
+            ui,
+            "dimension value \u{b7} open for typing",
+            "The inline editor, over the number it replaces. A double-click on a dimension's value \
+             opens it there: the box is anchored on that number's own hit box, seeded with what \
+             the drawing currently says, selected, and holding the keyboard. Accent hairline \
+             because it is LIVE. It is axis-aligned even where the number is not \u{2014} the value \
+             shears into the sketch plane and no text input can, so the anchor is the sheared \
+             text's bounding box and the box stands square to the screen. Enter commits, Tab \
+             commits and moves on, Escape abandons and writes nothing.",
+            |p, s| {
+                let span = (
+                    Pos2::new(s.left() + 24.0, s.bottom() - 26.0),
+                    Pos2::new(s.left() + 128.0, s.bottom() - 26.0),
+                );
+                gizmos::segment(p, span.0, span.1);
+                aligned(span.0, span.1, -30.0, "48", Rank::Driving).paint(p);
+
+                // The box the app draws, from the widget's own chrome and its own floor width:
+                // there is no second copy of either here to drift.
+                let content = egui::Rect::from_center_size(
+                    Pos2::new(s.left() + 76.0, s.bottom() - 56.0),
+                    Vec2::new(
+                        ui::widgets::measurement_editor::MINIMUM_BOX_WIDTH_POINTS,
+                        15.0,
+                    ),
+                );
+                p.add(ui::widgets::MeasurementEdit::frame().paint(content));
+                p.text(
+                    content.left_center() + Vec2::new(2.0, 0.0),
+                    egui::Align2::LEFT_CENTER,
+                    "3b 8v",
+                    egui::FontId::monospace(10.0),
+                    color_palette::TEXT_PRIMARY,
+                );
+            },
+        );
     }
 }

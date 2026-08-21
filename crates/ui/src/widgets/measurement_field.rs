@@ -100,8 +100,16 @@ impl<'a> MeasurementField<'a> {
     }
 
     /// This field's protocol, with the bound applied when it has one.
+    ///
+    /// The canonical seed — what the document currently says, as a blocks+voxels string — is
+    /// struck here, because the FIELD is what knows the value as a voxel count.
     fn entry(&self) -> MeasurementEntry<'a> {
-        let entry = MeasurementEntry::new(self.id_base, self.seed_voxels, self.density);
+        let seed = parametric::units::format(
+            self.seed_voxels,
+            self.density,
+            parametric::units::DisplayUnit::BlocksAndVoxels,
+        );
+        let entry = MeasurementEntry::new(self.id_base, seed, self.density);
         match self.min_voxels {
             Some(minimum) => entry.min_voxels(minimum, self.min_error),
             None => entry,

@@ -309,6 +309,9 @@ impl ApplicationHandler for App {
                                 && (up_y - down_y).abs() < VIEW_CUBE_DRAG_THRESHOLD_PIXELS;
                             if stationary {
                                 state.resolve_sketch_constraint_click(up_x, up_y);
+                                // The click selected; a SECOND one on the same number says the
+                                // author means to change it, and opens the box over it.
+                                state.open_measurement_editor_on_double_click(up_x, up_y);
                             }
                         }
                     }

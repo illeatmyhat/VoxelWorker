@@ -1278,6 +1278,9 @@ pub(crate) async fn run_capture(options: ShotOptions) {
             overlay.map_or(&[][..], |open| open.badges.as_slice()),
             // nor dimension gizmos, projected by the same refresh.
             &[],
+            // No inline measurement editor: nobody is typing in a headless capture, and an egui
+            // Area would not survive this path's single frame in any case.
+            &mut None,
             // #100: and no viewport menu is open, so no region is under one.
             None,
             // likewise no add-point insert preview in the headless goldens.

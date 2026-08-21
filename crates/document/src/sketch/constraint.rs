@@ -349,6 +349,43 @@ impl Dimension {
         }
     }
 
+    /// The same dimension, restated at `length`. `None` for the one member that measures none.
+    ///
+    /// The counterpart to [`length`](Self::length), and the ONE place that knows how to put a new
+    /// number into a dimension without disturbing what it is about. Every numeric edit goes
+    /// through here, so an editor cannot accidentally rewrite a `SpanAlong` into a `Span` by
+    /// rebuilding it from the wrong arm.
+    ///
+    /// Exhaustive with no wildcard: a seventh member that measures a length will fail to compile
+    /// here rather than silently declining to be editable.
+    #[must_use]
+    pub const fn with_length(self, length: SketchLength) -> Option<Self> {
+        match self {
+            Self::Span { from, to, .. } => Some(Self::Span { from, to, length }),
+            Self::SpanAlong { from, to, axis, .. } => Some(Self::SpanAlong {
+                from,
+                to,
+                axis,
+                length,
+            }),
+            Self::Gap { point, segment, .. } => Some(Self::Gap {
+                point,
+                segment,
+                length,
+            }),
+            Self::RimGap { first, second, .. } => Some(Self::RimGap {
+                first,
+                second,
+                length,
+            }),
+            Self::Radius { curve, .. } => Some(Self::Radius { curve, length }),
+            Self::Diameter { curve, .. } => Some(Self::Diameter { curve, length }),
+            // An angle's quantity is degrees. Handing it a length would be a category error, and
+            // returning it unchanged would look like a silent success.
+            Self::Angle { .. } => None,
+        }
+    }
+
     /// Whether this member states how far apart two points stand — the family whose members share
     /// a subject pair and so have to be told apart by what they measure along.
     const fn measures_a_distance(self) -> bool {

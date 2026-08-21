@@ -298,6 +298,10 @@ pub fn run_egui_frame(
     // about the drawing and must not be buried by it. Empty unless a sketch is being edited, and
     // always empty on the headless `shot` path.
     sketch_dimension_gizmos: &[ui::chrome::DimensionGizmo],
+    // The inline measurement editor, when one is open over a dimension's number. Drawn inside
+    // this pass so egui owns its hit-testing and its keystrokes never leak to the viewport, and
+    // cleared here on commit or abandon. `&mut None` on the headless `shot` path.
+    sketch_dimension_editor: &mut Option<ui::workspace::OpenDimensionEditor>,
     // #100: whether the open viewport context menu was raised INSIDE a derived face, and if so
     // whether that face is currently picked — the shell hit-tests, the menu only labels the row.
     // `None` when the menu is closed or was raised over no face.
@@ -839,6 +843,15 @@ pub fn run_egui_frame(
                     sketch_constraint_badges,
                 );
             }
+            // The inline measurement editor, over the number it is replacing. After the gizmos so
+            // it covers the value it stands in for, and in its own Area so it takes the keyboard
+            // and the pointer before the drawing underneath can.
+            ui::workspace::sketch_dimension_editor(
+                ui.ctx(),
+                panel_state,
+                sketch_dimension_editor,
+                &mut panel_response,
+            );
             // The add-point insert preview — a diamond on the hovered edge. NOT
             // chrome (a passive marker), so a click passes through to the stationary-release insert.
             if let Some(center) = sketch_insert_preview {

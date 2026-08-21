@@ -10,8 +10,9 @@ use super::*;
 use parametric::units;
 
 /// An entry with the properties of the OFFSET site: signed, no lower bound.
-fn signed_entry<'a>(text_seed: i64, density: u32) -> MeasurementEntry<'a> {
-    MeasurementEntry::new(egui::Id::new("test_entry"), text_seed, density)
+fn signed_entry<'a>(seed_voxels: i64, density: u32) -> MeasurementEntry<'a> {
+    let seed = units::format(seed_voxels, density, units::DisplayUnit::BlocksAndVoxels);
+    MeasurementEntry::new(egui::Id::new("test_entry"), seed, density)
 }
 
 /// An entry with the properties of the SIZE site: at least one voxel.

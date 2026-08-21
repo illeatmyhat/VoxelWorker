@@ -4918,3 +4918,111 @@ fn a_point_pair_is_stored_in_one_order_and_a_curve_target_is_not() {
         "the point outranks the curve's own ends, so an id sort would have moved it"
     );
 }
+
+/// Restating a dimension keeps everything it was ABOUT and changes only the number.
+///
+/// The inline editor's whole job is this call, and the failure it guards against is silent: a
+/// member that dropped or swapped a field on the way through would restate a span between the
+/// wrong two points, and the drawing would still look like a drawing.
+///
+/// Each row states the WHOLE expected value rather than round-tripping the number back out. A
+/// round-trip is blind here — restating twice undoes a swap, and the second reading agrees with
+/// the first while both are wrong.
+#[test]
+fn a_dimension_restated_at_a_new_length_still_measures_the_same_thing() {
+    let (before, after) = (SketchLength::new(32), SketchLength::new(7));
+    let (first_curve, second_curve) = (SketchCurve::Segment(9), SketchCurve::Segment(5));
+    let restated: [(Dimension, Dimension); 6] = [
+        (
+            Dimension::Span {
+                from: 1,
+                to: 2,
+                length: before,
+            },
+            Dimension::Span {
+                from: 1,
+                to: 2,
+                length: after,
+            },
+        ),
+        (
+            Dimension::SpanAlong {
+                from: 1,
+                to: 2,
+                axis: InPlaneAxis::Up,
+                length: before,
+            },
+            Dimension::SpanAlong {
+                from: 1,
+                to: 2,
+                axis: InPlaneAxis::Up,
+                length: after,
+            },
+        ),
+        (
+            Dimension::Gap {
+                point: 3,
+                segment: 4,
+                length: before,
+            },
+            Dimension::Gap {
+                point: 3,
+                segment: 4,
+                length: after,
+            },
+        ),
+        (
+            Dimension::RimGap {
+                first: first_curve,
+                second: second_curve,
+                length: before,
+            },
+            Dimension::RimGap {
+                first: first_curve,
+                second: second_curve,
+                length: after,
+            },
+        ),
+        (
+            Dimension::Radius {
+                curve: first_curve,
+                length: before,
+            },
+            Dimension::Radius {
+                curve: first_curve,
+                length: after,
+            },
+        ),
+        (
+            Dimension::Diameter {
+                curve: first_curve,
+                length: before,
+            },
+            Dimension::Diameter {
+                curve: first_curve,
+                length: after,
+            },
+        ),
+    ];
+    for (dimension, expected) in restated {
+        assert_eq!(
+            dimension.with_length(after),
+            Some(expected),
+            "{dimension:?} restates at the new number and changes nothing else"
+        );
+    }
+}
+
+/// An angle measures no length, so it has none to restate — and the inline editor, which only
+/// knows how to type lengths, is told so rather than guessing.
+#[test]
+fn an_angle_has_no_length_to_restate() {
+    let angle = Dimension::Angle {
+        first: AngleArm::Segment { segment: 1 },
+        second: AngleArm::Segment { segment: 2 },
+        degrees: AngleMeasurement::from_degrees(45),
+        corner: AngleCorner::Between,
+    };
+    assert_eq!(angle.length(), None);
+    assert_eq!(angle.with_length(SketchLength::new(7)), None);
+}

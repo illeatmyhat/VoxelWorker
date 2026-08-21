@@ -874,104 +874,19 @@ fn sketch_dimension_value(ui: &mut egui::Ui, state: &mut PanelState, response: &
     else {
         return;
     };
-    let density = state.geometry.voxels_per_block;
-    let id_base = egui::Id::new(("sketch_dimension", constraint));
-
-    rail_heading(ui, "Dimension");
     let restated = match dimension {
-        document::sketch::Dimension::Span { from, to, length } => {
-            crate::widgets::MeasurementField::new(
-                id_base,
-                "Length",
-                length.value().round() as i64,
-                density,
-            )
-            // A span of nothing is two points in one place, which Coincident already says.
-            .min_voxels(1, "a span is at least one voxel")
-            .show(ui)
-            .map(|commit| document::sketch::Dimension::Span {
-                from,
-                to,
-                length: document::sketch::SketchLength::retained(commit.measurement, commit.voxels),
-            })
-        }
-        document::sketch::Dimension::SpanAlong {
-            from,
-            to,
-            axis,
-            length,
-        } => {
-            // The label names the extent rather than saying "Length", because a segment carries up
-            // to three of these at once and a rail that called them all the same thing would leave
-            // the author guessing which row moves which number.
-            let named = match axis {
-                document::sketch::InPlaneAxis::Across => "Width",
-                document::sketch::InPlaneAxis::Up => "Height",
-            };
-            crate::widgets::MeasurementField::new(
-                id_base,
-                named,
-                length.value().round() as i64,
-                density,
-            )
-            .min_voxels(1, "a span is at least one voxel")
-            .show(ui)
-            .map(|commit| document::sketch::Dimension::SpanAlong {
-                from,
-                to,
-                axis,
-                length: document::sketch::SketchLength::retained(commit.measurement, commit.voxels),
-            })
-        }
-        document::sketch::Dimension::Gap {
-            point,
-            segment,
-            length,
-        } => {
-            crate::widgets::MeasurementField::new(
-                id_base,
-                // Not "Length": a gap is measured across a line rather than between two places,
-                // and a segment can carry both at once.
-                "Offset",
-                length.value().round() as i64,
-                density,
-            )
-            // A gap of nothing puts the point on the line, which PointOnCurve already says.
-            .min_voxels(1, "a gap is at least one voxel")
-            .show(ui)
-            .map(|commit| document::sketch::Dimension::Gap {
-                point,
-                segment,
-                length: document::sketch::SketchLength::retained(commit.measurement, commit.voxels),
-            })
-        }
-        document::sketch::Dimension::RimGap {
-            first,
-            second,
-            length,
-        } => {
-            crate::widgets::MeasurementField::new(
-                id_base,
-                // The same word a gap across a line uses, because it is the same measurement read
-                // on a curve — and neither one is the "Radius" the two rims each carry of their
-                // own.
-                "Offset",
-                length.value().round() as i64,
-                density,
-            )
-            // A gap of nothing makes the two rims one rim, which Equal already says.
-            .min_voxels(1, "a gap is at least one voxel")
-            .show(ui)
-            .map(|commit| document::sketch::Dimension::RimGap {
-                first,
-                second,
-                length: document::sketch::SketchLength::retained(commit.measurement, commit.voxels),
-            })
-        }
+        // Every length a dimension states is typed at the number itself: double-click the value on
+        // the drawing. A field here as well would be a second place to look for one quantity, and
+        // the rail is the one nobody finds.
+        document::sketch::Dimension::Span { .. }
+        | document::sketch::Dimension::SpanAlong { .. }
+        | document::sketch::Dimension::Gap { .. }
+        | document::sketch::Dimension::RimGap { .. } => None,
         document::sketch::Dimension::Radius { curve, length }
         | document::sketch::Dimension::Diameter { curve, length } => {
+            rail_heading(ui, "Dimension");
             let across = matches!(dimension, document::sketch::Dimension::Diameter { .. });
-            sketch_rim_value(ui, id_base, density, curve, length, across)
+            sketch_rim_value(ui, curve, length, across)
         }
         document::sketch::Dimension::Angle {
             first,
@@ -979,6 +894,7 @@ fn sketch_dimension_value(ui: &mut egui::Ui, state: &mut PanelState, response: &
             degrees,
             corner,
         } => {
+            rail_heading(ui, "Dimension");
             let mut turn = degrees.to_degrees_f64();
             let changed = ui
                 .horizontal(|ui| {
@@ -992,8 +908,9 @@ fn sketch_dimension_value(ui: &mut egui::Ui, state: &mut PanelState, response: &
                     .changed()
                 })
                 .inner;
-            // Degrees are a plain number rather than a blocks+voxels expression, so the field is a
-            // drag rather than a text commit — and the guard is the same one every angle takes.
+            // Degrees are a plain number rather than a blocks+voxels expression, so there is no
+            // literal for the inline editor to seed and this one stays a drag. It joins the
+            // drawing the day the grammar has angle literals.
             changed
                 .then(|| parametric::units::AngleMeasurement::try_from_degrees_f64(turn).ok())
                 .flatten()
@@ -1010,20 +927,21 @@ fn sketch_dimension_value(ui: &mut egui::Ui, state: &mut PanelState, response: &
     }
 }
 
-/// A rim dimension's value, and the choice of which way it is stated.
+/// Which way a rim dimension is stated.
 ///
 /// Radius and diameter are the same claim about the same curve, so they cannot both be asserted
 /// and the two are drawn as one switch rather than two rows. Which one is showing is the author's
 /// — a machinist reads a hole as a diameter and a fillet as a radius, and the drawing has no
 /// opinion about which of those they are drawing.
 ///
+/// The rail keeps this because it is the one thing about a rim dimension that its number on the
+/// drawing cannot say. The SIZE is typed there, by double-clicking it.
+///
 /// **Switching drops the authored expression and keeps the size.** Half of `2 blocks` is not an
 /// expression the author wrote, so the new statement arrives as the plain number it now is, the
 /// same way a fresh dimension arrives measured off the drawing.
 fn sketch_rim_value(
     ui: &mut egui::Ui,
-    id_base: egui::Id,
-    density: u32,
     curve: document::sketch::SketchCurve,
     length: document::sketch::SketchLength,
     across: bool,
@@ -1036,29 +954,10 @@ fn sketch_rim_value(
         })
         .inner;
     // Pressing the one already showing says nothing, so only a CHANGE restates.
-    if let Some(now_across) = pressed.filter(|&want| want != across) {
-        let scaled = length.value() * if now_across { 2.0 } else { 0.5 };
-        let length = document::sketch::SketchLength::from_continuous(scaled);
-        return Some(if now_across {
-            document::sketch::Dimension::Diameter { curve, length }
-        } else {
-            document::sketch::Dimension::Radius { curve, length }
-        });
-    }
-
-    let committed = crate::widgets::MeasurementField::new(
-        id_base,
-        // The switch directly above IS the label, and naming it twice would read as
-        // two settings.
-        "",
-        length.value().round() as i64,
-        density,
-    )
-    // A curve of no size is not a smaller curve, it is a point.
-    .min_voxels(1, "a rim needs at least one voxel")
-    .show(ui)?;
-    let length = document::sketch::SketchLength::retained(committed.measurement, committed.voxels);
-    Some(if across {
+    let now_across = pressed.filter(|&want| want != across)?;
+    let scaled = length.value() * if now_across { 2.0 } else { 0.5 };
+    let length = document::sketch::SketchLength::from_continuous(scaled);
+    Some(if now_across {
         document::sketch::Dimension::Diameter { curve, length }
     } else {
         document::sketch::Dimension::Radius { curve, length }

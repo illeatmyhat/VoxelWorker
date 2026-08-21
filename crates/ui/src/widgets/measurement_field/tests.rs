@@ -16,8 +16,6 @@
 )]
 
 use super::*;
-use crate::widgets::measurement_entry::measurement_error_text;
-use parametric::units;
 
 /// A field with the properties of the OFFSET site: signed, no lower bound.
 fn signed_field<'a>(text_seed: i64, density: u32) -> MeasurementField<'a> {

@@ -510,6 +510,18 @@ struct WindowedState {
     /// this is the only record of where one is, so what is drawn and what is clickable are one
     /// list.
     sketch_dimension_gizmos: Vec<ui::chrome::DimensionGizmo>,
+    /// The inline measurement editor, when one is open over a dimension's number.
+    ///
+    /// VIEW state, not document state: it is a box someone is typing in. Nothing here is
+    /// serialized, an undo does not restore it, and the editor closes itself if the constraint it
+    /// names stops existing.
+    sketch_dimension_editor: Option<ui::workspace::OpenDimensionEditor>,
+    /// The last stationary release on a dimension's number: when, and where.
+    ///
+    /// A second one soon enough and near enough is a DOUBLE click, which is what opens the
+    /// editor. Kept here rather than read out of egui because the press path is the winit
+    /// handler's and egui's pointer state for this frame is not settled when it runs.
+    last_dimension_click: Option<(std::time::Instant, f64, f64)>,
     /// The Line command's connected chain and typed press/latch state. It is session-only and
     /// cleared when its sketch/tool/constraint context changes. Document edits revalidate its
     /// identities, while Line's own commits intentionally advance it.
@@ -1091,6 +1103,8 @@ impl WindowedState {
             sketch_constraint_press: false,
             sketch_constraint_badges: Vec::new(),
             sketch_dimension_gizmos: Vec::new(),
+            sketch_dimension_editor: None,
+            last_dimension_click: None,
             line_gesture: line::LineGesture::default(),
             midpoint_line_gesture: midpoint_line::MidpointLineGesture::default(),
             tangent_arc_gesture: tangent_arc::TangentArcGesture::default(),
@@ -1306,6 +1320,8 @@ impl WindowedState {
             sketch_constraint_press: _,
             sketch_constraint_badges: _,
             sketch_dimension_gizmos: _,
+            sketch_dimension_editor: _,
+            last_dimension_click: _,
             line_gesture: _,
             midpoint_line_gesture: _,
             tangent_arc_gesture: _,

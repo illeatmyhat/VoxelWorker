@@ -33,6 +33,9 @@
 //! day a box makes Enter REQUIRED to finish a gesture, this law is gone and the drawing has
 //! stopped moving at the speed of thought.
 
+use super::measurement_entry::{MeasurementEntry, MeasurementEntryOutcome};
+use crate::theme;
+
 /// An OPEN measurement editor: where the box sits, and what it opened on.
 ///
 /// Absence is the closed state. Two states, one of them empty, is an [`Option`] — spelling it as
@@ -66,3 +69,80 @@ impl MeasurementEdit {
         }
     }
 }
+
+impl MeasurementEdit {
+    /// The box's chrome: a floating fill, an accent hairline, and room for the text.
+    ///
+    /// Published because the design reference sheet paints this specimen too, and a second copy of
+    /// the fill and the stroke there would drift from this one the first time either changes.
+    ///
+    /// Accent-stroked because an open editor is LIVE — the same thing the accent means everywhere
+    /// else — and filled rather than transparent because the box stands over a drawing and the
+    /// text underneath it would otherwise read through the digits being typed.
+    #[must_use]
+    pub fn frame() -> egui::Frame {
+        egui::Frame::new()
+            .fill(theme::BG_FLOAT)
+            .stroke(egui::Stroke::new(1.0_f32, theme::ACCENT))
+            .corner_radius(3.0)
+            .inner_margin(4.0)
+    }
+
+    /// Draw the box and run one frame of the commit protocol.
+    ///
+    /// Drawn in an [`egui::Area`] at [`Order::Foreground`](egui::Order::Foreground) — the
+    /// instrument tier, above the marks and below the menus. An Area rather than a bare layer
+    /// because this one is INTERACTIVE: an area drains input before the bare layers do, which is
+    /// what keeps a click inside the box from also reaching the drawing underneath it. The cost is
+    /// that the single-frame headless capture path never sees it, so there is no golden of an open
+    /// editor and there should not be one; its behaviour is asserted as state.
+    ///
+    /// ESCAPE IS CONSUMED on the frame it cancels. Escape is also the shell's global cancel, and
+    /// an author abandoning a number has not asked to abandon the tool they are holding.
+    ///
+    /// `minimum` is the lower bound and the sentence to show when it is missed, for a quantity
+    /// that cannot legitimately go to zero.
+    #[must_use]
+    pub fn show(
+        &self,
+        ctx: &egui::Context,
+        id_base: egui::Id,
+        density: u32,
+        minimum: Option<(i64, &str)>,
+    ) -> MeasurementEntryOutcome {
+        let width = self.anchor.width().max(MINIMUM_BOX_WIDTH_POINTS);
+        let outcome = egui::Area::new(id_base.with("area"))
+            .order(egui::Order::Foreground)
+            .pivot(egui::Align2::CENTER_CENTER)
+            .fixed_pos(self.anchor.center())
+            .show(ctx, |ui| {
+                Self::frame()
+                    .show(ui, |ui| {
+                        let entry = MeasurementEntry::new(id_base, self.seed.clone(), density)
+                            .focus_when_new();
+                        let entry = match minimum {
+                            Some((least, message)) => entry.min_voxels(least, message),
+                            None => entry,
+                        };
+                        entry.run(ui, |ui, buffer| {
+                            ui.add(
+                                egui::TextEdit::singleline(buffer)
+                                    .id(id_base.with("box"))
+                                    .desired_width(width),
+                            )
+                        })
+                    })
+                    .inner
+            })
+            .inner;
+
+        if outcome == MeasurementEntryOutcome::Cancelled {
+            ctx.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+        }
+        outcome
+    }
+}
+
+/// The narrowest the box goes, in points. A dimension's number can be two characters wide, and a
+/// box that size has no room for the expression the author came here to type.
+pub const MINIMUM_BOX_WIDTH_POINTS: f32 = 96.0;

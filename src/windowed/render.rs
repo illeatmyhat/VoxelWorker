@@ -221,6 +221,7 @@ impl WindowedState {
                 // asserted relation's glyph beside the geometry it names.
                 &self.sketch_constraint_badges,
                 &self.sketch_dimension_gizmos,
+                &mut self.sketch_dimension_editor,
                 // #100: the pick state of the region the open menu was raised inside, so the
                 // menu can label its row "carve" or "fill".
                 sketch_face_at_menu,
@@ -4685,6 +4686,39 @@ impl WindowedState {
         })
     }
 
+    /// Open the inline measurement editor if this release was the second of a double click on a
+    /// dimension's number.
+    ///
+    /// Called on every stationary release that resolved a constraint click, because the clock has
+    /// to advance whether or not this one opened anything — a click that opens no editor is still
+    /// the FIRST of the pair that will.
+    pub(super) fn open_measurement_editor_on_double_click(&mut self, cursor_x: f64, cursor_y: f64) {
+        let now = std::time::Instant::now();
+        let second = is_a_second_click(self.last_dimension_click, now, cursor_x, cursor_y);
+        self.last_dimension_click = Some((now, cursor_x, cursor_y));
+        let Some(target) = self.panel_state.sketch_mode else {
+            return;
+        };
+        let Some(node) = self.panel_state.scene.node_by_id(target) else {
+            return;
+        };
+        let document::scene::NodeContent::SketchTool { producer, .. } = &node.content else {
+            return;
+        };
+        let opened = measurement_editor_opened_by(
+            &self.sketch_dimension_gizmos,
+            egui::Pos2::new(cursor_x as f32, cursor_y as f32),
+            self.last_pixels_per_point,
+            second,
+            &producer.sketch,
+            self.panel_state.geometry.voxels_per_block,
+        );
+        if let Some((constraint, editor)) = opened {
+            self.sketch_dimension_editor =
+                Some(ui::workspace::OpenDimensionEditor { constraint, editor });
+        }
+    }
+
     /// Feed the entity under the cursor to the armed constraint.
     ///
     /// A pick the waiting slot cannot take is refused and the gesture keeps running — a click on
@@ -8521,21 +8555,41 @@ fn sketch_dimension_value_at(
 /// accept a bare degree count, which is what the drag control it would replace already does
 /// better. It joins when the grammar does.
 fn dimension_seed_text(dimension: &document::sketch::Dimension, density: u32) -> Option<String> {
-    use document::sketch::Dimension;
-    let voxels = match dimension {
-        Dimension::Span { length, .. }
-        | Dimension::SpanAlong { length, .. }
-        | Dimension::Gap { length, .. }
-        | Dimension::RimGap { length, .. }
-        | Dimension::Radius { length, .. }
-        | Dimension::Diameter { length, .. } => length.value(),
-        Dimension::Angle { .. } => return None,
-    };
+    let length = dimension.length()?;
     Some(parametric::units::format(
-        voxels.round() as i64,
+        length.value().round() as i64,
         density,
         parametric::units::DisplayUnit::BlocksAndVoxels,
     ))
+}
+
+/// How soon a second click must land to be part of a double one.
+///
+/// egui's own `max_double_click_delay`, so the viewport agrees with every widget the author
+/// double-clicks elsewhere in the app rather than having a second opinion about their hand.
+const DOUBLE_CLICK_WITHIN: std::time::Duration = std::time::Duration::from_millis(300);
+
+/// And how near, in physical pixels. Wider than a twitch, narrower than the smallest number a
+/// dimension draws, so two clicks on two adjacent dimensions are never read as one gesture.
+const DOUBLE_CLICK_SLOP_PIXELS: f64 = 6.0;
+
+/// Whether a release completes a DOUBLE click: soon enough after the last one, and near enough.
+///
+/// Both halves are required. Time alone would let a rushed click on one number and a rushed click
+/// on the next open an editor over the second; distance alone would let a click now and a click a
+/// minute later do the same.
+fn is_a_second_click(
+    previous: Option<(std::time::Instant, f64, f64)>,
+    now: std::time::Instant,
+    cursor_x: f64,
+    cursor_y: f64,
+) -> bool {
+    let Some((when, was_x, was_y)) = previous else {
+        return false;
+    };
+    now.duration_since(when) <= DOUBLE_CLICK_WITHIN
+        && (cursor_x - was_x).abs() <= DOUBLE_CLICK_SLOP_PIXELS
+        && (cursor_y - was_y).abs() <= DOUBLE_CLICK_SLOP_PIXELS
 }
 
 /// The inline editor a press opens, when the press opens one.
@@ -8656,14 +8710,14 @@ mod tests {
         advance_circle_center_diameter_gesture, aggregate_marquee_picks, angle_arc_radius,
         angle_legs, apply_sketch_snap, circle_gesture_is_current, circle_marquee_hit, circle_ring,
         closest_point_on_segment, complete_circle_center_diameter, concentric_badge_locus,
-        grab_that_carries_the_selection, marquee_box_px, measurement_editor_opened_by,
-        nearest_sketch_edge_for_requirement, nearest_sketch_edge_from_candidates,
-        nearest_tangent_lever, point_in_screen_polygon, point_to_segment_distance,
-        pointer_left_the_press, polygon_double_area, reset_failed_sketch_constraint_completion,
-        reset_refused_sketch_constraint_completion, segment_touches_rect, segments_intersect,
-        select_sketch_constraint_refusal_culprits, sketch_constraint_badge_at,
-        sketch_curve_from_hit, sketch_profile_edit_transaction, symmetry_badge_locus,
-        tangent_badge_locus, trim_number, SketchEdgeHit, SketchGrab, DIMENSION_STANDOFF_PX,
+        grab_that_carries_the_selection, marquee_box_px, nearest_sketch_edge_for_requirement,
+        nearest_sketch_edge_from_candidates, nearest_tangent_lever, point_in_screen_polygon,
+        point_to_segment_distance, pointer_left_the_press, polygon_double_area,
+        reset_failed_sketch_constraint_completion, reset_refused_sketch_constraint_completion,
+        segment_touches_rect, segments_intersect, select_sketch_constraint_refusal_culprits,
+        sketch_constraint_badge_at, sketch_curve_from_hit, sketch_profile_edit_transaction,
+        symmetry_badge_locus, tangent_badge_locus, trim_number, SketchEdgeHit, SketchGrab,
+        DIMENSION_STANDOFF_PX,
     };
     use document::sketch::{
         ConstraintKind, LineSide, PlaneAxis, Sketch, SketchCurve, SketchLength, SketchPoint,
@@ -10303,6 +10357,45 @@ mod measurement_editor_tests {
             measurement_editor_opened_by(&[real, ghost], cursor, 2.0, true, &sketch, DENSITY)
                 .is_none(),
             "the ghost is on top, so the ghost is what was clicked"
+        );
+    }
+
+    /// The double-click test: both halves of it, and the third case that is neither.
+    ///
+    /// A dimension's number is a small target, and a hand that stays perfectly still between two
+    /// clicks is not the hand anyone has. So the pair is read with a slop radius, and the third
+    /// assertion is the one that earns it: a click six pixels off is the SAME click to a person.
+    #[test]
+    fn a_second_click_is_soon_enough_and_close_enough() {
+        use super::{is_a_second_click, DOUBLE_CLICK_SLOP_PIXELS, DOUBLE_CLICK_WITHIN};
+        let opening = std::time::Instant::now();
+        let soon = opening + DOUBLE_CLICK_WITHIN / 2;
+        let late = opening + DOUBLE_CLICK_WITHIN * 2;
+
+        assert!(
+            !is_a_second_click(None, opening, 100.0, 100.0),
+            "the first click of a session has no pair"
+        );
+        assert!(
+            is_a_second_click(Some((opening, 100.0, 100.0)), soon, 100.0, 100.0),
+            "same place, well inside the window"
+        );
+        assert!(
+            is_a_second_click(Some((opening, 100.0, 100.0)), soon, 103.0, 103.0),
+            "a hand that drifts inside the slop is still holding still"
+        );
+        assert!(
+            !is_a_second_click(Some((opening, 100.0, 100.0)), late, 100.0, 100.0),
+            "same place, but the window closed"
+        );
+        assert!(
+            !is_a_second_click(
+                Some((opening, 100.0, 100.0)),
+                soon,
+                100.0 + DOUBLE_CLICK_SLOP_PIXELS * 2.0,
+                100.0
+            ),
+            "soon enough, but that is a different target"
         );
     }
 }

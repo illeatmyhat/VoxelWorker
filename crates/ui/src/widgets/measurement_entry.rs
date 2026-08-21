@@ -69,7 +69,7 @@ pub enum MeasurementEntryOutcome {
 /// The commit protocol around a caller-drawn text box.
 pub struct MeasurementEntry<'a> {
     id_base: egui::Id,
-    seed_voxels: i64,
+    seed: String,
     density: u32,
     min_voxels: Option<i64>,
     min_error: &'a str,
@@ -77,16 +77,21 @@ pub struct MeasurementEntry<'a> {
 }
 
 impl<'a> MeasurementEntry<'a> {
-    /// A signed entry seeded from `seed_voxels`, displayed at `density`.
+    /// A signed entry showing `seed`, parsed at `density`.
+    ///
+    /// **The seed is TEXT the caller supplies, never a number this type formats.** Today every
+    /// caller hands over the canonical blocks+voxels rendering of the value the document holds;
+    /// when the document retains the author's own typed text, the caller hands THAT over and
+    /// nothing here changes. Deriving it internally would have made that a rewrite.
     ///
     /// `id_base` must be stable per edited value AND distinct across values — the in-progress
     /// buffer and the last error hang off it. Key it on whatever identifies the value being
     /// edited, so moving to another value re-seeds rather than inheriting half-typed text.
     #[must_use]
-    pub fn new(id_base: egui::Id, seed_voxels: i64, density: u32) -> Self {
+    pub fn new(id_base: egui::Id, seed: impl Into<String>, density: u32) -> Self {
         Self {
             id_base,
-            seed_voxels,
+            seed: seed.into(),
             density,
             min_voxels: None,
             min_error: "",
@@ -126,8 +131,7 @@ impl<'a> MeasurementEntry<'a> {
     ) -> MeasurementEntryOutcome {
         let text_id = self.id_base.with("text");
         let error_id = self.id_base.with("error");
-        // The canonical seed: what the document currently says, as a blocks+voxels string.
-        let seed = units::format(self.seed_voxels, self.density, DisplayUnit::BlocksAndVoxels);
+        let seed = self.seed.clone();
 
         let held = ui.memory(|memory| memory.data.get_temp::<String>(text_id));
         let opening = held.is_none();
