@@ -55,6 +55,7 @@ mod line;
 mod midpoint_line;
 mod palette;
 mod point_circle;
+mod pointer;
 mod polygon;
 mod render;
 
@@ -313,10 +314,11 @@ struct WindowedState {
     /// `camera.orbit_center` is classified, dumpable view state whose contract is that only
     /// place/reset move it, so an F9 dump can never capture a point the user never committed.
     placing_orbit_center: bool,
-    /// Last cursor position, for computing drag deltas.
-    last_cursor_position: Option<(f64, f64)>,
-    /// Where the most recent left-press landed (for view-cube click detection).
-    press_position: Option<(f64, f64)>,
+    /// Where the pointer is, and where the press it is holding began.
+    ///
+    /// One field rather than two, because the pair has an invariant between them that two loose
+    /// `Option`s could not state — see [`mod@pointer`].
+    pointer: pointer::PointerTrack,
     /// Whether the most recent left-press started inside the view-cube viewport.
     press_in_view_cube: bool,
     /// Whether a press that started on the view cube has moved past the drag
@@ -1052,8 +1054,7 @@ impl WindowedState {
             orbit_type_menu_open: false,
             active_orbit_type: OrbitType::default(),
             placing_orbit_center: false,
-            last_cursor_position: None,
-            press_position: None,
+            pointer: pointer::PointerTrack::default(),
             press_in_view_cube: false,
             view_cube_drag_active: false,
             // Default to the full target until the first frame fills it in.
@@ -1305,8 +1306,7 @@ impl WindowedState {
             orbit_type_menu_open: _,
             active_orbit_type: _,
             placing_orbit_center: _,
-            last_cursor_position: _,
-            press_position: _,
+            pointer: _,
             press_in_view_cube: _,
             view_cube_drag_active: _,
             context_menu_open_at: _,

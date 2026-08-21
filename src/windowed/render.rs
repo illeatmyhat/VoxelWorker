@@ -783,7 +783,7 @@ impl WindowedState {
             .armed_tool
             .as_ref()
             .map(|armed| armed.spec.clone());
-        match (armed_spec, self.last_cursor_position) {
+        match (armed_spec, self.pointer.at()) {
             (Some(NodeSpec::Tool { shape, material }), Some((cursor_x, cursor_y))) => {
                 let vp = prepared.viewport_px;
                 // Same physical-pixel viewport/cursor space `pick_voxel` marches in.
@@ -1104,7 +1104,7 @@ impl WindowedState {
         if self.panel_state.sketch_mode != Some(target) {
             return IntentEffect::none();
         }
-        let Some((cursor_x, cursor_y)) = self.last_cursor_position else {
+        let Some((cursor_x, cursor_y)) = self.pointer.at() else {
             return IntentEffect::none();
         };
         // Recompute the handles from the CURRENT scene (not last frame's cache): a mid-drag
@@ -1348,7 +1348,7 @@ impl WindowedState {
     /// Whether the cursor has left the press by the general drag threshold — the one question that
     /// separates a click from a drag, asked the same way the view cube and the marquee ask it.
     fn pointer_left_the_press(&self) -> bool {
-        pointer_left_the_press(self.press_position, self.last_cursor_position)
+        pointer_left_the_press(self.pointer.pressed_at(), self.pointer.at())
     }
 
     /// Put a vertex drag back where it started and record nothing — the second of the gesture's
@@ -3446,7 +3446,7 @@ impl WindowedState {
         if !self.placing_orbit_center {
             return false;
         }
-        if let Some(point) = self.surface_point_at(self.last_cursor_position) {
+        if let Some(point) = self.surface_point_at(self.pointer.at()) {
             self.app_core.camera.place_orbit_center(point);
             self.placing_orbit_center = false;
         }
@@ -3803,7 +3803,7 @@ impl WindowedState {
         if !self.placing_orbit_center {
             return self.orbit_center_overlay;
         }
-        let (cursor_x, cursor_y) = self.last_cursor_position?;
+        let (cursor_x, cursor_y) = self.pointer.at()?;
         Some((
             egui::Pos2::new(
                 cursor_x as f32 / pixels_per_point,
@@ -4564,7 +4564,8 @@ impl WindowedState {
         // every committed dimension, so what the author is dragging IS what the click will make —
         // and it carries no id, so it cannot be picked or deleted while it is still a question.
         let hovering = self
-            .last_cursor_position
+            .pointer
+            .at()
             .and_then(|(x, y)| self.sketch_unsnapped_profile_coord(x, y));
         let ghost = self
             .panel_state
@@ -5489,7 +5490,7 @@ impl WindowedState {
         // snap mark are two readings of the same answer, and working them out separately is how
         // they get to disagree.
         let picked_target = (tool.curve_under_pointer() == ui::panel::CurveUnderPointer::PickedOn)
-            .then_some(self.last_cursor_position)
+            .then_some(self.pointer.at())
             .flatten()
             .and_then(|(cursor_x, cursor_y)| self.sketch_target_at(cursor_x, cursor_y));
 
@@ -5510,7 +5511,7 @@ impl WindowedState {
             ui::panel::CurveUnderPointer::Ignored => None,
         }
         .and_then(|state| {
-            self.last_cursor_position.and_then(|(cx, cy)| {
+            self.pointer.at().and_then(|(cx, cy)| {
                 if tool == ui::panel::SketchTool::ArcTangent {
                     if self.tangent_arc_gesture.is_pending() {
                         return None;
@@ -5613,7 +5614,8 @@ impl WindowedState {
             sketch: target,
             selection: &self.panel_state.selection,
             cursor_px: self
-                .last_cursor_position
+                .pointer
+                .at()
                 .map(|(cx, cy)| egui::Pos2::new(cx as f32, cy as f32)),
             dragging_point: self.sketch_drag.as_ref().and_then(|drag| drag.held.point()),
             hovered_edge,
@@ -5676,7 +5678,8 @@ impl WindowedState {
         // for geometry. Not read off `hovered_edge`, which a lever deliberately suppresses.
         let hovered_lever = (tool == ui::panel::SketchTool::Select)
             .then(|| {
-                self.last_cursor_position
+                self.pointer
+                    .at()
                     .and_then(|(cx, cy)| self.tangent_lever_at(cx, cy))
             })
             .flatten();
@@ -5855,7 +5858,7 @@ impl WindowedState {
         // Add-point insert preview: the point on the hovered segment nearest the cursor (physical
         // px), in egui points — "a vertex lands here on this edge". Drawn as a diamond next frame.
         if tool == ui::panel::SketchTool::AddPoint {
-            if let Some((cursor_x, cursor_y)) = self.last_cursor_position {
+            if let Some((cursor_x, cursor_y)) = self.pointer.at() {
                 if let Some((_, a, b)) = self.nearest_sketch_segment(cursor_x, cursor_y) {
                     let cursor = egui::Pos2::new(cursor_x as f32, cursor_y as f32);
                     let foot = closest_point_on_segment(cursor, a, b);
@@ -5901,7 +5904,7 @@ impl WindowedState {
         match tool {
             ui::panel::SketchTool::Line => {
                 if let (Some(chain), Some((cursor_x, cursor_y))) =
-                    (self.line_gesture.chain(), self.last_cursor_position)
+                    (self.line_gesture.chain(), self.pointer.at())
                 {
                     let profile_of = |id| {
                         self.sketch_node_state(target).and_then(|(producer, _)| {
@@ -5954,7 +5957,7 @@ impl WindowedState {
             }
             ui::panel::SketchTool::MidpointLine => {
                 if let (Some((producer, _)), Some((cursor_x, cursor_y))) =
-                    (self.sketch_node_state(target), self.last_cursor_position)
+                    (self.sketch_node_state(target), self.pointer.at())
                 {
                     let endpoint = self.sketch_target_at(cursor_x, cursor_y);
                     if let Some(placement) = endpoint.and_then(|endpoint| {
@@ -5977,7 +5980,7 @@ impl WindowedState {
             ui::panel::SketchTool::ArcTangent => {
                 if let (Some((producer, _)), Some((cursor_x, cursor_y)), Some(context)) = (
                     self.sketch_node_state(target),
-                    self.last_cursor_position,
+                    self.pointer.at(),
                     self.sketch_evaluation_context(),
                 ) {
                     if self.tangent_arc_gesture.is_pending() {
@@ -6025,7 +6028,7 @@ impl WindowedState {
             }
             ui::panel::SketchTool::ArcCenterEndpoints => {
                 if let (Some((producer, _)), Some((cursor_x, cursor_y))) =
-                    (self.sketch_node_state(target), self.last_cursor_position)
+                    (self.sketch_node_state(target), self.pointer.at())
                 {
                     if let (Some(center), Some(direction)) = (
                         self.center_arc_gesture.center(target),
@@ -6073,7 +6076,8 @@ impl WindowedState {
                 if let (Some(kind), Some((producer, _)), Some(cursor)) = (
                     corner_rectangle_kind(tool),
                     self.sketch_node_state(target),
-                    self.last_cursor_position
+                    self.pointer
+                        .at()
                         .and_then(|(x, y)| self.sketch_target_at(x, y)),
                 ) {
                     if let Some(placement) = self
@@ -6099,8 +6103,9 @@ impl WindowedState {
             ui::panel::SketchTool::Rectangle3Point => {
                 if let (Some((producer, _)), Some((cursor_x, cursor_y)), Some(cursor)) = (
                     self.sketch_node_state(target),
-                    self.last_cursor_position,
-                    self.last_cursor_position
+                    self.pointer.at(),
+                    self.pointer
+                        .at()
                         .and_then(|(x, y)| self.sketch_target_at(x, y)),
                 ) {
                     let ring = if let Some(placement) = self
@@ -6138,7 +6143,7 @@ impl WindowedState {
                 // threshold. Direction is read LIVE from the cursor, so the style flips
                 // mid-drag with the semantic (solid window / dashed crossing).
                 if let (Some((down_x, down_y)), Some((cursor_x, cursor_y))) =
-                    (self.sketch_marquee_anchor, self.last_cursor_position)
+                    (self.sketch_marquee_anchor, self.pointer.at())
                 {
                     let past_threshold = (cursor_x - down_x).abs()
                         >= VIEW_CUBE_DRAG_THRESHOLD_PIXELS
@@ -6162,7 +6167,7 @@ impl WindowedState {
                 // curve is not determined yet); with both down, the arc the third click would
                 // commit, tessellated through the cursor as its through-point.
                 if let (Some((start, end)), Some((cursor_x, cursor_y))) =
-                    (self.sketch_arc_gesture, self.last_cursor_position)
+                    (self.sketch_arc_gesture, self.pointer.at())
                 {
                     let profile_of = |id| {
                         self.sketch_node_state(target).and_then(|(producer, _)| {
@@ -6206,7 +6211,7 @@ impl WindowedState {
             }
             ui::panel::SketchTool::CircleCenterDiameter => {
                 if let (Some(center), Some((cursor_x, cursor_y))) =
-                    (self.sketch_circle_center, self.last_cursor_position)
+                    (self.sketch_circle_center, self.pointer.at())
                 {
                     if let Some(perimeter) = self.sketch_snapped_point_at(cursor_x, cursor_y) {
                         let center = center.in_plane();
@@ -6226,7 +6231,7 @@ impl WindowedState {
                 if let (Some(kind), Some((producer, _)), Some((cursor_x, cursor_y))) = (
                     point_circle_kind(tool),
                     self.sketch_node_state(target),
-                    self.last_cursor_position,
+                    self.pointer.at(),
                 ) {
                     let placement = self
                         .sketch_target_at(cursor_x, cursor_y)
@@ -6252,7 +6257,7 @@ impl WindowedState {
                 if let (Some(kind), Some((producer, _)), Some((cursor_x, cursor_y))) = (
                     tangent_circle_kind(tool),
                     self.sketch_node_state(target),
-                    self.last_cursor_position,
+                    self.pointer.at(),
                 ) {
                     let cursor = self.sketch_snapped_point_at(cursor_x, cursor_y);
                     let hovered = self.sketch_segment_at(cursor_x, cursor_y);
@@ -6280,7 +6285,7 @@ impl WindowedState {
                 if let (Some(kind), Some((producer, _)), Some((cursor_x, cursor_y))) = (
                     polygon_kind(tool),
                     self.sketch_node_state(target),
-                    self.last_cursor_position,
+                    self.pointer.at(),
                 ) {
                     let cursor = self.sketch_target_at(cursor_x, cursor_y);
                     let sides = normalized_polygon_sides(self.panel_state.sketch_polygon_sides);
@@ -6340,7 +6345,7 @@ impl WindowedState {
                 if let (Some(kind), Some((producer, _)), Some((cursor_x, cursor_y))) = (
                     slot_kind(tool),
                     self.sketch_node_state(target),
-                    self.last_cursor_position,
+                    self.pointer.at(),
                 ) {
                     let cursor = self.sketch_target_at(cursor_x, cursor_y);
                     // Which way round a center-arc spine goes is in the ROUTE the cursor took, so
@@ -6391,7 +6396,7 @@ impl WindowedState {
             | ui::panel::SketchTool::FitPointSpline
             | ui::panel::SketchTool::ControlPointSpline => {
                 if let (Some(kind), Some((cursor_x, cursor_y))) =
-                    (higher_curve_kind(tool), self.last_cursor_position)
+                    (higher_curve_kind(tool), self.pointer.at())
                 {
                     if let Some(cursor) = self.sketch_snapped_point_at(cursor_x, cursor_y) {
                         let profile = self.higher_curve_gesture.preview(target, kind, cursor);
@@ -6437,7 +6442,7 @@ impl WindowedState {
             ui::panel::SketchTool::BreakCurve => {
                 if let (Some((producer, _)), Some((cursor_x, cursor_y)), Some(context)) = (
                     self.sketch_node_state(target),
-                    self.last_cursor_position,
+                    self.pointer.at(),
                     document::sketch::evaluation_context_from_density(
                         self.panel_state.geometry.voxels_per_block,
                     ),
@@ -6466,7 +6471,7 @@ impl WindowedState {
             ui::panel::SketchTool::Trim => {
                 if let (Some((producer, _)), Some((cursor_x, cursor_y)), Some(context)) = (
                     self.sketch_node_state(target),
-                    self.last_cursor_position,
+                    self.pointer.at(),
                     document::sketch::evaluation_context_from_density(
                         self.panel_state.geometry.voxels_per_block,
                     ),
@@ -6493,7 +6498,7 @@ impl WindowedState {
             ui::panel::SketchTool::Extend => {
                 if let (Some((producer, _)), Some((cursor_x, cursor_y)), Some(context)) = (
                     self.sketch_node_state(target),
-                    self.last_cursor_position,
+                    self.pointer.at(),
                     document::sketch::evaluation_context_from_density(
                         self.panel_state.geometry.voxels_per_block,
                     ),
@@ -6519,7 +6524,7 @@ impl WindowedState {
             ui::panel::SketchTool::Fillet => {
                 if let (Some((producer, _)), Some((cursor_x, cursor_y)), Some(context)) = (
                     self.sketch_node_state(target),
-                    self.last_cursor_position,
+                    self.pointer.at(),
                     document::sketch::evaluation_context_from_density(
                         self.panel_state.geometry.voxels_per_block,
                     ),
@@ -6559,7 +6564,7 @@ impl WindowedState {
             | ui::panel::SketchTool::ChamferTwoDistance => {
                 if let (Some((producer, _)), Some((cursor_x, cursor_y)), Some(context)) = (
                     self.sketch_node_state(target),
-                    self.last_cursor_position,
+                    self.pointer.at(),
                     document::sketch::evaluation_context_from_density(
                         self.panel_state.geometry.voxels_per_block,
                     ),
@@ -6617,7 +6622,7 @@ impl WindowedState {
                 ) = (
                     self.sketch_node_state(target),
                     self.sketch_offset_pending,
-                    self.last_cursor_position,
+                    self.pointer.at(),
                     document::sketch::evaluation_context_from_density(
                         self.panel_state.geometry.voxels_per_block,
                     ),
@@ -6648,7 +6653,7 @@ impl WindowedState {
                 ) = (
                     self.sketch_node_state(target),
                     self.sketch_move_copy_pending.as_ref(),
-                    self.last_cursor_position,
+                    self.pointer.at(),
                     document::sketch::evaluation_context_from_density(
                         self.panel_state.geometry.voxels_per_block,
                     ),
@@ -6691,7 +6696,7 @@ impl WindowedState {
                 ) = (
                     self.sketch_node_state(target),
                     self.sketch_scale_pending.as_ref(),
-                    self.last_cursor_position,
+                    self.pointer.at(),
                     document::sketch::evaluation_context_from_density(
                         self.panel_state.geometry.voxels_per_block,
                     ),
@@ -6726,7 +6731,7 @@ impl WindowedState {
             ui::panel::SketchTool::Mirror => {
                 if let (Some((producer, _)), Some((cursor_x, cursor_y)), Some(context)) = (
                     self.sketch_node_state(target),
-                    self.last_cursor_position,
+                    self.pointer.at(),
                     self.sketch_evaluation_context(),
                 ) {
                     let preview = self
@@ -6756,7 +6761,7 @@ impl WindowedState {
                 ) = (
                     self.sketch_node_state(target),
                     self.sketch_rectangular_pattern_pending.as_ref(),
-                    self.last_cursor_position,
+                    self.pointer.at(),
                     self.sketch_evaluation_context(),
                 ) {
                     if pending.target == target {
@@ -6801,7 +6806,7 @@ impl WindowedState {
             ui::panel::SketchTool::CircularPattern => {
                 if let (Some((producer, _)), Some((cursor_x, cursor_y)), Some(context)) = (
                     self.sketch_node_state(target),
-                    self.last_cursor_position,
+                    self.pointer.at(),
                     self.sketch_evaluation_context(),
                 ) {
                     let preview = self

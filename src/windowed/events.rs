@@ -115,11 +115,11 @@ impl ApplicationHandler for App {
                 ..
             } => {
                 if button_state == ElementState::Pressed {
-                    let position = state.last_cursor_position;
+                    let position = state.pointer.at();
                     let in_cube = position
                         .map(|(x, y)| state.position_in_view_cube(x, y))
                         .unwrap_or(false);
-                    state.press_position = position;
+                    state.pointer.press();
                     state.press_in_view_cube = in_cube;
                     state.view_cube_drag_active = false;
                     // A press on the view cube either becomes a cube-drag orbit (handled in
@@ -237,9 +237,7 @@ impl ApplicationHandler for App {
                     // element and snaps to it. A cube-drag has
                     // already orbited the camera, so it snaps nothing.
                     if state.press_in_view_cube && !state.view_cube_drag_active {
-                        if let (Some((down_x, down_y)), Some((up_x, up_y))) =
-                            (state.press_position, state.last_cursor_position)
-                        {
+                        if let Some((down_x, down_y, up_x, up_y)) = state.pointer.press_and_now() {
                             let stationary = (up_x - down_x).abs()
                                 < VIEW_CUBE_DRAG_THRESHOLD_PIXELS
                                 && (up_y - down_y).abs() < VIEW_CUBE_DRAG_THRESHOLD_PIXELS;
@@ -282,9 +280,7 @@ impl ApplicationHandler for App {
                     // can be placed; the ghost keeps following. NoSurface/TooFar left
                     // `pending_placement` None, so a click there does nothing.
                     if state.armed_press && state.pending_placement.is_some() {
-                        if let (Some((down_x, down_y)), Some((up_x, up_y))) =
-                            (state.press_position, state.last_cursor_position)
-                        {
+                        if let Some((down_x, down_y, up_x, up_y)) = state.pointer.press_and_now() {
                             let stationary = (up_x - down_x).abs()
                                 < VIEW_CUBE_DRAG_THRESHOLD_PIXELS
                                 && (up_y - down_y).abs() < VIEW_CUBE_DRAG_THRESHOLD_PIXELS;
@@ -298,20 +294,15 @@ impl ApplicationHandler for App {
                     // A stationary release with a constraint armed offers
                     // the entity under the cursor to the slot that is waiting. Same
                     // click-vs-drag threshold every other sketch release uses, so a press that
-                    // turned into a camera drag never picks. Runs BEFORE `last_cursor_position`
-                    // is cleared below, since the hit-test needs the release cursor.
+                    // turned into a camera drag never picks. Runs BEFORE the press ends below,
+                    // since the hit-test needs the pair the press and the release make.
                     if state.sketch_constraint_press {
-                        if let (Some((down_x, down_y)), Some((up_x, up_y))) =
-                            (state.press_position, state.last_cursor_position)
-                        {
+                        if let Some((down_x, down_y, up_x, up_y)) = state.pointer.press_and_now() {
                             let stationary = (up_x - down_x).abs()
                                 < VIEW_CUBE_DRAG_THRESHOLD_PIXELS
                                 && (up_y - down_y).abs() < VIEW_CUBE_DRAG_THRESHOLD_PIXELS;
                             if stationary {
                                 state.resolve_sketch_constraint_click(up_x, up_y);
-                                // The click selected; a SECOND one on the same number says the
-                                // author means to change it, and opens the box over it.
-                                state.open_measurement_editor_on_double_click(up_x, up_y);
                             }
                         }
                     }
@@ -320,9 +311,7 @@ impl ApplicationHandler for App {
                     if state.panel_state.sketch_tool == ui::panel::SketchTool::Line
                         && state.line_press_is_live()
                     {
-                        if let (Some((down_x, down_y)), Some((up_x, up_y))) =
-                            (state.press_position, state.last_cursor_position)
-                        {
+                        if let Some((down_x, down_y, up_x, up_y)) = state.pointer.press_and_now() {
                             let stationary = (up_x - down_x).abs()
                                 < VIEW_CUBE_DRAG_THRESHOLD_PIXELS
                                 && (up_y - down_y).abs() < VIEW_CUBE_DRAG_THRESHOLD_PIXELS;
@@ -337,12 +326,10 @@ impl ApplicationHandler for App {
                     // A stationary release with a sketch edit armed
                     // performs it (the same click-vs-drag threshold placement uses; a drag
                     // no longer orbits, but a twitchy press must still not edit).
-                    // Runs BEFORE `last_cursor_position` is cleared below, since
-                    // the hit-tests need the release cursor. The tool stays armed.
+                    // Runs BEFORE the press ends below, since the hit-tests need the pair the
+                    // press and the release make. The tool stays armed.
                     if state.sketch_edit_press {
-                        if let (Some((down_x, down_y)), Some((up_x, up_y))) =
-                            (state.press_position, state.last_cursor_position)
-                        {
+                        if let Some((down_x, down_y, up_x, up_y)) = state.pointer.press_and_now() {
                             let stationary = (up_x - down_x).abs()
                                 < VIEW_CUBE_DRAG_THRESHOLD_PIXELS
                                 && (up_y - down_y).abs() < VIEW_CUBE_DRAG_THRESHOLD_PIXELS;
@@ -466,16 +453,22 @@ impl ApplicationHandler for App {
                     // selection (a drag moved a vertex instead — the same click-vs-drag threshold
                     // placement / add-point use). Gated on `sketch_select_press` so a click on the
                     // context menu (egui-consumed, never armed) can't be read as click-empty-clear.
-                    // Runs BEFORE `last_cursor_position` is cleared below (the hit-test needs it).
+                    // Runs BEFORE the press ends below (the hit-test needs the press's own end).
                     if state.sketch_select_press {
-                        if let (Some((down_x, down_y)), Some((up_x, up_y))) =
-                            (state.press_position, state.last_cursor_position)
-                        {
+                        if let Some((down_x, down_y, up_x, up_y)) = state.pointer.press_and_now() {
                             let stationary = (up_x - down_x).abs()
                                 < VIEW_CUBE_DRAG_THRESHOLD_PIXELS
                                 && (up_y - down_y).abs() < VIEW_CUBE_DRAG_THRESHOLD_PIXELS;
                             if stationary {
                                 state.resolve_sketch_selection_click(up_x, up_y);
+                                // The click selected; a SECOND one on the same number says the
+                                // author means to change it, and opens the box over it. Here
+                                // rather than beside the constraint release because THIS is the
+                                // click a number receives: with a constraint armed the click is
+                                // feeding that gesture's slots, and with a drawing tool armed it
+                                // is placing geometry. Select is the only state in which clicking
+                                // a number means the number.
+                                state.open_measurement_editor_on_double_click(up_x, up_y);
                             } else {
                                 // Slice 3: a DRAGGED release of an empty-space press resolves
                                 // the directional marquee (left→right window, right→left
@@ -489,12 +482,9 @@ impl ApplicationHandler for App {
                     // A stationary release of a plain viewport press picks the node
                     // under the cursor (the same click-vs-drag threshold every other release path
                     // uses; it survives the orbit rebind as the future marquee discriminator).
-                    // Runs BEFORE `last_cursor_position` is
-                    // cleared below, which the raycast needs.
+                    // Runs BEFORE the press ends below, which the raycast needs.
                     if state.viewport_select_press {
-                        if let (Some((down_x, down_y)), Some((up_x, up_y))) =
-                            (state.press_position, state.last_cursor_position)
-                        {
+                        if let Some((down_x, down_y, up_x, up_y)) = state.pointer.press_and_now() {
                             let stationary = (up_x - down_x).abs()
                                 < VIEW_CUBE_DRAG_THRESHOLD_PIXELS
                                 && (up_y - down_y).abs() < VIEW_CUBE_DRAG_THRESHOLD_PIXELS;
@@ -514,9 +504,7 @@ impl ApplicationHandler for App {
                     // straight to the new center gives no cue which way the view went, and the
                     // point of aiming at a feature is to keep hold of it while the frame comes.
                     if state.orbit_mode_recenter_press {
-                        if let (Some((down_x, down_y)), Some((up_x, up_y))) =
-                            (state.press_position, state.last_cursor_position)
-                        {
+                        if let Some((down_x, down_y, up_x, up_y)) = state.pointer.press_and_now() {
                             let stationary = (up_x - down_x).abs()
                                 < VIEW_CUBE_DRAG_THRESHOLD_PIXELS
                                 && (up_y - down_y).abs() < VIEW_CUBE_DRAG_THRESHOLD_PIXELS;
@@ -537,7 +525,7 @@ impl ApplicationHandler for App {
                     state.sketch_edit_press = false;
                     state.sketch_constraint_press = false;
                     state.armed_press = false;
-                    state.last_cursor_position = None;
+                    state.pointer.end_press();
                     state.press_in_view_cube = false;
                     state.view_cube_drag_active = false;
                     // Commit the vertex drag synchronously here (a no-op if no
@@ -565,7 +553,8 @@ impl ApplicationHandler for App {
                 // The verb is LATCHED at press and the two flags are mutually exclusive, so
                 // releasing Shift mid-drag cannot flip an orbit into a pan halfway through.
                 let in_chrome = state
-                    .last_cursor_position
+                    .pointer
+                    .at()
                     .map(|(x, y)| state.position_in_signal_chrome(x, y))
                     .unwrap_or(false);
                 let grabbed = button_state == ElementState::Pressed && !egui_consumed && !in_chrome;
@@ -605,7 +594,7 @@ impl ApplicationHandler for App {
                 // menu items never leak to the left-click snap path. Any other
                 // right-press closes a menu that was open.
                 if button_state == ElementState::Pressed && !egui_consumed {
-                    let position = state.last_cursor_position;
+                    let position = state.pointer.at();
                     let in_cube = position
                         .map(|(x, y)| state.position_in_view_cube(x, y))
                         .unwrap_or(false);
@@ -659,7 +648,7 @@ impl ApplicationHandler for App {
                 let current = (position.x, position.y);
 
                 if state.panel_state.sketch_tool == ui::panel::SketchTool::Line {
-                    if let Some((down_x, down_y)) = state.press_position {
+                    if let Some((down_x, down_y)) = state.pointer.pressed_at() {
                         state.update_line_drag((down_x, down_y), current);
                     }
                 }
@@ -668,7 +657,7 @@ impl ApplicationHandler for App {
                 // moves past the threshold — the cube's own affordance, kept when orbit
                 // left the left button everywhere else.
                 if state.press_in_view_cube && !state.view_cube_drag_active {
-                    if let Some((down_x, down_y)) = state.press_position {
+                    if let Some((down_x, down_y)) = state.pointer.pressed_at() {
                         let moved = (current.0 - down_x).abs() >= VIEW_CUBE_DRAG_THRESHOLD_PIXELS
                             || (current.1 - down_y).abs() >= VIEW_CUBE_DRAG_THRESHOLD_PIXELS;
                         if moved {
@@ -683,7 +672,7 @@ impl ApplicationHandler for App {
                 // `camera.target` like every non-Shift+MMB mechanism.
                 let orbiting = state.view_cube_drag_active;
                 if orbiting {
-                    if let Some((previous_x, previous_y)) = state.last_cursor_position {
+                    if let Some((previous_x, previous_y)) = state.pointer.at() {
                         // #13 Step 6.1: a cube drag GRABS the cube and turns it with the
                         // cursor, so the camera must orbit the OPPOSITE way round the model
                         // than the cursor moves (dragging the cube's right edge leftward spins
@@ -712,7 +701,7 @@ impl ApplicationHandler for App {
                 // pan in a move.
                 let orbiting = orbiting || state.orbiting_about_center;
                 if state.orbiting_about_center {
-                    if let Some((previous_x, previous_y)) = state.last_cursor_position {
+                    if let Some((previous_x, previous_y)) = state.pointer.at() {
                         let delta_x = (current.0 - previous_x) as f32;
                         let delta_y = (current.1 - previous_y) as f32;
                         if delta_x != 0.0 || delta_y != 0.0 {
@@ -735,10 +724,10 @@ impl ApplicationHandler for App {
                 // turn or a re-centering click, never both.
                 let orbiting = orbiting || state.orbiting_in_orbit_mode;
                 if state.orbiting_in_orbit_mode {
-                    if let Some((previous_x, previous_y)) = state.last_cursor_position {
+                    if let Some((previous_x, previous_y)) = state.pointer.at() {
                         let delta_x = (current.0 - previous_x) as f32;
                         let delta_y = (current.1 - previous_y) as f32;
-                        if let Some((down_x, down_y)) = state.press_position {
+                        if let Some((down_x, down_y)) = state.pointer.pressed_at() {
                             let moved = (current.0 - down_x).abs()
                                 >= VIEW_CUBE_DRAG_THRESHOLD_PIXELS
                                 || (current.1 - down_y).abs() >= VIEW_CUBE_DRAG_THRESHOLD_PIXELS;
@@ -761,7 +750,7 @@ impl ApplicationHandler for App {
                 // orbit path, so the cursor can never both orbit and pan in one
                 // move). Like orbit, a manual pan cancels any in-progress snap tween.
                 if state.middle_button_held {
-                    if let Some((previous_x, previous_y)) = state.last_cursor_position {
+                    if let Some((previous_x, previous_y)) = state.pointer.at() {
                         let delta_x = (current.0 - previous_x) as f32;
                         let delta_y = (current.1 - previous_y) as f32;
                         if delta_x != 0.0 || delta_y != 0.0 {
@@ -776,7 +765,7 @@ impl ApplicationHandler for App {
                         }
                     }
                 }
-                state.last_cursor_position = Some(current);
+                state.pointer.see(current);
 
                 // Nothing to re-aim for an armed orbit-center placement: the gizmo draws at the
                 // cursor, and the ray is cast once, at the click.
@@ -821,7 +810,8 @@ impl ApplicationHandler for App {
                 // Wheel over the Signal chrome (stack + rail) belongs to the chrome,
                 // not the camera — mirroring the orbit/pan gates.
                 let in_chrome = state
-                    .last_cursor_position
+                    .pointer
+                    .at()
                     .map(|(x, y)| state.position_in_signal_chrome(x, y))
                     .unwrap_or(false);
                 if !in_chrome {
