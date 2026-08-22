@@ -128,6 +128,23 @@ impl Expression {
         }
     }
 
+    /// Whether the author wrote NO unit word anywhere: every leaf is a bare number.
+    ///
+    /// This is what a binding asks before applying its default unit, and it is a question about
+    /// the TREE rather than about the evaluated dimension, because a dimensionless answer arises
+    /// two ways — a bare count, and a ratio that cancelled (`3 blocks / 1 block`). The first named
+    /// no unit and takes the field's; the second named two and is a ratio, not a length. A symbol
+    /// is a unit the table will supply, so it counts as one named.
+    #[must_use]
+    pub fn names_no_unit(&self) -> bool {
+        match self {
+            Self::Literal(Literal::Number(_)) => true,
+            Self::Literal(Literal::Length(_) | Literal::Angle(_)) | Self::Symbol(_) => false,
+            Self::Negate(inner) => inner.names_no_unit(),
+            Self::Binary { left, right, .. } => left.names_no_unit() && right.names_no_unit(),
+        }
+    }
+
     /// A reference to a named parameter.
     #[must_use]
     pub fn symbol(name: impl Into<String>) -> Self {

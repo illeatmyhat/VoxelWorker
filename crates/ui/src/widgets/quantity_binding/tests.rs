@@ -230,3 +230,87 @@ fn an_angle_past_the_half_turn_is_refused_with_its_equivalent() {
     assert!(AngleBinding.read("0 deg").is_ok());
     assert!(AngleBinding.read("180 deg").is_ok());
 }
+
+/// A bare number in a length field is BLOCKS, and it is retained as a block TERM so it rescales
+/// with the density exactly as `3 blocks` does. The default belongs to the binding, not the
+/// grammar: a bare number stays dimensionless in an expression, so `2 * 3 blocks` keeps its scale
+/// factor and `3 blocks * 3 blocks` stays an area. Only a dimensionless ANSWER takes the default.
+#[test]
+fn a_bare_number_is_blocks_in_a_length_field() {
+    let bare = length_of(&signed(), "3").expect("a bare number defaults to blocks");
+    assert_eq!(bare.voxels, 48);
+    assert_eq!(bare.measurement, units::parse("3 blocks").unwrap());
+    assert_eq!(
+        bare.measurement.to_voxels(32),
+        Ok(96),
+        "and rescales like a block term"
+    );
+
+    let calculated = length_of(&signed(), "2 * 3").expect("a dimensionless answer is blocks too");
+    assert_eq!(calculated.voxels, 96);
+    assert_eq!(length_of(&signed(), "3.5").unwrap().voxels, 56);
+    assert_eq!(length_of(&signed(), "-1").unwrap().voxels, -16);
+
+    assert!(
+        length_of(&signed(), "2 blocks + 4").is_err(),
+        "the default is for a dimensionless ANSWER, not a term inside a sum"
+    );
+}
+
+/// A bare number in an angle field is \u{b0}REES, and a degree in a length field is still refused.
+#[test]
+fn a_bare_number_is_degrees_in_an_angle_field() {
+    let read = AngleBinding
+        .read("45")
+        .expect("a bare number defaults to degrees");
+    assert_eq!(read.value.to_degrees_f64(), 45.0);
+    assert_eq!(read.settled_text, "45\u{b0}");
+    assert_eq!(
+        AngleBinding.read("90 / 2").unwrap().value.to_degrees_f64(),
+        45.0
+    );
+    assert!(
+        AngleBinding.read("200").is_err(),
+        "the half-turn bound still judges the answer"
+    );
+    assert!(length_of(&signed(), "45 deg").is_err());
+    assert!(AngleBinding.read("3 blocks").is_err());
+}
+
+/// Radians are an angle unit. The store is exact degrees and pi is not a rational, so a radian
+/// literal converts at the literal through the same door a solved angle takes, and seeds back in
+/// degrees: `1 rad` settles as `57.3\u{b0}`, which is the canonical rendering, not a loss.
+#[test]
+fn radians_are_an_angle_and_seed_back_as_degrees() {
+    let read = AngleBinding.read("1 rad").expect("a radian is an angle");
+    assert_eq!(read.value.to_degrees_f64(), 1.0_f64.to_degrees());
+    assert_eq!(read.settled_text, "57.3\u{b0}");
+    let half_turn = AngleBinding.read("3.14159265358979 radians").unwrap();
+    assert!((half_turn.value.to_degrees_f64() - 180.0).abs() < 1e-9);
+    assert_eq!(
+        AngleBinding
+            .read("0.5rad * 2")
+            .unwrap()
+            .value
+            .to_degrees_f64(),
+        1.0_f64.to_degrees()
+    );
+    let into_a_length = length_of(&signed(), "1 rad").expect_err("a radian is not a length");
+    assert!(
+        into_a_length.contains("rad") && into_a_length.contains("length"),
+        "got: {into_a_length}"
+    );
+}
+
+/// The default is for text that NAMED NO UNIT, not for an answer that happens to be dimensionless.
+/// `3 blocks / 1 block` is a ratio the author built out of units, and minting it as three blocks
+/// would be the tool deciding what they meant; it is refused like any other non-length.
+#[test]
+fn a_cancelled_ratio_does_not_take_the_default() {
+    assert!(length_of(&signed(), "3 blocks / 1 block").is_err());
+    assert!(AngleBinding.read("90 deg / 45 deg").is_err());
+    assert!(
+        length_of(&signed(), "(2 + 4) * 1.5").is_ok(),
+        "no unit named anywhere: blocks"
+    );
+}

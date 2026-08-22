@@ -115,6 +115,15 @@ impl<'a> LengthBinding<'a> {
         let value = parametric::expression::SymbolTable::new()
             .evaluate(&expression, self.density)
             .map_err(|error| error.to_string())?;
+        // Text that named no unit takes this binding's: blocks. The grammar keeps a bare number
+        // dimensionless — `2 * 3 blocks` needs its scale factor — so the default is applied here,
+        // by the party that knows which quantity the field holds, and keyed on the TREE rather
+        // than the answer so a cancelled ratio (`3 blocks / 1 block`) is not mistaken for a count.
+        // It is minted as a BLOCK term, so `3` re-targets with the density exactly as `3 blocks`
+        // does. (`2 blocks + 4` stays a mismatch: the default is not a rescue for one term of a sum.)
+        if expression.names_no_unit() {
+            return Ok(Measurement::new(value.value, 0));
+        }
         // The dimension check, by name, before the arithmetic gets a chance to complain in its
         // own words. `45 deg` now PARSES — the grammar has angle literals — so what stops it here
         // is this binding saying which quantity it holds, and the alternative is the algebra's
@@ -181,9 +190,10 @@ impl AngleBinding {
         let value = parametric::expression::SymbolTable::new()
             .evaluate(&expression, 1)
             .map_err(|error| error.to_string())?;
-        if value.dimension != parametric::Dimension::ANGLE {
+        // Text that named no unit is degrees, this binding's default; the length binding's mirror.
+        if value.dimension != parametric::Dimension::ANGLE && !expression.names_no_unit() {
             return Err(format!(
-                "`{text}` is not an angle; type a number of degrees, like `45\u{b0}`"
+                "`{text}` is not an angle; type degrees or radians, like `45\u{b0}` or `1 rad`"
             ));
         }
         let angle = AngleMeasurement::new(value.value);

@@ -286,6 +286,20 @@ impl AngleMeasurement {
         ExactRational::try_from_f64_exact(degrees).map(Self::new)
     }
 
+    /// An angle authored in radians, retained as the exact binary value of its degree measure.
+    ///
+    /// The store is exact degrees and pi is not a rational, so a radian literal cannot be kept
+    /// as written. It enters through the same door a solved angle does: the float is formed once,
+    /// here, and its exact IEEE-754 ratio is what the document keeps. This is the units layer's
+    /// one radian-to-degree conversion, named so the grammar never forms the float itself.
+    ///
+    /// # Errors
+    ///
+    /// As [`try_from_degrees_f64`](Self::try_from_degrees_f64).
+    pub fn try_from_radians(radians: ExactRational) -> Result<Self, RationalFromF64Error> {
+        Self::try_from_degrees_f64(radians.to_f64().to_degrees())
+    }
+
     /// The exact degree value.
     #[allow(clippy::expect_used)]
     ///
@@ -518,6 +532,7 @@ enum UnitKind {
     Blocks,
     Voxels,
     Degrees,
+    Radians,
 }
 
 /// What a unit measures.
@@ -552,7 +567,7 @@ impl UnitKind {
     const fn dimension(self) -> UnitDimension {
         match self {
             Self::Blocks | Self::Voxels => UnitDimension::Length,
-            Self::Degrees => UnitDimension::Angle,
+            Self::Degrees | Self::Radians => UnitDimension::Angle,
         }
     }
 }
@@ -567,6 +582,7 @@ fn classify_unit(word: &str) -> Option<UnitKind> {
         "blocks" | "block" | "b" => Some(UnitKind::Blocks),
         "voxels" | "voxel" | "v" => Some(UnitKind::Voxels),
         "degrees" | "degree" | "deg" | "\u{b0}" => Some(UnitKind::Degrees),
+        "radians" | "radian" | "rad" => Some(UnitKind::Radians),
         _ => None,
     }
 }
@@ -740,7 +756,7 @@ pub(crate) fn measurement_from_tokens(
                     // The refusal the vocabulary/grammar split exists for. Degrees are in the
                     // one unit table so the lexer splits `45deg` the way it splits `3b`, and the
                     // LENGTH grammar turns them away by name right here.
-                    UnitKind::Degrees => {
+                    UnitKind::Degrees | UnitKind::Radians => {
                         return Err(MeasurementParseError::WrongDimension {
                             unit_text: token,
                             reading: UnitDimension::Length.name(),
@@ -787,8 +803,15 @@ pub(crate) fn measurement_from_tokens(
 /// which is the same refusal the length grammar makes in the other direction.
 ///
 /// **An angle keeps no split, and needs none.** A length is retained as blocks-and-voxels because
-/// that split re-targets when the density changes; degrees have no density and no second unit, so
-/// the exact rational IS the retention.
+/// that split re-targets when the density changes; degrees have no density, so the exact rational
+/// IS the retention.
+///
+/// **A radian term converts at the literal.** The store is exact degrees and pi is not a rational,
+/// so `1 rad` cannot be retained as written; it takes the same door a solved angle takes
+/// ([`AngleMeasurement::try_from_radians`]) and is retained as the exact binary value of
+/// `57.2957...` degrees. One unit closes ONE angle literal: `1 rad 30 deg` is refused, because
+/// blocks-and-voxels is a retention split and an angle has none to keep — `1 rad + 30 deg` is
+/// the expression grammar's sum and already works.
 pub(crate) fn angle_from_tokens(
     tokens: &[Token],
 ) -> Result<AngleMeasurement, MeasurementParseError> {
@@ -818,7 +841,7 @@ pub(crate) fn angle_from_tokens(
             }
         };
         match classify_unit(&word) {
-            Some(UnitKind::Degrees) => {
+            Some(unit @ (UnitKind::Degrees | UnitKind::Radians)) => {
                 if pending_numbers.is_empty() {
                     return Err(MeasurementParseError::MissingNumber { unit_text: word });
                 }
@@ -826,9 +849,18 @@ pub(crate) fn angle_from_tokens(
                     return Err(MeasurementParseError::DuplicateUnit { unit_text: word });
                 }
                 closed = true;
+                let mut term = ExactRational::from_integer(0);
                 for number in &pending_numbers {
-                    total = total.plus(number.to_rational());
+                    term = term.plus(number.to_rational());
                 }
+                if unit == UnitKind::Radians {
+                    term = AngleMeasurement::try_from_radians(term)
+                        .map_err(|_| MeasurementParseError::InvalidNumber {
+                            number_text: pending_text.clone(),
+                        })?
+                        .degrees();
+                }
+                total = total.plus(term);
                 pending_numbers.clear();
                 pending_text.clear();
             }
@@ -1248,6 +1280,37 @@ mod tests {
             angle_from_tokens(&tokenise("45 deg 10 deg")),
             Err(MeasurementParseError::DuplicateUnit {
                 unit_text: "deg".to_owned()
+            })
+        );
+    }
+
+    /// Radians are the angle vocabulary's second word. The store is exact degrees and pi is not
+    /// a rational, so the conversion happens at the literal, through the solved-angle door.
+    #[test]
+    fn a_radian_is_an_angle_read_through_the_float_door() {
+        for spelling in ["1 rad", "1rad", "1 radian", "1 radians"] {
+            let angle = angle_from_tokens(&tokenise(spelling)).expect("an angle literal");
+            assert_eq!(
+                angle.to_degrees_f64().to_bits(),
+                1.0_f64.to_degrees().to_bits(),
+                "`{spelling}`"
+            );
+        }
+        assert!(
+            angle_from_tokens(&tokenise("1 rad 30 deg")).is_err(),
+            "one unit closes one angle literal"
+        );
+        assert_eq!(
+            parse("2 rad"),
+            Err(MeasurementParseError::WrongDimension {
+                unit_text: "rad".to_owned(),
+                reading: "length",
+            })
+        );
+        assert_eq!(
+            angle_from_tokens(&tokenise("1 rad 1 rad")),
+            Err(MeasurementParseError::DuplicateUnit {
+                unit_text: "rad".to_owned()
             })
         );
     }
